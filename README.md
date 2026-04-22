@@ -20,17 +20,17 @@ This repo is a Claude Code plugin marketplace. Install from inside Claude Code:
 
 ```
 /plugin marketplace add noomz/noomz-claude-skills
-/plugin install obsidian-cli@claude-skills
+/plugin install obsidian-cli@noomz-claude-skills
 ```
 
 To install from a local clone (useful while iterating):
 
 ```
 /plugin marketplace add /path/to/claude-skills
-/plugin install obsidian-cli@claude-skills
+/plugin install obsidian-cli@noomz-claude-skills
 ```
 
-New skills added to this repo show up automatically in the marketplace listing — run `/plugin install <skill>@claude-skills` to grab them.
+New skills added to this repo show up automatically in the marketplace listing — run `/plugin install <skill>@noomz-claude-skills` to grab them.
 
 ### Claude Code — manual copy
 
