@@ -1,7 +1,7 @@
 {
   "name": "obsidian-cli",
   "description": "Drive an Obsidian vault from the terminal using the official obsidian CLI. Covers daily notes, search, file operations, tags, tasks, plugin reloading, eval, and shell automation.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": {
     "name": "noomz",
     "email": "lazym0m3nt@gmail.com"

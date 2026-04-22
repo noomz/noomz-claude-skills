@@ -1,197 +1,305 @@
 # Obsidian CLI — Full Command Reference
 
+Complete reference covering every subcommand the `obsidian` CLI exposes, grouped by purpose. Verified against `obsidian help`. When this reference disagrees with your installed version, trust `obsidian help <command>`.
+
 ## Contents
-- [Argument syntax](#argument-syntax)
-- [File commands](#file-commands)
-- [Search](#search)
+- [Argument syntax and common flags](#argument-syntax-and-common-flags)
+- [Vault info](#vault-info)
+- [Files and folders](#files-and-folders)
+- [Reading and editing content](#reading-and-editing-content)
 - [Daily notes](#daily-notes)
 - [Tasks](#tasks)
 - [Tags](#tags)
-- [Linking and integrity](#linking-and-integrity)
-- [Meta commands](#meta-commands)
-- [TUI mode](#tui-mode)
+- [Properties (YAML frontmatter)](#properties-yaml-frontmatter)
+- [Search](#search)
+- [Link graph](#link-graph)
+- [Templates](#templates)
+- [Obsidian commands and hotkeys](#obsidian-commands-and-hotkeys)
+- [Workspace, tabs, bookmarks, recents](#workspace-tabs-bookmarks-recents)
+- [Plugins](#plugins)
+- [Themes and CSS snippets](#themes-and-css-snippets)
+- [Bases](#bases)
+- [Sync and history](#sync-and-history)
+- [Meta](#meta)
+- [Developer tools](#developer-tools)
 
-## Argument syntax
+## Argument syntax and common flags
 
-Obsidian CLI uses `key=value` syntax — not POSIX short/long flags. Values with spaces must be quoted.
+All arguments are `key=value` pairs. Standalone words are boolean flags. Quote values with spaces. Use `\n` and `\t` in `content=` for newlines and tabs.
 
-```bash
-obsidian search query="design review" vault="work" format=json
-```
+**File targeting** (most read/edit commands accept these):
+- `file=<name>` — resolved by name like a wiki-link
+- `path=<folder/note.md>` — exact path relative to vault root
+- `active` — force the active-file interpretation
+- omitted — default to the active file
 
-Boolean-ish switches use standalone flag form where documented (e.g., `--copy` on `files`).
+**Global flags:**
+- `vault=<name>` — target a specific vault when several are open
+- `format=<fmt>` — structured output (per-command, not universal)
+- `total` — return count instead of list (many commands)
 
-## File commands
+## Vault info
 
-### `obsidian read`
-
-Prints the contents of the currently-focused file in the running Obsidian app to stdout.
-
-```bash
-obsidian read
-obsidian read > /tmp/current.md       # pipe the active note
-```
-
-Requires a file to be open in Obsidian. Does not accept a path argument — use shell tools (`cat`, `bat`) to read an arbitrary file by absolute path.
-
-### `obsidian create`
-
-Creates a new note, optionally from a template.
-
-```bash
-obsidian create name="Meeting - 2026-04-22"
-obsidian create name="Post-mortem - outage" template=PostMortem
-```
-
-- `name=` — the note title (no `.md` suffix needed)
-- `template=` — the template name as it appears in the vault's configured templates folder. Missing templates cause the command to fail.
-- `vault=` — target a specific vault when multiple are open
-
-### `obsidian files`
-
-Lists files in the vault. Supports sorting, limiting, and clipboard output.
+| Command | Purpose |
+|---|---|
+| `obsidian vault info=path\|name\|files\|folders\|size` | Single-value lookup about the active vault |
+| `obsidian vaults [verbose] [total]` | List known vaults; `verbose` includes paths |
+| `obsidian version` | Obsidian app version |
+| `obsidian reload` | Reload the vault |
+| `obsidian restart` | Restart the Obsidian app |
 
 ```bash
-obsidian files                         # all files
-obsidian files sort=modified limit=10  # 10 most recently modified
-obsidian files sort=created limit=5 --copy   # copy list to clipboard
+VAULT=$(obsidian vault info=path)     # use in shell scripts
+obsidian vault info=size
 ```
 
-Useful arguments:
-- `sort=modified|created|name` — sort order
-- `limit=N` — cap the output
-- `--copy` — copy result to system clipboard instead of printing
-- `format=json` — machine-readable output (where supported)
+## Files and folders
 
-### `obsidian diff`
+| Command | Purpose |
+|---|---|
+| `obsidian files [folder=P] [ext=md] [total]` | List files, optionally filtered |
+| `obsidian folders [folder=P] [total]` | List folders |
+| `obsidian folder path=P [info=files\|folders\|size]` | Folder info |
+| `obsidian file [file=\|path=]` | Show file info |
+| `obsidian create name=N [path=P] [content=T] [template=T] [overwrite] [open] [newtab]` | Create a file |
+| `obsidian delete [file=\|path=] [permanent]` | Delete (moves to trash unless `permanent`) |
+| `obsidian rename [file=\|path=] name=NEW` | Rename a file |
+| `obsidian move [file=\|path=] to=DEST` | Move to folder or path |
+| `obsidian open [file=\|path=] [newtab]` | Open a file in the UI |
+| `obsidian random [folder=P] [newtab]` | Open a random note |
+| `obsidian random:read [folder=P]` | Print a random note's contents |
+| `obsidian recents [total]` | Recently opened files |
 
-Compares two versions of a file (requires Obsidian's file-recovery or version-history plugin to be active for historical versions).
+Note: `files` has **no** `sort=`, `limit=`, `--copy`, or `format=`. To get most-recent files, shell out:
 
 ```bash
-obsidian diff file="Projects/Kadnud" from=yesterday to=today
+VAULT=$(obsidian vault info=path)
+find "$VAULT" -name '*.md' -not -path '*/.obsidian/*' -type f \
+  -exec stat -f '%m %N' {} + | sort -rn | head -10 | cut -d' ' -f2-
 ```
 
-- `file=` — path relative to the vault root
-- `from=`, `to=` — version identifiers. Obsidian accepts relative keywords (`today`, `yesterday`) and ISO dates depending on plugin support.
+## Reading and editing content
 
-## Search
-
-### `obsidian search`
-
-Full-text search across the active vault.
+| Command | Purpose |
+|---|---|
+| `obsidian read [file=\|path=]` | Print file contents (default: active file) |
+| `obsidian append [file=\|path=] content=T [inline]` | Append to any file; `inline` = no leading newline |
+| `obsidian prepend [file=\|path=] content=T [inline]` | Prepend to any file |
+| `obsidian outline [file=\|path=] [format=tree\|md\|json] [total]` | Show headings |
+| `obsidian wordcount [file=\|path=] [words\|characters]` | Count words / chars |
 
 ```bash
-obsidian search query="incident response"
-obsidian search query="#retro" format=json
-obsidian search query="TODO" vault="work" format=json \
-  | jq -r '.[] | "\(.path):\(.line) \(.text)"'
+obsidian read path="Projects/Kadnud.md"
+obsidian append file="Inbox" content="- captured at $(date)"
+obsidian outline active format=md
 ```
-
-Arguments:
-- `query=` — any search expression Obsidian's search bar accepts (operators like `tag:`, `path:`, `file:` work)
-- `vault=` — restrict to a specific vault name
-- `format=json` — structured output suitable for `jq`
-
-The JSON schema for each result typically includes `path`, `line`, and `text`. Fall back to parsing plain text if `format=json` is rejected on older Obsidian versions.
 
 ## Daily notes
 
-### `obsidian daily`
+Defer to [daily-notes.md](daily-notes.md) for patterns. Command surface:
 
-Opens today's daily note in the UI, creating it from the configured daily-note template if it does not exist yet.
-
-```bash
-obsidian daily
-```
-
-Honors the Daily Notes core plugin (or Periodic Notes community plugin) settings for folder, date format, and template.
-
-### `obsidian daily:append`
-
-Appends content to today's daily note without focusing the UI. Ideal for quick capture and automation.
-
-```bash
-obsidian daily:append content="- 09:15 Started standup notes"
-obsidian daily:append content="- $(date +%H:%M) Deployed $(git rev-parse --short HEAD)"
-```
-
-See [daily-notes.md](daily-notes.md) for capture patterns.
+| Command | Purpose |
+|---|---|
+| `obsidian daily [paneType=tab\|split\|window]` | Open today's daily note |
+| `obsidian daily:append content=T [inline] [open]` | Append to today's note |
+| `obsidian daily:prepend content=T [inline] [open]` | Prepend to today's note |
+| `obsidian daily:read` | Print today's note contents |
+| `obsidian daily:path` | Print today's note absolute path |
 
 ## Tasks
 
-### `obsidian tasks`
-
-Lists tasks (`- [ ] ...` lines) from a specific note.
-
-```bash
-obsidian tasks daily            # today's daily note
-obsidian tasks "Projects/API.md"
-```
-
-Combine with `rg`, `grep`, or `awk` to filter:
+| Command | Purpose |
+|---|---|
+| `obsidian tasks [file=\|path=] [done\|todo] [status="X"] [daily] [active] [verbose] [total] [format=json\|tsv\|csv]` | List tasks |
+| `obsidian task ref=PATH:LINE [toggle\|done\|todo] [status="X"]` | Modify a single task |
 
 ```bash
-obsidian tasks daily | rg '#urgent'
-obsidian tasks daily | awk '/\[ \]/'    # only incomplete
+obsidian tasks daily todo                          # today's incomplete tasks
+obsidian tasks path="Projects/Kadnud.md" format=json
+obsidian tasks status="/" format=json              # in-progress
+obsidian task ref="Projects/Kadnud.md:42" done
 ```
-
-If the installed Obsidian version supports `format=json` for tasks, each object typically includes `text`, `file`, `line`, `checked`, and any inline tags.
 
 ## Tags
 
-### `obsidian tags counts`
-
-Lists every tag in the vault with its occurrence count.
-
-```bash
-obsidian tags counts
-obsidian tags counts format=json | jq 'sort_by(.count) | reverse | .[0:10]'
-```
-
-Use this to answer "what do I write about most" or to audit for typos (`#kubernetes` vs `#k8s`).
-
-## Linking and integrity
-
-### `obsidian unresolved`
-
-Lists internal wiki-links (`[[Note]]`) that point to non-existent notes.
-
-```bash
-obsidian unresolved
-obsidian unresolved format=json \
-  | jq -r '.[] | "\(.source) → \(.target)"'
-```
-
-Each entry typically has `source` (the note containing the link) and `target` (the missing note name). Use in CI or pre-commit hooks to catch broken references before publishing.
-
-## Meta commands
-
-### `obsidian help`
-
-Prints usage information. Append a subcommand to drill in:
-
-```bash
-obsidian help
-obsidian help search
-obsidian help daily:append
-```
-
-Treat `obsidian help <cmd>` as the source of truth when the Obsidian version on the user's machine differs from these docs.
-
-### `obsidian` (no arguments)
-
-Launches the interactive TUI — see [TUI mode](#tui-mode).
-
-## TUI mode
-
-Running `obsidian` bare opens a REPL with autocomplete against the full command surface.
-
-| Key | Action |
+| Command | Purpose |
 |---|---|
-| `Tab` | Accept autocomplete |
-| `Ctrl+A` / `Ctrl+E` | Start / end of line |
-| `Ctrl+U` / `Ctrl+K` | Delete to start / end |
-| `Ctrl+R` | Reverse history search |
-| `Ctrl+C` | Exit |
+| `obsidian tags [file=\|active] [counts] [sort=count] [total] [format=json\|tsv\|csv]` | List tags |
+| `obsidian tag name=T [total] [verbose]` | Single-tag lookup; `verbose` lists files |
 
-TUI mode is best for interactive exploration; scripts should use one-shot invocations for reproducibility.
+Default format is **tsv**. Use `format=json` for pipelines:
+
+```bash
+obsidian tags counts format=json \
+  | jq -r '.[] | "\(.count)\t\(.name)"' | sort -rn | head
+obsidian tag name="urgent" verbose
+```
+
+## Properties (YAML frontmatter)
+
+| Command | Purpose |
+|---|---|
+| `obsidian properties [file=\|active] [name=N] [counts] [sort=count] [total] [format=yaml\|json\|tsv]` | List properties |
+| `obsidian property:read name=N [file=\|path=]` | Read a single property value |
+| `obsidian property:set name=N value=V [type=text\|list\|number\|checkbox\|date\|datetime] [file=\|path=]` | Set a property |
+| `obsidian property:remove name=N [file=\|path=]` | Remove a property |
+
+```bash
+obsidian property:set name=status value=done file="Projects/Kadnud"
+obsidian property:set name=tags value="urgent,backend" type=list file="Inbox"
+obsidian properties active
+```
+
+## Search
+
+| Command | Purpose |
+|---|---|
+| `obsidian search query=Q [path=F] [limit=N] [case] [total] [format=text\|json]` | Full-text search |
+| `obsidian search:context query=Q [path=F] [limit=N] [case] [format=text\|json]` | Search with surrounding line context |
+| `obsidian search:open [query=Q]` | Open search view in the UI |
+
+`search` default format is **text**. `format=json` returns an array of match objects.
+
+```bash
+obsidian search query="incident response" format=json limit=5
+obsidian search query="tag:#retro path:Meetings" format=json
+obsidian search:context query="TODO" format=json
+```
+
+## Link graph
+
+| Command | Purpose |
+|---|---|
+| `obsidian links [file=\|path=] [total]` | Outgoing links from a file |
+| `obsidian backlinks [file=\|path=] [counts] [total] [format=json\|tsv\|csv]` | Incoming links to a file |
+| `obsidian unresolved [counts] [verbose] [total] [format=json\|tsv\|csv]` | Dangling wiki-links vault-wide |
+| `obsidian orphans [all] [total]` | Files with no incoming links |
+| `obsidian deadends [all] [total]` | Files with no outgoing links |
+
+```bash
+obsidian backlinks file="Kadnud" counts format=json
+obsidian unresolved verbose format=json
+obsidian orphans total
+```
+
+## Templates
+
+| Command | Purpose |
+|---|---|
+| `obsidian templates [total]` | List available templates |
+| `obsidian template:read name=T [resolve] [title=T]` | Read a template (`resolve` expands variables) |
+| `obsidian template:insert name=T` | Insert a template into the active file |
+
+## Obsidian commands and hotkeys
+
+**Power feature**: `command` executes any entry from Obsidian's command palette, scripting anything the UI can do.
+
+| Command | Purpose |
+|---|---|
+| `obsidian commands [filter=PREFIX]` | List command IDs |
+| `obsidian command id=ID` | Execute a command by ID |
+| `obsidian hotkeys [verbose] [all] [total] [format=json\|tsv\|csv]` | List hotkeys |
+| `obsidian hotkey id=ID [verbose]` | Show hotkey for a command |
+
+```bash
+obsidian commands filter=editor:
+obsidian command id=editor:toggle-bold
+obsidian command id=workspace:close-others
+obsidian command id=app:reload
+```
+
+## Workspace, tabs, bookmarks, recents
+
+| Command | Purpose |
+|---|---|
+| `obsidian workspace [ids]` | Show workspace tree |
+| `obsidian tabs [ids]` | List open tabs |
+| `obsidian tab:open [group=ID] [file=P] [view=T]` | Open a new tab |
+| `obsidian bookmarks [verbose] [total] [format=json\|tsv\|csv]` | List bookmarks |
+| `obsidian bookmark [file=\|subpath=\|folder=\|search=\|url=] [title=T]` | Add a bookmark |
+
+## Plugins
+
+| Command | Purpose |
+|---|---|
+| `obsidian plugins [filter=core\|community] [versions] [format=json\|tsv\|csv]` | List installed plugins |
+| `obsidian plugins:enabled [filter=core\|community] [versions] [format=json\|tsv\|csv]` | Enabled plugins |
+| `obsidian plugin id=P` | Plugin info |
+| `obsidian plugin:enable id=P [filter=core\|community]` | Enable |
+| `obsidian plugin:disable id=P [filter=core\|community]` | Disable |
+| `obsidian plugin:install id=P [enable]` | Install community plugin |
+| `obsidian plugin:uninstall id=P` | Uninstall |
+| `obsidian plugin:reload id=P` | Reload (for developers) |
+| `obsidian plugins:restrict [on\|off]` | Toggle restricted mode |
+
+See [developer.md](developer.md) for plugin dev workflows.
+
+## Themes and CSS snippets
+
+| Command | Purpose |
+|---|---|
+| `obsidian themes [versions]` | List installed themes |
+| `obsidian theme [name=N]` | Active theme (or details of `name=`) |
+| `obsidian theme:set name=N` | Activate a theme; empty name = default |
+| `obsidian theme:install name=N [enable]` | Install a community theme |
+| `obsidian theme:uninstall name=N` | Uninstall |
+| `obsidian snippets` | List installed CSS snippets |
+| `obsidian snippets:enabled` | List enabled snippets |
+| `obsidian snippet:enable name=N` | Enable a snippet |
+| `obsidian snippet:disable name=N` | Disable |
+
+## Bases
+
+Bases are Obsidian's database-like views. Treat each base file as a structured dataset with named views.
+
+| Command | Purpose |
+|---|---|
+| `obsidian bases` | List all base files |
+| `obsidian base:views [file=\|path=]` | List views in a base |
+| `obsidian base:query [file=\|path=] [view=V] [format=json\|csv\|tsv\|md\|paths]` | Query a view |
+| `obsidian base:create [file=\|path=] [view=V] name=N [content=T] [open] [newtab]` | Create an item in a base |
+
+```bash
+obsidian bases
+obsidian base:query file="Projects.base" view="Active" format=json
+```
+
+## Sync and history
+
+| Command | Purpose |
+|---|---|
+| `obsidian sync [on\|off]` | Pause / resume Obsidian Sync |
+| `obsidian sync:status` | Show sync status |
+| `obsidian sync:history [file=\|path=] [total]` | Version history for a file |
+| `obsidian sync:read [file=\|path=] version=N` | Read a historical version |
+| `obsidian sync:restore [file=\|path=] version=N` | Restore a historical version |
+| `obsidian sync:open [file=\|path=]` | Open sync history UI |
+| `obsidian sync:deleted [total]` | Deleted files in sync |
+| `obsidian history [file=\|path=]` | Local file history versions |
+| `obsidian history:list` | Files with local history |
+| `obsidian history:open [file=\|path=]` | Open file-recovery UI |
+| `obsidian history:read [file=\|path=] [version=N]` | Read a local history version (default version 1) |
+| `obsidian history:restore [file=\|path=] version=N` | Restore a local version |
+| `obsidian diff [file=\|path=] from=N to=N [filter=local\|sync]` | Diff two version numbers |
+
+Note: `diff` uses **integer version numbers**, not dates. Use `history` or `sync:history` to list available numbers first.
+
+## Meta
+
+| Command | Purpose |
+|---|---|
+| `obsidian help [command]` | Authoritative reference for the installed version |
+| `obsidian version` | App version |
+| `obsidian reload` | Reload vault |
+| `obsidian restart` | Restart the app |
+
+Always run `obsidian help <command>` when the behavior on your machine differs from this reference.
+
+## Developer tools
+
+Covered in [developer.md](developer.md). Surface:
+
+- `obsidian eval code=<js>` — run JavaScript in the Obsidian process
+- `obsidian devtools` — toggle Chromium DevTools
+- `obsidian dev:dom`, `dev:css`, `dev:console`, `dev:errors`, `dev:screenshot` — inspection
+- `obsidian dev:cdp`, `dev:debug`, `dev:mobile` — advanced
