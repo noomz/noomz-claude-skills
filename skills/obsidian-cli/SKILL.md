@@ -9,15 +9,25 @@ The `obsidian` command controls a running Obsidian app from the terminal via rou
 
 > Official docs: <https://obsidian.md/cli>
 
+**Freedom level**: low on command syntax (use the exact `key=value` form verified via `obsidian help <command>`); medium on workflow composition (adapt the patterns in this skill to context).
+
 ## Prerequisites
 
-Verify the CLI is installed and current:
+Verify the CLI is installed, Obsidian is running, and the vault is reachable. Run all three:
 
 ```bash
-command -v obsidian && obsidian version
+command -v obsidian \
+  && pgrep -qaf Obsidian \
+  && obsidian vault info=name
 ```
 
-If missing or if `obsidian version` prints *"Your Obsidian installer is out of date"*, tell the user to:
+If all three succeed and the last prints a vault name, the skill is operational. If any fails, walk the user through setup — the likely failures:
+
+- `command -v obsidian` fails → CLI not installed or not on PATH (see steps below)
+- `pgrep` fails → Obsidian app isn't running; tell the user to launch it
+- `obsidian vault info=name` hangs → Obsidian is running but the CLI can't reach it (installer out of date, or wrong vault focused)
+
+If the installer is out of date — `obsidian version` will print *"Your Obsidian installer is out of date"* — tell the user to:
 
 1. Download the latest installer from <https://obsidian.md/download> (their notes and vault config are separate — reinstalling only replaces the app).
 2. Enable the CLI: **Settings → General → Command-line interface**.
@@ -147,46 +157,16 @@ For cross-vault harvesting without `obsidian`, see [reference/automation.md](ref
 
 ### Pattern 5 — Execute Obsidian commands
 
-`obsidian command id=<id>` runs any command from Obsidian's command palette. Discover available IDs:
+`obsidian command id=<id>` runs any command from Obsidian's command palette — the single most powerful automation primitive. Anything Obsidian can do via the palette is scriptable.
 
 ```bash
 obsidian commands filter=editor: | head
 obsidian command id=editor:toggle-bold
-obsidian command id=workspace:close-others
 ```
 
-This is the single most powerful automation primitive — anything Obsidian can do via the palette is scriptable.
+**Caution**: palette IDs include destructive actions (`app:quit`, `app:reload`, `workspace:close-others`, `editor:delete-file`). Confirm intent before invoking on the user's behalf — treat these like `rm -rf`.
 
-### Pattern 6 — Manipulate frontmatter
-
-```bash
-obsidian property:set name=status value=done file="Projects/Kadnud"
-obsidian property:set name=tags value="urgent,backend" type=list file="Inbox"
-obsidian properties active counts          # list frontmatter on active file
-```
-
-Supported types: `text`, `list`, `number`, `checkbox`, `date`, `datetime`.
-
-### Pattern 7 — Get the vault path for shell tooling
-
-```bash
-VAULT=$(obsidian vault info=path)
-rg -l 'TODO' "$VAULT" --glob '*.md'
-```
-
-Stop hardcoding vault paths — ask the CLI.
-
-### Pattern 8 — Headless automation
-
-`obsidian` exits after each invocation, so it composes cleanly in scripts:
-
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-obsidian daily:append content="- Build: $(git rev-parse --short HEAD) passed"
-```
-
-For scheduled runs, Obsidian must be running or be launched by the script. See [reference/automation.md](reference/automation.md#scheduled-runs).
+For frontmatter edits, vault-path discovery, and headless scripts see the Decision guide below and [reference/automation.md](reference/automation.md).
 
 ## Output formats
 
