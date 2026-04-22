@@ -14,7 +14,29 @@ More skills incoming — see [`CONTRIBUTING.md`](CONTRIBUTING.md) to add your ow
 
 ## Installation
 
-### Claude Code (per-project)
+### Claude Code — `/plugin` (recommended)
+
+This repo is a Claude Code plugin marketplace. Install from inside Claude Code:
+
+```
+/plugin marketplace add noomz/claude-skills
+/plugin install obsidian-cli@claude-skills
+```
+
+To install from a local clone (useful while iterating):
+
+```
+/plugin marketplace add /path/to/claude-skills
+/plugin install obsidian-cli@claude-skills
+```
+
+New skills added to this repo show up automatically in the marketplace listing — run `/plugin install <skill>@claude-skills` to grab them.
+
+### Claude Code — manual copy
+
+If you prefer not to use the plugin system, drop the skill directly into the skills folder.
+
+Per-project:
 
 ```bash
 cd your-project/
@@ -22,14 +44,14 @@ mkdir -p .claude/skills
 cp -r /path/to/claude-skills/skills/obsidian-cli .claude/skills/
 ```
 
-### Claude Code (global, all projects)
+Global (all projects):
 
 ```bash
 mkdir -p ~/.claude/skills
 cp -r /path/to/claude-skills/skills/obsidian-cli ~/.claude/skills/
 ```
 
-Alternatively, symlink so updates flow through:
+Or symlink so updates flow through:
 
 ```bash
 ln -s "$(pwd)/skills/obsidian-cli" ~/.claude/skills/obsidian-cli
@@ -52,11 +74,15 @@ Upload via the `/v1/skills` endpoint. See the [API skills guide](https://platfor
 
 ```
 claude-skills/
+├── .claude-plugin/
+│   └── marketplace.json         # Plugin marketplace manifest
 ├── README.md
 ├── LICENSE
 ├── CONTRIBUTING.md
 └── skills/
     └── obsidian-cli/
+        ├── .claude-plugin/
+        │   └── plugin.json      # Individual plugin manifest
         ├── SKILL.md
         ├── reference/
         │   ├── commands.md

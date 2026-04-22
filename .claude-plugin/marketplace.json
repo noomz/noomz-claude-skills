@@ -1,0 +1,14 @@
+{
+  "name": "claude-skills",
+  "owner": {
+    "name": "noomz",
+    "email": "lazym0m3nt@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "obsidian-cli",
+      "source": "./skills/obsidian-cli",
+      "description": "Drive an Obsidian vault from the terminal — daily notes, search, file ops, tags, tasks, plugin reloading, and headless scripting via the official obsidian CLI."
+    }
+  ]
+}
