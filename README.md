@@ -19,7 +19,7 @@ More skills incoming — see [`CONTRIBUTING.md`](CONTRIBUTING.md) to add your ow
 This repo is a Claude Code plugin marketplace. Install from inside Claude Code:
 
 ```
-/plugin marketplace add noomz/claude-skills
+/plugin marketplace add noomz/noomz-claude-skills
 /plugin install obsidian-cli@claude-skills
 ```
 

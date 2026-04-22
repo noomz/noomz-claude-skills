@@ -6,7 +6,7 @@
     "name": "noomz",
     "email": "lazym0m3nt@gmail.com"
   },
-  "homepage": "https://github.com/noomz/claude-skills",
+  "homepage": "https://github.com/noomz/noomz-claude-skills",
   "license": "MIT",
   "keywords": ["obsidian", "cli", "notes", "markdown", "vault", "daily-notes", "automation"]
 }
