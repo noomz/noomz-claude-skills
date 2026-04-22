@@ -70,6 +70,28 @@ zip -r obsidian-cli.zip obsidian-cli
 
 Upload via the `/v1/skills` endpoint. See the [API skills guide](https://platform.claude.com/docs/en/build-with-claude/skills-guide).
 
+## Permissions
+
+Skills in this repo declare `allowed-tools` in their frontmatter so Claude Code won't prompt on every invocation **while the skill is active**. For example, `obsidian-cli` pre-allows `Bash(obsidian:*)`, `Bash(jq:*)`, and `Bash(pgrep:*)`.
+
+That covers skill-scoped usage. If you want the same commands allowed **globally** (outside the skill, in any conversation), add them once via:
+
+```
+/permissions
+```
+
+…then add `Bash(obsidian *)` to the allow list. Or edit `.claude/settings.json` directly:
+
+```json
+{
+  "permissions": {
+    "allow": ["Bash(obsidian *)", "Bash(jq:*)"]
+  }
+}
+```
+
+Note: at the time of writing, Claude Code plugins cannot pre-declare `permissions` in a plugin-shipped `settings.json` (only `agent` and `subagentStatusLine` are supported). Skill-level `allowed-tools` is the supported mechanism.
+
 ## Repo layout
 
 ```
