@@ -8,7 +8,7 @@ Each skill lives in its own directory under `skills/` and follows the [official 
 
 | Skill | Description |
 |---|---|
-| [`obsidian-cli`](skills/obsidian-cli) | Drive an Obsidian vault from the terminal — daily notes, search, file ops, tags, tasks, plugin reloading, headless scripting. |
+| [`obsidian`](skills/obsidian) | Drive an Obsidian vault from the terminal — daily notes, search, file ops, tags, tasks, plugin reloading, headless scripting. |
 
 More skills incoming — see [`CONTRIBUTING.md`](CONTRIBUTING.md) to add your own.
 
@@ -20,14 +20,14 @@ This repo is a Claude Code plugin marketplace. Install from inside Claude Code:
 
 ```
 /plugin marketplace add noomz/noomz-claude-skills
-/plugin install obsidian-cli@noomz-claude-skills
+/plugin install obsidian@noomz-claude-skills
 ```
 
 To install from a local clone (useful while iterating):
 
 ```
 /plugin marketplace add /path/to/claude-skills
-/plugin install obsidian-cli@noomz-claude-skills
+/plugin install obsidian@noomz-claude-skills
 ```
 
 New skills added to this repo show up automatically in the marketplace listing — run `/plugin install <skill>@noomz-claude-skills` to grab them.
@@ -41,20 +41,20 @@ Per-project:
 ```bash
 cd your-project/
 mkdir -p .claude/skills
-cp -r /path/to/claude-skills/skills/obsidian-cli .claude/skills/
+cp -r /path/to/claude-skills/skills/obsidian .claude/skills/
 ```
 
 Global (all projects):
 
 ```bash
 mkdir -p ~/.claude/skills
-cp -r /path/to/claude-skills/skills/obsidian-cli ~/.claude/skills/
+cp -r /path/to/claude-skills/skills/obsidian ~/.claude/skills/
 ```
 
 Or symlink so updates flow through:
 
 ```bash
-ln -s "$(pwd)/skills/obsidian-cli" ~/.claude/skills/obsidian-cli
+ln -s "$(pwd)/skills/obsidian" ~/.claude/skills/obsidian
 ```
 
 ### Claude.ai
@@ -63,7 +63,7 @@ Zip the skill directory and upload it via **Settings → Features → Skills**:
 
 ```bash
 cd skills/
-zip -r obsidian-cli.zip obsidian-cli
+zip -r obsidian.zip obsidian
 ```
 
 ### Claude API
@@ -72,7 +72,7 @@ Upload via the `/v1/skills` endpoint. See the [API skills guide](https://platfor
 
 ## Permissions
 
-Skills in this repo declare `allowed-tools` in their frontmatter so Claude Code won't prompt on every invocation **while the skill is active**. For example, `obsidian-cli` pre-allows `Bash(obsidian:*)`, `Bash(jq:*)`, and `Bash(pgrep:*)`.
+Skills in this repo declare `allowed-tools` in their frontmatter so Claude Code won't prompt on every invocation **while the skill is active**. For example, `obsidian` pre-allows `Bash(obsidian:*)`, `Bash(jq:*)`, and `Bash(pgrep:*)`.
 
 That covers skill-scoped usage. If you want the same commands allowed **globally** (outside the skill, in any conversation), add them once via:
 
@@ -102,7 +102,7 @@ claude-skills/
 ├── LICENSE
 ├── CONTRIBUTING.md
 └── skills/
-    └── obsidian-cli/
+    └── obsidian/
         ├── .claude-plugin/
         │   └── plugin.json      # Individual plugin manifest
         ├── SKILL.md

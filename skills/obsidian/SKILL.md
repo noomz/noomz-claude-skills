@@ -1,5 +1,5 @@
 ---
-name: obsidian-cli
+name: obsidian
 description: Drives an Obsidian vault from the command line using the official `obsidian` CLI — opens and appends daily notes, searches vault contents, creates and edits notes, lists files and folders, reads and sets frontmatter properties, manages tasks and tags, queries links and backlinks, executes any Obsidian command, manipulates plugins and themes, inspects Bases, and runs arbitrary JavaScript in the running app. Use when the user mentions Obsidian, an Obsidian vault, markdown notes, daily notes, note-taking automation, the `obsidian` command, vault scripting, or plugin development for Obsidian.
 allowed-tools: Bash(obsidian:*), Bash(jq:*), Bash(pgrep:*)
 ---
