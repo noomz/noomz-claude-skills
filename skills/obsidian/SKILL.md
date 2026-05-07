@@ -60,6 +60,17 @@ obsidian tasks daily todo                   # incomplete tasks from today's note
 obsidian vault info=path                    # absolute path to the active vault
 ```
 
+## Vault conventions
+
+Obsidian vaults often carry local human conventions that matter more than generic CLI examples. Before creating, renaming, moving, archiving, or mass-editing notes, check for vault-local guidance near the vault root:
+
+```bash
+VAULT=$(obsidian vault info=path)
+find "$VAULT" -maxdepth 3 \( -name AGENTS.md -o -path '*/_meta/Conventions.md' -o -path '*/_meta/MOCs/Index.md' \) -print
+```
+
+If present, read those files first and follow them for note placement, naming, links, tags, templates, and archive rules. Example conventions seen in one vault: unique filenames vault-wide, bare `[[Filename]]` wikilinks, no root notes, topic MOCs instead of nested subfolders, and `Inbox/` when unsure. Treat these as examples only — do not impose them on vaults unless their own guidance says so.
+
 ## Command categories
 
 Jump to the reference file matching the task:
