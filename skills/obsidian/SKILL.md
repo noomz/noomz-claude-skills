@@ -12,6 +12,18 @@ The `obsidian` command controls a running Obsidian app from the terminal via rou
 
 **Freedom level**: low on command syntax (use the exact `key=value` form verified via `obsidian help <command>`); medium on workflow composition (adapt the patterns in this skill to context).
 
+## Vault discovery
+
+Find the active vault path. Do not use filesystem `find` — `obsidian vaults` is instant:
+
+```bash
+obsidian vaults verbose               # all vaults + paths
+obsidian vault info=path              # active vault path
+VAULT=$(obsidian vault info=path)     # capture for scripts
+```
+
+If multiple vaults are open, pin with `vault="Name"` on every command. `obsidian vaults` is the CLI's vault list — it beats filesystem `find` by orders of magnitude.
+
 ## Prerequisites
 
 Verify the CLI is installed, Obsidian is running, and the vault is reachable. Run all three:
@@ -49,6 +61,33 @@ Commands use `key=value` arguments, not POSIX flags. Standalone words (`total`, 
 
 **Escapes in `content=`**: use `\n` for newline and `\t` for tab inside quoted content values.
 
+## Help and command reference (pipe warning)
+
+`obsidian help` and `obsidian help <command>` print the full CLI reference. Use it when the command syntax is unclear.
+
+⚠️ **Never pipe `obsidian help` to `head`** — the CLI does not handle SIGPIPE from early pipe close and will hang.
+
+- ✓ `obsidian help > /tmp/help.txt` then read the file
+- ✓ `obsidian help search 2>&1 > /tmp/search-help.txt`
+- ✓ `obsidian help | wc` — works (reads to EOF)
+- ✗ `obsidian help | head -50` — **will hang** (head closes pipe early → SIGPIPE)
+
+The skill already documents command syntax. Skip the help lookup when the syntax is clear from this skill.
+
+## Search
+
+Full-text search supports tag, path, and regular text queries. Use `format=json` for agent pipelines.
+
+```bash
+obsidian search query="kubernetes"                          # plain text
+obsidian search query="tag:#manual"                         # tag search
+obsidian search query="tag:#meeting path:Notes/2026"        # tag + folder filter
+obsidian search query="kubernetes" format=json limit=10     # structured output
+obsidian search:context query="TODO" format=json            # with surrounding lines
+```
+
+Search returns file paths and match snippets. Follow up with `obsidian read` for full content.
+
 ## Quick start
 
 ```bash
@@ -66,6 +105,7 @@ Obsidian vaults often carry local human conventions that matter more than generi
 
 ```bash
 VAULT=$(obsidian vault info=path)
+# Use find ONLY for convention files inside the vault, never for vault discovery
 find "$VAULT" -maxdepth 3 \( -name AGENTS.md -o -path '*/_meta/Conventions.md' -o -path '*/_meta/MOCs/Index.md' \) -print
 ```
 
@@ -130,12 +170,19 @@ obsidian daily:append content="- $(date +%H:%M) $MESSAGE"
 
 ### Pattern 2 — Search, then read
 
-Search returns JSON with matches; follow up by reading a hit:
+Search returns JSON with matches; follow up by reading a hit. Use `format=json` for reliable parsing.
 
 ```bash
 path=$(obsidian search query="incident response" format=json limit=1 \
   | jq -r '.[0].path')
 obsidian read path="$path"
+```
+
+Tag and path filters go inside the `query=` value:
+
+```bash
+obsidian search query="tag:#todo" format=json limit=20
+obsidian search query="tag:#meeting path:Work/2026" format=json
 ```
 
 When the user says "find my notes about X" without asking to open them, return the paths and let them pick.
@@ -172,7 +219,7 @@ For cross-vault harvesting without `obsidian`, see [reference/automation.md](ref
 `obsidian command id=<id>` runs any command from Obsidian's command palette — the single most powerful automation primitive. Anything Obsidian can do via the palette is scriptable.
 
 ```bash
-obsidian commands filter=editor: | head
+obsidian commands filter=editor:          # list editor commands (redirect to file if too long)
 obsidian command id=editor:toggle-bold
 ```
 
@@ -213,6 +260,7 @@ Prefer `format=json` when piping to `jq` or feeding an agent. Text output is for
 | "open today's note" | `obsidian daily` |
 | "read today's note" | `obsidian daily:read` |
 | "find notes about X" | `obsidian search query="X" format=json limit=10` |
+| "find notes with tag #X" | `obsidian search query="tag:#X" format=json limit=20` |
 | "show me my tasks" | `obsidian tasks daily todo` |
 | "list my folders" | `obsidian folders` |
 | "list my tags" | `obsidian tags counts` |

@@ -213,3 +213,5 @@ obsidian search query="$query" format=json limit=5 \
 - **Don't** parse text output in long-lived scripts. Switch to `format=json` the second your script has a user.
 - **Don't** assume the active vault in cron — scheduled jobs run without a focused window. Pin `vault=` explicitly.
 - **Don't** use `daily:append` for destructive changes (e.g., replacing a heading). It only appends; use direct file edits or `command id=X` for the UI equivalent.
+- **Don't** use filesystem `find` to discover the vault path — use `obsidian vaults` or `obsidian vault info=path`. `find` is slow and fragile.
+- **Don't** pipe `obsidian help` to `head` or `wc` — the CLI doesn't handle SIGPIPE and will hang. Redirect to a file (`obsidian help > /tmp/help.txt`) instead.
