@@ -10,6 +10,12 @@ The `obsidian` command controls a running Obsidian app from the terminal via rou
 
 > Official docs: <https://obsidian.md/cli>
 
+> [!IMPORTANT]
+> **Two non-obvious rules — read before running anything:**
+>
+> 1. **No `--help` / `-h` flags exist.** The CLI uses subcommands: `obsidian help` and `obsidian help <command>`. Running `obsidian --help` will not print help; it falls through to the default vault-open behavior or hangs depending on state.
+> 2. **Never pipe any `obsidian` command to `head`, `grep -m`, `sed q`, or any consumer that closes the pipe early.** The CLI does not handle SIGPIPE and will hang for 30+ seconds. Use `> /tmp/out.txt` then read the file instead.
+
 **Freedom level**: low on command syntax (use the exact `key=value` form verified via `obsidian help <command>`); medium on workflow composition (adapt the patterns in this skill to context).
 
 ## Vault discovery
@@ -49,13 +55,27 @@ If the installer is out of date — `obsidian version` will print *"Your Obsidia
 
 Obsidian must be **running** for CLI commands to work — the CLI proxies into the live app.
 
+**Smoke test** — once prerequisites pass, confirm the round-trip works end-to-end:
+
+```bash
+obsidian daily:path                                 # prints today's daily note path
+obsidian vault info=name                            # prints active vault name
+obsidian search query="test" format=json limit=1    # exercise full read pipeline
+```
+
+All three commands run to completion (no pipe), so they verify the live app responds without risking the SIGPIPE hang.
+
+If `daily:path` errors with "no daily notes plugin," the user has the Daily Notes core plugin disabled — enable it in **Settings → Core plugins** before using any `daily*` command.
+
 ## Argument syntax
 
 Commands use `key=value` arguments, not POSIX flags. Standalone words (`total`, `counts`, `verbose`, `active`, `done`, `todo`, `open`, `newtab`) act as boolean flags.
 
 - ✓ `obsidian search query="error handling" vault="work" format=json`
 - ✓ `obsidian tasks daily todo counts`
+- ✓ `obsidian help` / `obsidian help search` — full reference
 - ✗ `obsidian search --query "error handling"` (will not work)
+- ✗ `obsidian --help` / `obsidian -h` (no such flags — use `obsidian help`)
 
 **File targeting**: most commands accept either `file=<name>` (resolved by name like a wiki-link) or `path=<folder/note.md>` (exact path). With neither, commands default to the **active file** in Obsidian. The `active` flag forces the active-file interpretation explicitly.
 
@@ -63,14 +83,17 @@ Commands use `key=value` arguments, not POSIX flags. Standalone words (`total`, 
 
 ## Help and command reference (pipe warning)
 
-`obsidian help` and `obsidian help <command>` print the full CLI reference. Use it when the command syntax is unclear.
+`obsidian help` and `obsidian help <command>` print the full CLI reference. Use it when the command syntax is unclear. There is **no `--help` or `-h` flag** — `obsidian --help` will not work.
 
-⚠️ **Never pipe `obsidian help` to `head`** — the CLI does not handle SIGPIPE from early pipe close and will hang.
+⚠️ **Never pipe any `obsidian` command to a consumer that closes the pipe early** — the CLI does not handle SIGPIPE and will hang for 30+ seconds. This applies to **every** subcommand, not just `help`. Affected consumers: `head`, `tail -n` (with small N on a long stream), `grep -m`, `sed q`, `awk 'NR==1{exit}'`, and any pager you quit out of early.
 
 - ✓ `obsidian help > /tmp/help.txt` then read the file
 - ✓ `obsidian help search 2>&1 > /tmp/search-help.txt`
 - ✓ `obsidian help | wc` — works (reads to EOF)
+- ✓ `obsidian search query="x" format=json limit=5` — bound results via `limit=`, not `| head`
 - ✗ `obsidian help | head -50` — **will hang** (head closes pipe early → SIGPIPE)
+- ✗ `obsidian --help | head -40` — **double-wrong**: no `--help` flag, and pipe hangs
+- ✗ `obsidian files | head` — same hang on any subcommand, not just `help`
 
 The skill already documents command syntax. Skip the help lookup when the syntax is clear from this skill.
 
