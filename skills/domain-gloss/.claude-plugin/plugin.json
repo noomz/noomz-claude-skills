@@ -1,0 +1,23 @@
+{
+  "name": "domain-gloss",
+  "description": "Keep the English domain term and attach a short inline gloss in your first language — so insurance, legal, finance, and nonprofit jargon teaches instead of blocking. Covers specialist terms and false friends, the easy-looking words that mean something else in the domain.",
+  "version": "0.1.0",
+  "author": {
+    "name": "noomz",
+    "email": "lazym0m3nt@gmail.com"
+  },
+  "homepage": "https://github.com/noomz/noomz-claude-skills",
+  "license": "MIT",
+  "keywords": [
+    "output-format",
+    "bilingual",
+    "gloss",
+    "jargon",
+    "domain-vocabulary",
+    "esl",
+    "localization",
+    "insurance",
+    "legal",
+    "onboarding"
+  ]
+}

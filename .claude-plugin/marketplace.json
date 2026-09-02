@@ -14,6 +14,11 @@
       "name": "readout",
       "source": "./skills/readout",
       "description": "Report operational results as terse machine readouts \u2014 delta bridges, scan tables, verdict blocks, alarm stacks, and event sequences \u2014 instead of narrative prose."
+    },
+    {
+      "name": "domain-gloss",
+      "source": "./skills/domain-gloss",
+      "description": "Keep the English domain term and attach a short inline gloss in your first language \u2014 so insurance, legal, finance, and nonprofit jargon teaches instead of blocking."
     }
   ]
 }
