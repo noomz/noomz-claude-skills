@@ -1,7 +1,7 @@
 {
   "name": "readout",
   "description": "Report operational results as terse machine readouts \u2014 delta bridges, scan tables, verdict blocks, alarm stacks, and event sequences \u2014 instead of narrative prose. Covers costs, counts, durations, status, test results, incidents, and corrections.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "author": {
     "name": "noomz",
     "email": "lazym0m3nt@gmail.com"

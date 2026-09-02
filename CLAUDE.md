@@ -51,7 +51,7 @@ sys.exit(1 if errs else 0) if errs else print('frontmatter OK')
 python3 -c "import json, glob; [json.load(open(p)) for p in glob.glob('**/.claude-plugin/*.json', recursive=True)]; print('JSON OK')"
 
 # 3. SKILL.md line cap (progressive disclosure: under 500)
-awk 'END{if(NR>500)print FILENAME,"exceeds 500 lines:",NR}' skills/*/SKILL.md
+awk 'FNR>500{print FILENAME,"exceeds 500 lines:",FNR}' skills/*/SKILL.md
 ```
 
 ## Content rules that matter here

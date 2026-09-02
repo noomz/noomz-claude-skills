@@ -3,9 +3,29 @@
 Each entry gives the template to copy verbatim, a worked example, and the failure
 mode that tells you when to reach for something else.
 
-Rules from `SKILL.md` apply to all five: provenance tag on every number, a
-reserved `notes:` line for full sentences, no computed multi-space padding, and
-verbatim label text.
+Rules from `SKILL.md` bind all five: provenance on every number, a reserved
+`notes:` line for full sentences, no hand-aligned columns, verbatim label text.
+
+## State vocabulary
+
+Used by Scan Table and Annunciator Stack. Do not invent states outside these.
+
+| State | Meaning |
+|---|---|
+| `OK` | Within limit |
+| `HI` | Above limit |
+| `LO` | Below limit |
+| `FAIL` | Item errored — distinct from being out of range |
+| `NODATA` | Item failed to report. **Not the same as zero.** Print the row with `--` |
+
+Severity keywords, highest first. Raise one only when the threshold came from a
+real source — an SLO, a config value, a documented limit.
+
+| Keyword | Meaning |
+|---|---|
+| `WARN` | Acting now prevents impact, or impact is already occurring |
+| `CAUT` | Will need action, not yet urgent |
+| `ADVY` | Worth knowing, no action implied |
 
 ---
 
@@ -13,46 +33,53 @@ verbatim label text.
 
 **Use when** one number became another: a correction to something you stated
 earlier, estimate vs actual, forecast variance, a benchmark rerun that disagrees
-with the first run, "you said 2 hours and it took 6".
+with the first run, or "why did this change" **with the evidence in hand**.
 
-The point is that the gap is **itemized and must sum**. A flat before/after leaves
-the reader asking where the difference came from; the bridge walks it.
+The point is that the gap is **itemized and must sum**. A flat before/after
+leaves the reader asking where the difference came from; the bridge walks it.
+`gap:` is a because-decomposition — this is the structure that legitimately
+answers a "why" question, provided you read the source.
 
 ### Template
 
 ```
 was: <value> (<provenance>, <basis>)
 now: <value> (<provenance>, <basis>)
-delta: <signed value> (<percent>)
+delta: <signed value> (<percent>) (<provenance>)
 
 gap:
-- <driver>: <signed value>
-- <driver>: <signed value>
+- <driver>: <signed value> (<provenance>)
+- <driver>: <signed value> (<provenance>)
 
 notes: <sentence, only if a fact changes how the numbers read>
 ```
+
+Max 6 drivers; past that, group the tail into one `- other:` line.
 
 ### Example
 
 ```
 was: $40.00/mo (est., guessed from RAM size)
 now: $79.20/mo (measured, Aug invoice lines 12-14)
-delta: +$39.20/mo (+98%)
+delta: +$39.20/mo (+98%) (est., inherits the estimated prior)
 
 gap:
-- sizing: assumed 1 vCPU, actual 2 vCPU: +$24.00
-- backups: weekly paid plan uncounted: +$8.00
-- VAT 10%: +$7.20
+- sizing: assumed 1 vCPU, actual 2 vCPU: +$24.00 (measured)
+- backups: weekly paid plan uncounted: +$8.00 (measured)
+- VAT 10%: +$7.20 (measured)
 
 notes: the prior figure was a guess, not a stated fact — this is correction of
 an estimate, not measured drift.
 ```
 
+`delta:` is tagged `(est.)` because a derived value inherits the weakest status
+of its inputs, and `was:` was a guess.
+
 **Failure mode.** Ceremony for trivia: a six-line bridge correcting a typo reads
 as performative self-audit. Worse, computing a precise offset against a prior
 that was an admitted guess dresses "made it up, then measured" as a calibration
 event — the `notes:` line above exists to defuse exactly that. Use the full
-bridge only when the prior was asserted as fact, or when the gap has two or more
+bridge only when the prior was asserted as fact, or the gap has two or more
 drivers worth naming.
 
 ---
@@ -78,13 +105,14 @@ checks:
 basis: <what produced this> (<provenance>)
 ```
 
-For a numeric answer, `verdict:` carries the number and its unit welded together,
-and the receipt carries the decomposition.
+For a numeric answer, `verdict:` carries the number and unit welded together and
+the receipt carries the decomposition; the `— <clause>` is then optional. Max 8
+check lines.
 
 ### Example — decision
 
 ```
-verdict: SAFE — react 18.2 -> 19.0, 2 call-sites need fixes (~3h)
+verdict: SAFE — react 18.2 -> 19.0, 2 call-sites need fixes, 3h (est.)
 
 checks:
 - breaking, ref-as-prop removed: 2 uses (Login.tsx, Modal.tsx)
@@ -122,20 +150,20 @@ confident `SAFE` is more dangerous than hedged prose.
 
 ## 3. Scan Table
 
-**Use when** N comparable items each carry a value and a pass/fail: test suites,
-service fleets, migration batches, dependency audits, per-region rollout. The
-reader visually diffs one row against its neighbours.
+**Use when** N comparable items each carry a value and a state, **and the reader
+needs every item's value**: test suites, service fleets, migration batches,
+dependency audits, per-region rollout.
 
-### Rendering
+If the reader only needs to know what to act on, use the Annunciator Stack
+instead. Tie-break: if you would print a row the reader will skip, it is an
+Annunciator.
 
-Pick by destination, per `SKILL.md`. Markdown table where the host renders
-markdown — the renderer aligns, so you never count a space. Space-aligned columns
-only for plain-text destinations, and only at ≤8 rows with identifiers ≤20 chars.
+Max 12 rows; past that, sort worst-first and close with `... +N more`.
 
-Always restate the exceptions in a prose headline above the table, so the answer
-survives if the layout does not.
+### Template — markdown host
 
-### Template
+The headline and tally are plain lines; only the table is markdown. Emit the
+three parts contiguously, not as separate fenced blocks.
 
 ```
 exceptions: <worst items, named>
@@ -147,11 +175,23 @@ exceptions: <worst items, named>
 <n> points: <n> OK, <n> HI, <n> LO, <n> NODATA (<provenance>)
 ```
 
-### Example
+### Template — plain-text destination
+
+For output being piped, written to a file, or pasted into a plain-text ticket,
+where markdown will not render. One fact per line, no hand-aligned columns.
 
 ```
-exceptions: billing HI, worker-pool LO, search NODATA
+exceptions: <worst items, named>
+
+[POINT] <name>: <value> (limit <limit>) <state>
+[POINT] <name>: <value> (limit <limit>) <state>
+
+<n> points: <n> OK, <n> HI, <n> LO, <n> NODATA (<provenance>)
 ```
+
+### Example
+
+exceptions: billing HI, worker-pool LO, search NODATA
 
 | tag | value | limit | st |
 |---|---|---|---|
@@ -161,17 +201,14 @@ exceptions: billing HI, worker-pool LO, search NODATA
 | api-gateway | 210 ms | 500 | OK |
 | redis | 41 %mem | 85 | OK |
 
-```
 5 points: 2 OK, 1 HI, 1 LO, 1 NODATA (measured)
-```
 
 ### Two rules that make or break it
 
 - **Sort worst-first.** Alphabetical order forces the reader to scan all N rows
   to find the one that matters — destroying the only advantage the format has.
 - **`NODATA` is not `0`.** A point that failed to report is a different fact from
-  a point reporting zero. Collapsing them is how outages get missed. Print the
-  row with `--` and state `NODATA`; never omit it.
+  one reporting zero. Print the row with `--`; never omit it.
 
 **Failure mode.** A table for two rows is pure overhead — the header costs more
 than it returns. Columns must be decided up front, so heterogeneous answers fit
@@ -182,14 +219,14 @@ thread, so pair it with a Delta Bridge or drop to prose for the explanation.
 
 ## 4. Annunciator Stack
 
-**Use when** reporting health across many conditions and most are fine: "is prod
-okay", "anything wrong with this PR", "state of the cluster". Questions whose
-honest answer is "three things, ranked".
+**Use when** reporting across many conditions and **the reader needs only what to
+act on**: "is prod okay", "anything wrong with this PR", "state of the cluster".
+Questions whose honest answer is "three things, ranked".
 
 Borrowed from the dark-cockpit principle: an unlit panel means healthy, so **any
 line you print is by definition actionable**. Severity lives in a fixed left-hand
-keyword, not in wording, so the eye sorts before it reads. Normal readings go
-below the alarms, never interleaved.
+keyword, not in wording, so the eye sorts before it reads. Healthy readings
+collapse into `status:` below the alarms, never interleaved.
 
 ### Template
 
@@ -200,6 +237,8 @@ ADVY <condition>: <reading vs threshold>
 
 status:
 - <metric>: <value> (limit <limit>)
+
+(<provenance>, <scope>, <timestamp>)
 ```
 
 Clean case is one line plus the status block:
@@ -211,6 +250,8 @@ status:
 - api p99: 188 ms (limit 500)
 - error rate: 0.02% (limit 1.0)
 - nodes ready: 6/6
+
+(measured, prod, 2026-09-02 14:02 UTC)
 ```
 
 ### Example
@@ -231,23 +272,21 @@ status:
 
 **Failure mode.** Alarm flood. You do not have calibrated thresholds, so you will
 invent them, and every observation becomes `WARN` — at which point the ranking is
-noise and the dark-cockpit contract is broken. Only raise a severity keyword when
-the threshold came from a real source: an SLO, a config value, a documented
-limit. No real threshold, no keyword — put the reading in `status:` instead.
-Also wrong for single-fact questions; "does this repo use pnpm" does not want a
-severity column.
+noise and the dark-cockpit contract is broken. No real threshold, no keyword: put
+the reading in `status:` instead. Also wrong for single-fact questions; "does
+this repo use pnpm" does not want a severity column.
 
 ---
 
 ## 5. Sequence of Events
 
-**Use when** the answer's shape is ordering plus causality: post-incident
-narrative, log triage, cascade failures, bisect results, "why did this break"
-*when you have the actual log*.
+**Use when** the answer's shape is ordering plus causality **and you have read
+the actual log**: post-incident narrative, log triage, cascade failures, bisect
+results.
 
 Relative timestamps beat absolute for reading a cascade — the gaps are the story.
 Recovery sits on the same timeline, so duration falls out of the data instead of
-being claimed.
+being claimed. Max 12 rows.
 
 ### Template
 
@@ -259,7 +298,7 @@ T+<mm:ss.s> <event>
 T+<mm:ss.s> <event>, RECOVERED
 
 duration: <elapsed>
-impact: <scope>
+impact: <scope> (<provenance>)
 causal: <single cause | multiple | undetermined>
 ```
 
@@ -281,20 +320,23 @@ impact: ~41k requests, 3 regions (measured)
 causal: single cause, confirmed by revert
 ```
 
+`~41k` is a rounded display of a measured count, not a hedge — see the precision
+rule in `SKILL.md`.
+
 ### Hard guard on `*FIRST OUT*`
 
 `*FIRST OUT*` claims that this event caused everything below it. It is the
 strongest assertion available in any of these five structures.
 
 **Emit it only when you have read real ordered timestamps from a log, trace, or
-command output in this session.** Reconstructing a timeline from memory or from a
-partial log and marking a first-out pins the blame on a correlated symptom and
-sends the reader to debug the wrong subsystem with instrument-grade confidence
-behind them.
+command output in this session.** Reconstructing a timeline from memory or a
+partial log and marking a first-out pins blame on a correlated symptom and sends
+the reader to debug the wrong subsystem with instrument-grade confidence behind
+them.
 
-Without real ordered data: drop the marker entirely, retitle the block
+Without real ordered data: drop the marker, retitle the block
 `sequence (reconstructed):`, and set `causal: undetermined`.
 
 **Failure mode.** Beyond the first-out risk: bucket and threshold choices shape
 the story, and a timeline answers *when*, not *why*. Pair with a Delta Bridge
-when the reader needs the causal decomposition rather than the ordering.
+when the reader needs causal decomposition rather than ordering.
