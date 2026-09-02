@@ -18,6 +18,10 @@ Used by Scan Table and Annunciator Stack. Do not invent states outside these.
 | `FAIL` | Item errored — distinct from being out of range |
 | `NODATA` | Item failed to report. **Not the same as zero.** Print the row with `--` |
 
+A state is a judgement against a limit, so it requires a real limit. Where none
+exists, print `--` in both the `limit` and `st` columns — the row then carries a
+value and no verdict, which is honest. See the threshold rule under Scan Table.
+
 Severity keywords, highest first. Raise one only when the threshold came from a
 real source — an SLO, a config value, a documented limit.
 
@@ -203,12 +207,19 @@ exceptions: billing HI, worker-pool LO, search NODATA
 
 5 points: 2 OK, 1 HI, 1 LO, 1 NODATA (measured)
 
-### Two rules that make or break it
+### Three rules that make or break it
 
 - **Sort worst-first.** Alphabetical order forces the reader to scan all N rows
   to find the one that matters — destroying the only advantage the format has.
 - **`NODATA` is not `0`.** A point that failed to report is a different fact from
   one reporting zero. Print the row with `--`; never omit it.
+- **Every `limit` must come from a real source** — an SLO, a config value, a
+  documented cap, a published spec. This is the Annunciator's "no real threshold,
+  no keyword" rule applied to the column that carries the verdict. You do not
+  have calibrated thresholds, so an invented limit silently manufactures an `HI`
+  or `LO`, and `st` is the column the reader acts on. With no real limit, print
+  `--` for both `limit` and `st`, and say where the limit came from in `notes:`
+  when it is guidance rather than an enforced cap.
 
 **Failure mode.** A table for two rows is pure overhead — the header costs more
 than it returns. Columns must be decided up front, so heterogeneous answers fit
