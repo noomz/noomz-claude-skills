@@ -1,0 +1,4 @@
+interface:
+  display_name: "Thai Natural Voice"
+  short_description: "Natural Thai for agents, tech, and publishing"
+  default_prompt: "Use $thai-natural-voice with a suitable generic or source-inspired preset to rewrite this in natural Thai."

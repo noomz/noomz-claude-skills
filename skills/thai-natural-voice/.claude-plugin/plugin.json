@@ -1,0 +1,22 @@
+{
+  "name": "thai-natural-voice",
+  "description": "Draft and rewrite audience-native Thai for agents, technical work, and publishing with configurable generic and source-inspired presets.",
+  "version": "0.3.0",
+  "author": {
+    "name": "noomz",
+    "email": "lazym0m3nt@gmail.com"
+  },
+  "homepage": "https://github.com/noomz/noomz-claude-skills",
+  "license": "MIT",
+  "keywords": [
+    "thai",
+    "localization",
+    "transcreation",
+    "writing-style",
+    "social-media",
+    "news",
+    "copy-editing",
+    "developer-communication",
+    "natural-language"
+  ]
+}
