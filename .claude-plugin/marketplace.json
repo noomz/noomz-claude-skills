@@ -18,7 +18,7 @@
     {
       "name": "domain-gloss",
       "source": "./skills/domain-gloss",
-      "description": "Keep the English domain term and attach a short inline gloss in your first language \u2014 so insurance, legal, finance, and nonprofit jargon teaches instead of blocking."
+      "description": "Keep the English domain term and attach a short inline gloss in your first language \u2014 so jargon teaches instead of blocking. Covers specialist terms and false friends, the easy-looking words that mean something else in the domain. Any domain, including software; narrow it with a skip list."
     }
   ]
 }

@@ -1,7 +1,7 @@
 ---
 name: domain-gloss
-description: Keeps the English domain term and attaches a short inline gloss in the developer's configured first language, so jargon teaches instead of blocking. Covers specialist terms (subrogation, estoppel, indemnity) and ordinary-looking words carrying a shifted domain meaning (consideration in contract law, endorsement in insurance, stewardship in nonprofit) — not general academic English. Triggers on "gloss the jargon", "explain in my language", "add Thai", "I don't know these insurance words", "what is subrogation", "too many hard words", and on domain-heavy insurance, legal, finance, healthcare, or nonprofit work once the user has asked for glossing. Reads the target language from configuration rather than assuming one. Distinct from explain-clear — this skill keeps the hard word and anchors it so the reader learns it, while explain-clear replaces hard words with simpler English. Does not apply to code edits, git operations, or whole-document translation.
-allowed-tools: Bash(printenv CLAUDE_GLOSS_LANG)
+description: Keeps the English domain term and attaches a short inline gloss in the developer's configured first language, so jargon teaches instead of blocking. Covers specialist terms (subrogation, estoppel, indemnity) and ordinary-looking words carrying a shifted domain meaning (consideration in contract law, endorsement in insurance, stewardship in nonprofit) — not general academic English. Triggers on "gloss the jargon", "explain in my language", "add Thai", "I don't know these insurance words", "what is subrogation", "too many hard words", and on domain-heavy insurance, legal, finance, healthcare, nonprofit, or technical work once the user has asked for glossing. Reads the target language from configuration rather than assuming one. Distinct from explain-clear — this skill keeps the hard word and anchors it so the reader learns it, while explain-clear replaces hard words with simpler English. Does not apply to code edits, git operations, or whole-document translation.
+allowed-tools: Bash(printenv CLAUDE_GLOSS_LANG), Bash(printenv CLAUDE_GLOSS_SKIP)
 ---
 
 # Domain Gloss
@@ -57,6 +57,27 @@ Two values need explicit handling:
 When nothing is configured, ask once — then offer to persist to rung 3 and let the
 user do it. Do not write to a settings file on your own initiative.
 
+### Excluding categories
+
+Glossing is not restricted to business domains. Software and infrastructure are
+lockable domains too, so `singleflight` and `cache stampede` are legitimate Band 2
+terms in a Redis repo. That is the default and it is deliberate — a developer
+reading a second language is not only reading insurance contracts.
+
+When a category is unwanted, name it in `CLAUDE_GLOSS_SKIP`, resolved through the
+same six rungs as the language:
+
+```bash
+printenv CLAUDE_GLOSS_SKIP || echo none
+```
+
+Comma-separated free-text labels, matched against the locked domain — `software`,
+`infra`, `frontend`, `finance`, `legal`, `medical`. When the locked domain matches
+a skip entry, glossing is off for that domain entirely, Band 2 and Band 3 alike. A
+term still glosses if it belongs to a second locked domain that is not skipped: in
+an insurance repo skipping `software`, `subrogation` is glossed and `singleflight`
+is not.
+
 ## Lock the domain before the first token
 
 Sense-shift detection is meaningless without a domain, so establish it once per
@@ -71,6 +92,10 @@ turn, not once per term. Read signals strongest-first:
 **Two agreeing signals lock the domain.** If the repo spans two domains, hold both
 and resolve per-sentence from the surrounding lines. If nothing locks, gloss Band 2
 only and disable Band 3 entirely.
+
+Any subject-matter domain is lockable, software included — `ioredis` and `express`
+lock infrastructure the same way `stripe` and `hl7` lock payments and healthcare.
+Breadth is the default; `CLAUDE_GLOSS_SKIP` is how a reader narrows it.
 
 ## The three bands
 
@@ -204,6 +229,8 @@ Correct restraint — Band 1 words left bare, budget unspent:
 | `/domain-gloss th` | On, forcing a language for this thread |
 | `gloss off` | Off |
 | `/domain-gloss off` | Off |
+| `gloss skip software` | Stop glossing one category for this thread |
+| `gloss unskip software` | Resume it |
 
 ## Check yourself
 
@@ -212,7 +239,8 @@ Before sending, confirm all four:
 1. Every gloss sits in chat prose — none in code, commits, schemas, or files on disk.
 2. No Band 1 word was glossed.
 3. Did this response contain a Band 2 or Band 3 candidate and zero glosses? That is a miss, not restraint.
-4. Every rendering is one line, ASCII-parenthesised, and outside backticks.
+4. Does the gloss sit on the term's **first** mention in this response? A term used bare in an early paragraph and glossed later has already failed the reader.
+5. Every rendering is one line, ASCII-parenthesised, and outside backticks.
 
 ## Known limitations
 
@@ -221,4 +249,5 @@ Before sending, confirm all four:
 - **Band 3 depends on repo evidence.** Cue (c) is the strongest signal; in a repo with thin schema and no defined terms, false-friend coverage degrades quietly.
 - **The `allowed-tools` entry pins an exact command.** `Bash(printenv CLAUDE_GLOSS_LANG)` is deliberate — the `:*` prefix form would pre-allow bare `printenv` and dump every token and key in the environment into context. If exact-command matching is not honoured, the only symptom is a one-time permission prompt, which is the safe way to fail.
 - **Overlaps with `explain-clear`** (`~/.claude/skills/explain-clear/SKILL.md`), whose `thai` / `th` command has its own bilingual mode. That skill replaces hard words; this one keeps them. If the wrong one activates, name it explicitly.
+- **Breadth is the default.** Any locked domain is glossed, software included, so an ordinary repo with a dependency manifest will produce glosses. Narrow it with `CLAUDE_GLOSS_SKIP` rather than expecting the skill to guess which domains you already know.
 - **Situational auto-firing is not available.** A skill is selected by matching your words, not by ambient facts about the repo, so working in an insurance codebase will not turn this on by itself.
