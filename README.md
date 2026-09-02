@@ -9,6 +9,7 @@ Each skill lives in its own directory under `skills/` and follows the [official 
 | Skill | Description |
 |---|---|
 | [`obsidian`](skills/obsidian) | Drive an Obsidian vault from the terminal — daily notes, search, file ops, tags, tasks, plugin reloading, headless scripting. |
+| [`readout`](skills/readout) | Report operational results as terse machine readouts — delta bridges, scan tables, verdict blocks, alarm stacks, event sequences — instead of narrative prose. |
 
 More skills incoming — see [`CONTRIBUTING.md`](CONTRIBUTING.md) to add your own.
 

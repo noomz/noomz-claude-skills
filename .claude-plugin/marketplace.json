@@ -8,7 +8,12 @@
     {
       "name": "obsidian",
       "source": "./skills/obsidian",
-      "description": "Drive an Obsidian vault from the terminal — daily notes, search, file ops, tags, tasks, plugin reloading, and headless scripting via the official obsidian CLI."
+      "description": "Drive an Obsidian vault from the terminal \u2014 daily notes, search, file ops, tags, tasks, plugin reloading, and headless scripting via the official obsidian CLI."
+    },
+    {
+      "name": "readout",
+      "source": "./skills/readout",
+      "description": "Report operational results as terse machine readouts \u2014 delta bridges, scan tables, verdict blocks, alarm stacks, and event sequences \u2014 instead of narrative prose."
     }
   ]
 }
