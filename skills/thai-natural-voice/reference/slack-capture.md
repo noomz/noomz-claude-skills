@@ -65,7 +65,8 @@ in a follow-up. Do not repeat a failed CLI read after they identify its limitati
    a token as a command argument, and keep credentials out of output, profiles,
    and repository files. A developer credential and a message-reading credential
    may have different permissions. Inspect API `ok` and `error`, not just process
-   exit code.
+   exit code. The CLI's `slack auth login` or `slack auth token` authorization is
+   not proof that the selected API token has search access.
 4. On `not_authed`, check the configured credential path. On `missing_scope`,
    report the required scope and pause acquisition until authorized access exists.
    On `not_allowed_token_type`, the request resolved to the wrong kind of token;
@@ -78,18 +79,27 @@ The official CLI supports these read-only shapes; verify against installed help:
 ```bash
 slack api auth.test
 slack api users.list limit=200
-slack api search.messages 'query=from:<@USER_ID>' count=60 sort=timestamp sort_dir=desc
+slack api assistant.search.info
+slack api assistant.search.context --json '{"query":"from:<@USER_ID>","content_types":["messages"],"channel_types":["public_channel"],"limit":20,"sort":"timestamp","sort_dir":"desc"}'
 ```
 
-`search.messages` requires a **user** token carrying `search:read`. A bot token
-cannot call it and returns `not_allowed_token_type`, and the official CLI resolves
-`SLACK_BOT_TOKEN` ahead of `SLACK_USER_TOKEN`, so a workspace with both set fails
-here while `auth.test` and `users.list` still succeed. A successful user lookup is
-therefore not evidence that search will work. Confirm the token type before
-reporting search as unavailable, and verify the resolution order against installed
-`slack api --help`. Follow returned pagination cursors for identity lookup if
-needed. Read only names and account ids needed to resolve the requested author,
-not unrelated user data.
+Use the Real-time Search API for new integrations. `assistant.search.context`
+accepts a user token without an `action_token`; a bot token requires an
+`action_token` from a Slack message or `app_mention` event. A CLI-only capture
+therefore needs a user token with at least `search:read.public` for public
+channels, plus `search:read.users` for user lookup. Add
+`search:read.private`, `search:read.im`, and `search:read.mpim` only when the
+user has authorized those private conversation types. Add `search:read.files`
+only when file search is needed.
+
+The CLI resolves `SLACK_BOT_TOKEN` ahead of `SLACK_USER_TOKEN`, so a workspace
+with both set can select the wrong token. A successful `auth.test` or
+`users.list` is not evidence that search will work. Verify
+`assistant.search.info` and then `assistant.search.context`, checking the API
+envelope's `ok` and `error`. The current search endpoint returns at most 20
+results per page; follow `response_metadata.next_cursor` for additional bounded
+pages. Do not use the legacy `search.messages`/`search:read` path for new
+capture runs.
 
 ## Resolve the author and collect samples
 
@@ -99,10 +109,11 @@ not unrelated user data.
   accounts remain or the workspace is unclear.
 - For a message URL, resolve its workspace, channel, timestamp, and author with
   permitted read methods. A profile captures that author, not all thread speakers.
-- Start with a bounded recent author search, at most 60 messages. Respect any
-  user-specified channel or date range. Inspect only messages attributed to the
-  resolved author. Search snippets, quoted messages, bot reposts, and link previews
-  do not establish that person's authorship.
+- Start with a bounded recent author search, at most 60 messages across no more
+  than three 20-result pages. Respect any user-specified channel or date range.
+  Inspect only messages attributed to the resolved author. Search snippets,
+  quoted messages, bot reposts, and link previews do not establish that person's
+  authorship.
 - Select substantive Thai chat turns across more than one exchange when possible.
   Retain the selected message ids and permalinks for provenance. Exclude copied
   text and fragments that carry no usable language. Count the screened text with
@@ -121,4 +132,6 @@ connection from a read verified in the current session.
 ## References
 
 - [Official CLI API reference](https://docs.slack.dev/tools/slack-cli/reference/commands/slack_api/) — token resolution and parameter forms
-- [Search messages](https://docs.slack.dev/reference/methods/search.messages/) — required scopes and result pagination
+- [Real-time Search API](https://docs.slack.dev/reference/methods/assistant.search.context/) — current search method, scopes, filters, and pagination
+- [Real-time Search guide](https://docs.slack.dev/apis/web-api/real-time-search-api/) — user consent, private-channel access, and usage limits
+- [Search scopes](https://docs.slack.dev/reference/scopes/search.read.public/) — granular search permissions
