@@ -1,0 +1,4 @@
+interface:
+  display_name: "Domain Gloss"
+  short_description: "Explain domain terms beside exact English"
+  default_prompt: "Use $domain-gloss to explain these domain terms in my configured language."

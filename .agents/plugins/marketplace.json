@@ -1,0 +1,21 @@
+{
+  "name": "noomz-claude-skills",
+  "interface": {
+    "displayName": "Noomz Agent Skills"
+  },
+  "plugins": [
+    {
+      "name": "noomz-claude-skills",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/noomz/noomz-claude-skills.git",
+        "ref": "main"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

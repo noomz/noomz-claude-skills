@@ -1,0 +1,40 @@
+{
+  "name": "noomz-claude-skills",
+  "version": "0.1.0",
+  "description": "Reusable skills for Thai writing, domain terminology, Obsidian workflows, and operational readouts.",
+  "author": {
+    "name": "noomz",
+    "email": "lazym0m3nt@gmail.com",
+    "url": "https://github.com/noomz"
+  },
+  "homepage": "https://github.com/noomz/noomz-claude-skills",
+  "repository": "https://github.com/noomz/noomz-claude-skills",
+  "license": "MIT",
+  "keywords": [
+    "agents",
+    "codex",
+    "claude",
+    "thai",
+    "obsidian",
+    "writing"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Noomz Agent Skills",
+    "shortDescription": "Reusable workflows for Claude and Codex",
+    "longDescription": "A curated collection of reusable agent skills for natural Thai, domain terminology, Obsidian automation, and terse operational readouts.",
+    "developerName": "noomz",
+    "category": "Productivity",
+    "capabilities": [
+      "Read",
+      "Write",
+      "Automation"
+    ],
+    "defaultPrompt": [
+      "Use the right Noomz skill for this task.",
+      "Rewrite this in natural Thai.",
+      "Explain these domain terms clearly."
+    ],
+    "brandColor": "#1F2937"
+  }
+}

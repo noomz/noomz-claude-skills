@@ -1,0 +1,4 @@
+interface:
+  display_name: "Readout"
+  short_description: "Report operational results as machine readouts"
+  default_prompt: "Use $readout to report these results as a terse machine readout."
