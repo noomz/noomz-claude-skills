@@ -11,7 +11,7 @@ Each skill lives in its own directory under `skills/` and follows the [official 
 | [`obsidian`](skills/obsidian) | Drive an Obsidian vault from the terminal — daily notes, search, file ops, tags, tasks, plugin reloading, headless scripting. |
 | [`readout`](skills/readout) | Report operational results as terse machine readouts — delta bridges, scan tables, verdict blocks, alarm stacks, event sequences — instead of narrative prose. |
 | [`domain-gloss`](skills/domain-gloss) | Keep the English domain term and attach an inline gloss in your first language — domain jargon and false friends that teach instead of blocking. |
-| [`thai-natural-voice`](skills/thai-natural-voice) | Draft natural Thai for agent replies, technical work, and publishing with generic profiles and safe source-inspired presets. |
+| [`thai-natural-voice`](skills/thai-natural-voice) | Draft natural Thai for agent replies, technical work, and publishing — generic profiles, safe source-inspired presets, and `/learn-thai-style` to learn a profile from a link, name, or document. |
 
 More skills incoming — see [`CONTRIBUTING.md`](CONTRIBUTING.md) to add your own.
 
