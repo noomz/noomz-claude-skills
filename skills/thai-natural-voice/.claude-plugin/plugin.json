@@ -1,7 +1,7 @@
 {
   "name": "thai-natural-voice",
-  "description": "Draft and rewrite audience-native Thai for agents, technical work, and publishing, with configurable presets and a /learn-thai-style pipeline that learns new voice profiles from real sources.",
-  "version": "0.4.0",
+  "description": "Draft and rewrite audience-native Thai for agents, technical work, and publishing, with configurable presets and a /capture-thai-voice pipeline that captures new voice profiles from real sources.",
+  "version": "0.5.0",
   "author": {
     "name": "noomz",
     "email": "lazym0m3nt@gmail.com"
@@ -18,6 +18,6 @@
     "copy-editing",
     "developer-communication",
     "natural-language",
-    "style-learning"
+    "voice-capture"
   ]
 }

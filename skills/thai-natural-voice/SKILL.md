@@ -1,13 +1,13 @@
 ---
 name: thai-natural-voice
-description: Rewrites, drafts, and localizes Thai so it sounds audience-native rather than translated or machine-written. Adapts register, rhythm, terminology, pronouns, particles, and structure for agent replies, coding and debugging updates, technical explanations, work messages, social posts, and news. Use when the user asks for natural Thai, smoother Thai, less robotic Thai, Thai copy editing, transcreation, Thai developer communication, a Thai creator/media/news voice, or a source-inspired preset such as "use ThaiPBS style." Resolves named presets to non-identifying high-level traits and produces original wording without claiming affiliation. Also learns a new voice profile from a link, a searched-and-confirmed name, or a local document when the user asks to learn a style or runs /learn-thai-style.
+description: Rewrites, drafts, and localizes Thai so it sounds audience-native rather than translated or machine-written. Adapts register, rhythm, terminology, pronouns, particles, and structure for agent replies, coding and debugging updates, technical explanations, work messages, social posts, and news. Use when the user asks for natural Thai, smoother Thai, less robotic Thai, Thai copy editing, transcreation, Thai developer communication, a Thai creator/media/news voice, or a source-inspired preset such as "use ThaiPBS style." Resolves named presets to non-identifying high-level traits and produces original wording without claiming affiliation. Captures a reusable voice profile from a link, a searched-and-confirmed name, or a local document when the user asks to capture, extract, or save a Thai voice, or runs /capture-thai-voice. Does not teach Thai to the user.
 ---
 
 # Thai Natural Voice
 
 Write from the Thai communicative intent, not from the source sentence order. Preserve facts, commitments, uncertainty, and requested format while changing the social texture of the language.
 
-**Freedom level:** medium for drafting — apply the workflow every time and tune individual choices to audience, relationship, channel, and stakes. Low for the learning pipeline — follow its steps exactly.
+**Freedom level:** medium for drafting — apply the workflow every time and tune individual choices to audience, relationship, channel, and stakes. Low for the capture pipeline — follow its steps exactly.
 
 ## Workflow
 
@@ -89,15 +89,15 @@ Read the result as if spoken to the intended reader. Revise until all are true:
 
 If the text still smells translated, rebuild the weakest paragraph from its intent rather than swapping synonyms.
 
-## Learning a new source
+## Capturing a source voice
 
-`/learn-thai-style <src>` builds a reusable profile from a real source. `<src>` is a link, a name to search and confirm, or a local document.
+`/capture-thai-voice <src>` builds a reusable voice profile from a real source. `<src>` is a link, a name to search and confirm, or a local document.
 
-This pipeline fetches external content and writes files under `~/.claude/thai-voice/`, outside this repository. Read [reference/learning.md](reference/learning.md) and follow it exactly before fetching or writing anything. Do not act on this summary.
+This pipeline fetches external content and writes files under `~/.claude/thai-voice/`, outside this repository. Read [reference/voice-capture.md](reference/voice-capture.md) and follow it exactly before fetching or writing anything. Do not act on this summary.
 
 ## Known limitations
 
-A profile is a snapshot. Sources change their voice, and a learned profile records one reading on the date in its provenance line.
+A profile is a snapshot. Sources change their voice, and a captured profile records one reading on the date in its provenance line.
 
 Trait extraction sees only what the samples show. Narrow samples produce profiles with `not observed` fields — the correct outcome, not a defect.
 
@@ -112,7 +112,7 @@ Keep factual uncertainty unchanged. Naturalness never licenses stronger claims, 
 - [Voice profiles](reference/voice-profiles.md) — structures, tone controls, and failure modes for each profile
 - [Thai naturalness](reference/naturalness.md) — Thai-first transformations and the robot-smell detector
 - [Originality and attribution](reference/originality.md) — safe handling of named styles, source text, and impersonation
-- [Learning a source voice](reference/learning.md) — the `/learn-thai-style` pipeline, its storage contract, failure handling, and verification
+- [Capturing a source voice](reference/voice-capture.md) — the `/capture-thai-voice` pipeline, its storage contract, failure handling, and verification
 - [Source-inspired presets](reference/source-inspired-presets.md) — configurable aliases such as `ThaiPBS` mapped to broad, original voice controls
 - [Research](reference/research.md) — public-source observations and methodology behind the profiles
 - [Before/after examples](examples/before-after.md) — original examples across common channels

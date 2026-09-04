@@ -42,7 +42,7 @@ Resolve in this order:
 
 1. Normalize spacing, case, punctuation, and Thai/English aliases.
 2. Select the profile from the first tier that matches:
-   1. a learned profile in the user's `profile_dir` — see `reference/learning.md`
+   1. a captured profile in the user's `profile_dir` — see `reference/voice-capture.md`
    2. a bundled `-inspired` preset in this file
    3. a generic technology or creator preset in this file
    4. 3–5 improvised traits
@@ -50,7 +50,7 @@ Resolve in this order:
 4. Apply user overrides except where they conflict with accuracy, attribution, non-impersonation, or channel safety.
 5. Generate independently worded Thai. Keep the source name out of bylines, sign-offs, hashtags, and claims of authorship.
 
-A learned profile outranks a bundled preset sharing the same alias — the user inspected that source deliberately. Learned ids end in `-learned` and are selected the same way, for example `voice: some-source-learned`.
+A captured profile outranks a bundled preset sharing the same alias — the user inspected that source deliberately. Captured ids end in `-captured` and are selected the same way, for example `voice: some-source-captured`.
 
 For an ordinary known alias, return the requested content without a disclaimer. If the user asks for `exactly`, `เหมือนเป๊ะ`, an official statement, or an endorsement, state briefly that the result will use broad traits rather than impersonate or represent the source.
 
