@@ -1,6 +1,6 @@
 ---
 name: thai-natural-voice
-description: Rewrites, drafts, and localizes Thai so it sounds audience-native rather than translated or machine-written. Adapts register, rhythm, terminology, pronouns, particles, and structure for agent replies, coding and debugging updates, technical explanations, work messages, social posts, and news. Use when the user asks for natural Thai, smoother Thai, less robotic Thai, Thai copy editing, transcreation, Thai developer communication, a Thai creator/media/news voice, or a source-inspired preset such as "use ThaiPBS style." Resolves named presets to non-identifying high-level traits and produces original wording without claiming affiliation. Captures a reusable voice profile from a link, a searched-and-confirmed name, or a local document when the user asks to capture, extract, or save a Thai voice, or runs /capture-thai-voice. Does not teach Thai to the user.
+description: Rewrites, drafts, and localizes Thai for agent replies, technical explanations, work messages, social posts, and news. Use for natural Thai, smoother or less robotic Thai, copy editing, transcreation, Thai developer communication, or source-inspired presets such as "use ThaiPBS style." Resolves named presets to broad traits and produces original wording without claiming affiliation. Captures a reusable voice profile from a link, a resolved name, a local document, or a named Slack author's messages through an authorized connector or local CLI when the user asks to capture, extract, or save a Thai voice, or runs /capture-thai-voice. Does not teach Thai to the user.
 ---
 
 # Thai Natural Voice
@@ -40,6 +40,8 @@ Use `คุยรู้เรื่อง` by default. If the task is technical,
 - `แอดมินชวนคุย` — light community and entertainment posts
 
 Blend at most two profiles. Give one profile ownership of structure and the other ownership of surface tone.
+
+For an explicit `voice:` selector or a previously captured alias, read [reference/source-inspired-presets.md](reference/source-inspired-presets.md) and resolve user storage before choosing a bundled or improvised profile. Load the saved contract, structure, lexicon, controls, and invariants; leave unobserved controls at the base profile's defaults without claiming they were captured.
 
 If the user names a publication or media brand, read [reference/source-inspired-presets.md](reference/source-inspired-presets.md). Resolve a known alias such as `ThaiPBS` to its canonical `-inspired` preset and apply its base profile plus modifiers. For an unknown source or an individual creator, map the request to 3–5 broad traits such as `สั้น`, `ขี้เล่น`, `ข้อมูลแน่น`, `ถามนำ`, or `เว้นบรรทัดถี่` and generate a fresh profile.
 
@@ -91,7 +93,7 @@ If the text still smells translated, rebuild the weakest paragraph from its inte
 
 ## Capturing a source voice
 
-`/capture-thai-voice <src>` builds a reusable voice profile from a real source. `<src>` is a link, a name to search and confirm, or a local document.
+`/capture-thai-voice <src>` names the capture workflow within this skill; it is not a separate installed command. `<src>` is a link, a name to resolve, a local document, or a Slack author with workspace context. Natural-language requests such as capturing a colleague's voice through a Slack connector or local CLI use the same workflow.
 
 This pipeline fetches external content and writes files under `~/.claude/thai-voice/`, outside this repository. Read [reference/voice-capture.md](reference/voice-capture.md) and follow it exactly before fetching or writing anything. Do not act on this summary.
 
@@ -113,6 +115,7 @@ Keep factual uncertainty unchanged. Naturalness never licenses stronger claims, 
 - [Thai naturalness](reference/naturalness.md) — Thai-first transformations and the robot-smell detector
 - [Originality and attribution](reference/originality.md) — safe handling of named styles, source text, and impersonation
 - [Capturing a source voice](reference/voice-capture.md) — the `/capture-thai-voice` pipeline, its storage contract, failure handling, and verification
+- [Slack capture](reference/slack-capture.md) — connector and CLI discovery, independent authentication, author resolution, and sampling chat messages
 - [Source-inspired presets](reference/source-inspired-presets.md) — configurable aliases such as `ThaiPBS` mapped to broad, original voice controls
 - [Research](reference/research.md) — public-source observations and methodology behind the profiles
 - [Before/after examples](examples/before-after.md) — original examples across common channels

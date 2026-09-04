@@ -18,12 +18,12 @@
     {
       "name": "domain-gloss",
       "source": "./skills/domain-gloss",
-      "description": "Keep the English domain term and attach a short inline gloss in your first language \u2014 so jargon teaches instead of blocking. Covers specialist terms and false friends, the easy-looking words that mean something else in the domain. Any domain, including software; narrow it with a skip list."
+      "description": "Keep English domain terms and schema identifiers exact, with first-language explanations beside jargon, false friends, and opaque table or field names in conversation."
     },
     {
       "name": "thai-natural-voice",
       "source": "./skills/thai-natural-voice",
-      "description": "Draft and rewrite audience-native Thai for agents, technical work, and publishing with configurable generic and source-inspired presets."
+      "description": "Draft natural Thai and capture reusable voice profiles from links, names, documents, or Slack authors through an authorized connector or local CLI."
     }
   ]
 }

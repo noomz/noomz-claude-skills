@@ -1,7 +1,7 @@
 {
   "name": "thai-natural-voice",
-  "description": "Draft and rewrite audience-native Thai for agents, technical work, and publishing, with configurable presets and a /capture-thai-voice pipeline that captures new voice profiles from real sources.",
-  "version": "0.5.0",
+  "description": "Draft natural Thai and capture reusable voice profiles from links, names, documents, or Slack authors through an authorized connector or local CLI.",
+  "version": "0.6.0",
   "author": {
     "name": "noomz",
     "email": "lazym0m3nt@gmail.com"
