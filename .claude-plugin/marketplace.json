@@ -23,7 +23,7 @@
     {
       "name": "thai-natural-voice",
       "source": "./skills/thai-natural-voice",
-      "description": "Draft and rewrite audience-native Thai for agents, technical work, and publishing with configurable generic and source-inspired presets."
+      "description": "Draft natural Thai and capture reusable voice profiles from links, names, documents, or Slack authors through an authorized connector or local CLI."
     }
   ]
 }
