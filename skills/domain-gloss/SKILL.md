@@ -1,6 +1,6 @@
 ---
 name: domain-gloss
-description: Keeps the English domain term and attaches a short inline gloss in the developer's configured first language, so jargon teaches instead of blocking. Covers specialist terms (subrogation, estoppel, indemnity) and ordinary-looking words carrying a shifted domain meaning (consideration in contract law, endorsement in insurance, stewardship in nonprofit) — not general academic English. Triggers on "gloss the jargon", "explain in my language", "add Thai", "I don't know these insurance words", "what is subrogation", "too many hard words", and on domain-heavy insurance, legal, finance, healthcare, nonprofit, or technical work once the user has asked for glossing. Reads the target language from configuration rather than assuming one. Distinct from explain-clear — this skill keeps the hard word and anchors it so the reader learns it, while explain-clear replaces hard words with simpler English. Does not apply to code edits, git operations, or whole-document translation.
+description: Keeps English domain terms and attaches short glosses in the developer's configured first language. Covers specialist jargon (subrogation, estoppel, indemnity), ordinary-looking words carrying a shifted domain meaning (consideration in contract law, endorsement in insurance, stewardship in nonprofit), and opaque table names, column names, enum values, or legacy codes cited in explanations. Triggers on "domain-gloss", "gloss the jargon", "explain in my language", "add Thai", "I don't know these insurance words", "what is subrogation", "too many hard words", "table names without glosses", and domain-heavy insurance, legal, finance, healthcare, nonprofit, or technical work once the user has asked for glossing. Preserves identifiers exactly and explains their evidenced role beside them. Reads the target language from configuration rather than assuming one. Distinct from explain-clear, which replaces difficult terms. Applies to conversation, not code edits, git artifacts, or whole-document translation.
 allowed-tools: Bash(printenv CLAUDE_GLOSS_LANG), Bash(printenv CLAUDE_GLOSS_SKIP)
 ---
 
@@ -129,6 +129,37 @@ from the inside. Score external cues instead:
 repo-grounded and therefore the most reliable of the four; when the repo is thin on
 definitions, expect Band 3 coverage to degrade and lean harder on (a).
 
+## Opaque identifiers in explanations
+
+A table or field code can block understanding without being an English word.
+Handle these separately from the three vocabulary bands whenever an identifier
+supports a finding, comparison, or decision in chat:
+
+- Keep the literal in backticks and anchor its **first mention per response**:
+  `PAYHDR` (ข้อมูลรายการจ่าย). This describes its role, not a guessed expansion.
+- Ground the role in inspected schema, a data dictionary, queries, or supplied
+  evidence. If the meaning is unresolved, say so beside the identifier. An opaque
+  spelling alone does not establish a meaning or an acronym expansion.
+- Cover tables, columns, enum values, and status codes. For a related field group,
+  give one shared role only when the evidence establishes that role for every
+  member; otherwise map each member separately.
+- For dense passages, put a dedicated `Term | Gloss` table **before** their first
+  use in the narrative. Every identifier used as evidence gets a mapping; keep
+  unknown meanings visibly unresolved. Inline anchors follow the rendering rules
+  below; the dedicated table uses separate term and gloss cells.
+- Identifier mappings are required reading aids and do not consume the five-gloss
+  vocabulary budget. Category exclusions still apply.
+- **Cap inline anchors at six per response.** Past six, stop annotating inline and
+  emit the dedicated table instead — a paragraph carrying a dozen parenthesised
+  roles buries the finding it was meant to support.
+- **Retire an identifier once a glossary table in this thread has mapped it**,
+  and re-anchor it if it later appears in a different role. Repetition alone
+  never retires an identifier that has only ever been anchored inline.
+
+These are conversation annotations. The underlying identifier remains exact in
+SQL, schema, code, and artifacts. A pasted passage submitted for correction is
+evidence of a readability problem, not evidence that the reader owns its terms.
+
 ## Gloss forms
 
 Two forms, chosen by band:
@@ -163,11 +194,11 @@ Insurer exercises subrogation after payout.
 
 - Gloss a Band 2 term on **first use per response**; retire it silently after five uses across the session.
 - Gloss a Band 3 false friend **once per response, forever**. It never retires — the everyday sense keeps re-asserting itself.
-- Cap at **five glosses per response**. Over budget, keep Band 3 and drop Band 2.
+- Cap vocabulary glosses at **five per response**. Over budget, keep Band 3 and drop Band 2. Opaque identifier mappings follow their separate coverage rule above.
 - Gloss a term you lift out of code into prose — a column name, an error string, a PR title.
 - Gloss the term that is load-bearing in any decision or tradeoff you ask the user to judge.
 - Gloss multi-word terms of art as one unit — `material breach`, `in-kind donation`. Never gloss the parts separately.
-- Expand acronyms in English first, then gloss — `KYC (Know Your Customer — ...)`.
+- Expand established acronyms in English first, then gloss — `KYC (Know Your Customer — ...)`. Explain opaque identifiers by their evidenced role instead of inventing expansions.
 - Gloss both members of a contrast pair together, with the distinction stated once — `peril` and `hazard`.
 - Scope the gloss when a term carries two senses in one repo — `premium (ค่าเบี้ยประกัน — ในโมดูลนี้คือยอดชำระ ไม่ใช่ tier ราคา)`.
 - Re-gloss a retired term if it reappears in a **different** sense.
@@ -175,7 +206,7 @@ Insurer exercises subrogation after payout.
 ## Don't
 
 - **Never coin a term.** If unsure of the rendering, gloss with an explanation instead — `escheat (ทรัพย์สินตกเป็นของรัฐเมื่อไม่มีทายาท)`. A confident wrong translation is worse than no gloss.
-- Don't gloss a term the user used correctly themselves. They own it.
+- Don't gloss a term the user demonstrably used correctly themselves. Quoted output, error reports, and requests for explanation do not demonstrate ownership.
 - Don't gloss a term the user just asked you to define. Answer the question instead.
 - Don't gloss twice in one sentence. On collision, keep the Band 3 one.
 - Don't gloss Band 1 to fill an unused budget.
@@ -191,7 +222,7 @@ or read by someone who does not share the language is English-only.
 - Commit messages, branch names, PR titles and bodies, review comments.
 - Error messages, log lines, exception text, and user-facing UI copy. Those have their own i18n path and a gloss forks it.
 - Config keys and values, JSON, YAML, env var names, filenames, paths.
-- Migrations, SQL, schema, table, and column names.
+- Migrations, SQL, and schema contents, including table and column identifiers inside them. When citing those identifiers in chat, preserve the literal and put its gloss outside the backticks.
 - Test names and assertion messages. CI reads those, not the learner.
 - Repository documentation — README, ADR, CONTRIBUTING, docstrings. It reads like prose but it is committed, diffed, and read by teammates who do not share the language. Treat it as source. The one exception is a file the user explicitly designates as the bilingual glossary.
 - Anything sent to an external service, MCP server, API payload, or another agent.
@@ -220,6 +251,16 @@ Correct restraint — Band 1 words left bare, budget unspent:
 
 > The record was left alone deliberately, so the reconciliation job could mitigate the drift on its next pass.
 
+Opaque schema names — given a dictionary identifying a payment table and its
+optional second-recipient fields:
+
+> `PAYHDR` (ข้อมูลรายการจ่าย) has an optional second recipient.
+> `ID2`, `TYPE2`, `NAME2` (ข้อมูลผู้รับเงินคนที่สอง) are blank in the inspected rows.
+
+Unknown status semantics — the spelling alone does not define the workflow:
+
+> `STX9` (ยังไม่ทราบความหมายของสถานะ) is populated, but its values need a dictionary before they can establish an approval step.
+
 ## Modes
 
 | Invocation | Effect |
@@ -234,19 +275,21 @@ Correct restraint — Band 1 words left bare, budget unspent:
 
 ## Check yourself
 
-Before sending, confirm all four:
+Before sending, confirm all six:
 
 1. Every gloss sits in chat prose — none in code, commits, schemas, or files on disk.
 2. No Band 1 word was glossed.
 3. Did this response contain a Band 2 or Band 3 candidate and zero glosses? That is a miss, not restraint.
 4. Does the gloss sit on the term's **first** mention in this response? A term used bare in an early paragraph and glossed later has already failed the reader.
-5. Every rendering is one line, ASCII-parenthesised, and outside backticks.
+5. Every inline rendering is one line, ASCII-parenthesised, and outside backticks; dedicated glossary tables keep the literal and gloss in separate cells.
+6. Every opaque identifier supporting a finding has a first-mention role anchor or an earlier glossary row, including an explicit unknown where evidence is missing. The artifact exclusion and vocabulary budget did not suppress these mappings.
 
 ## Known limitations
 
 - **Stickiness is best-effort.** This is prompt text with no cross-turn state; across a long session the mode decays. Re-invoke it, or put the preference in your `CLAUDE.md`.
 - **No bundled glossary.** Renderings come from model knowledge and will vary slightly between sessions. For a fixed house translation, keep a glossary file in the repo and point at it.
 - **Band 3 depends on repo evidence.** Cue (c) is the strongest signal; in a repo with thin schema and no defined terms, false-friend coverage degrades quietly.
+- **Identifier roles need a source of truth.** With no inspected schema, data dictionary, or query result, most identifiers resolve to an explicit unknown rather than a role. That is the correct output, but a legacy database with no dictionary will produce a page of unknowns instead of a reading aid. Supply a dictionary first, or accept the unknowns as a map of what is undocumented.
 - **The `allowed-tools` entry pins an exact command.** `Bash(printenv CLAUDE_GLOSS_LANG)` is deliberate — the `:*` prefix form would pre-allow bare `printenv` and dump every token and key in the environment into context. If exact-command matching is not honoured, the only symptom is a one-time permission prompt, which is the safe way to fail.
 - **Overlaps with `explain-clear`** (`~/.claude/skills/explain-clear/SKILL.md`), whose `thai` / `th` command has its own bilingual mode. That skill replaces hard words; this one keeps them. If the wrong one activates, name it explicitly.
 - **Breadth is the default.** Any locked domain is glossed, software included, so an ordinary repo with a dependency manifest will produce glosses. Narrow it with `CLAUDE_GLOSS_SKIP` rather than expecting the skill to guess which domains you already know.
