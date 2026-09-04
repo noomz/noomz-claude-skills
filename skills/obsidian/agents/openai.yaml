@@ -1,0 +1,4 @@
+interface:
+  display_name: "Obsidian CLI"
+  short_description: "Drive an Obsidian vault from the terminal"
+  default_prompt: "Use $obsidian to inspect or update my Obsidian vault."
