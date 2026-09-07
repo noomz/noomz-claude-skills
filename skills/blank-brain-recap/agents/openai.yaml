@@ -1,0 +1,4 @@
+interface:
+  display_name: "Blank Brain Recap"
+  short_description: "Rebuild yesterday's working context as one terse readout"
+  default_prompt: "Use $blank-brain-recap to catch me up on where I left off."
