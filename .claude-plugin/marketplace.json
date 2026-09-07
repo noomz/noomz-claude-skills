@@ -24,6 +24,11 @@
       "name": "thai-natural-voice",
       "source": "./skills/thai-natural-voice",
       "description": "Draft natural Thai and capture reusable voice profiles from links, names, documents, or Slack authors through an authorized connector or local CLI."
+    },
+    {
+      "name": "blank-brain-recap",
+      "source": "./skills/blank-brain-recap",
+      "description": "Rebuild yesterday's working context in any repo or multi-repo workspace — last active day from git, planning STATE and HANDOFF notes, open pull requests, dated ledger rows — as one terse readout ending in a single next step."
     }
   ]
 }

@@ -12,6 +12,7 @@ Each skill lives in its own directory under `skills/` and follows the [official 
 | [`readout`](skills/readout) | Report operational results as terse machine readouts — delta bridges, scan tables, verdict blocks, alarm stacks, event sequences — instead of narrative prose. |
 | [`domain-gloss`](skills/domain-gloss) | Keep English domain terms and schema identifiers exact, with first-language explanations beside jargon, false friends, and opaque table or field names. |
 | [`thai-natural-voice`](skills/thai-natural-voice) | Draft natural Thai for agent replies, technical work, and publishing — generic profiles, source-inspired presets, and a `/capture-thai-voice` workflow for links, names, documents, or Slack authors through an authorized connector or local CLI. |
+| [`blank-brain-recap`](skills/blank-brain-recap) | Rebuild yesterday's working context in any repo or multi-repo workspace — last active day from git, planning STATE and HANDOFF notes, open PRs, dated ledger rows — as one terse readout ending in a single next step. |
 
 More skills incoming — see [`CONTRIBUTING.md`](CONTRIBUTING.md) to add your own.
 
@@ -44,6 +45,7 @@ ln -s "$(pwd)/skills/obsidian" .agents/skills/obsidian
 ln -s "$(pwd)/skills/readout" .agents/skills/readout
 ln -s "$(pwd)/skills/domain-gloss" .agents/skills/domain-gloss
 ln -s "$(pwd)/skills/thai-natural-voice" .agents/skills/thai-natural-voice
+ln -s "$(pwd)/skills/blank-brain-recap" .agents/skills/blank-brain-recap
 ```
 
 Each skill requires `SKILL.md`; the optional `agents/openai.yaml` files provide Codex display metadata and starter prompts.
