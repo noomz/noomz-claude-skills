@@ -68,7 +68,7 @@ When you have to ask, offer these three and wait:
 
 Whatever scope is chosen, **name it in the readout header and in `basis:`** — `1 repo (this session's writes)` reads very differently from `19 repos`, and a scope the dev cannot see is one they cannot correct.
 
-## Step 1 — five sources, gathered IN PARALLEL
+## Step 1 — six sources, gathered IN PARALLEL
 
 Send them as separate Bash calls in **one** message. They are independent; a sequential chain here is the failure mode. Substitute the literal root from step 0.5 into each block — **each fenced block runs in its own shell**, so a variable set in an earlier block is empty here.
 
@@ -284,6 +284,45 @@ exit 0
 
 **Empty `gh` output means "the repos I could query are clean", never "nothing is pending."** If `gh auth status` shows an account that cannot see these repos, every listing comes back empty and reads as clean. When the identity looks wrong, say so and tag the whole section `[unverified]`.
 
+### Source F — where this repo keeps its memory
+
+Sources A and B only see what git can see. A repo that keeps its knowledge in a **gitignored** store — a kb, a decisions ledger, a wiki — has a whole class of writing that is invisible to both, and invisible is indistinguishable from safe.
+
+```bash
+cd /abs/path/to/root || exit 1
+find . -maxdepth 2 -name .git 2>/dev/null | sed 's|/\.git$||; s|^\./||; s|^$|.|' | sort |
+while IFS= read -r r; do
+  echo "== $r"
+  for d in .planning docs/kb kb wiki notes docs/adr docs/decisions .omc/wiki; do
+    [ -d "$r/$d" ] || continue
+    ondisk=$(find "$r/$d" -type f 2>/dev/null | grep -c .)
+    [ "$ondisk" -eq 0 ] && continue
+    tracked=$(git -C "$r" ls-files "$d" 2>/dev/null | grep -c .)
+    ign=$(git -C "$r" check-ignore -q "$d" 2>/dev/null && echo ignored || echo visible)
+    fresh=$(find "$r/$d" -type f -mtime -1 2>/dev/null | grep -c .)
+    printf '  store %-16s tracked:%-4s ondisk:%-5s %-8s touched-today:%s\n' \
+      "$d" "$tracked" "$ondisk" "$ign" "$fresh"
+    # The declared durable path, if any — searched INSIDE the store that was
+    # written, not repo-wide. A repo-wide sweep returns every export_*.sql in
+    # the project and buries the one script that belongs to this store.
+    [ "$fresh" -eq 0 ] && continue
+    find "$r/$d" -maxdepth 3 -type f \( -name 'export*' -o -name '*publish*' -o -name '*share*' \) \
+      2>/dev/null | grep -Ev '__pycache__' | head -3 | sed 's|^|    durable-path? |'
+  done
+done
+exit 0
+```
+
+Read each store against three questions.
+
+**Is it ignored?** `ignored` means git will never carry it. Anything written there today exists on this machine only — no commit, no push, and no amount of tidying the working tree changes that. This is the finding sources A and B structurally cannot make.
+
+**Is it local by convention?** `tracked:0` with `ondisk` in the hundreds and files predating this session is an **established local store**: nobody has ever committed it and that is the repo's habit, not an oversight. Contrast a genuinely new directory, which has `tracked:0` and files that are all from today.
+
+**Does a durable path exist?** An `export`/`publish`/`share` script sitting *inside* a store is the repo telling you how that content is meant to leave the machine. Search within the store, never repo-wide: measured on the same workspace, a repo-wide sweep returned four unrelated `export_*.sql` and `export.yaml` files and pushed the store's own `tools/export-shared.py` off the end of the list. If the store was written today and that script has not run since, the durable path exists and was not taken — that is a real loss risk, and the remedy is to run it, never to commit the store.
+
+Measured on a real workspace: `.planning/` held 228 files with 0 ever tracked, and `docs/kb/` was gitignored with an explicit comment saying it stays untracked — while `docs/kb/tools/export-shared.py` sat inside it, unrun. Two findings, neither expressible by any other source, and the earlier version instead proposed committing the planning note, which would have broken a convention 228 files deep.
+
 ## Step 2 — grade every finding
 
 The readout is only useful if the grades are consistent. Grade by one question: **what happens if the dev closes the laptop right now?**
@@ -296,6 +335,9 @@ The readout is only useful if the grades are consistent. Grade by one question: 
 | `unpushed:N` where N is not 0 | **BLOCKER** | Commits on no remote at all; one dead laptop from gone, and invisible to every teammate |
 | `unreachable:N` where N is not 0 | **BLOCKER** | Commits on no branch and no remote; gone at the next checkout |
 | Untracked files not matching the junk denylist | **BLOCKER** | Not in the index, so not in a stash and not in any commit |
+| Session wrote to an **ignored** store that has an unrun export path | **BLOCKER** | Knowledge exists on this machine only, and the repo's own way out was not taken |
+| Session wrote to an **ignored** store with no export path | NOTE | Local by design; say which store, and stop |
+| New files in an **established local-by-convention** store (`tracked:0`, files predating today) | NOTE | Normal for that repo — and committing them changes a convention rather than repairing anything |
 | Tracked edits uncommitted | **BLOCKER** | Exists on one disk only; a stray `checkout` or worktree removal eats it |
 | `.only` test added this session | **BLOCKER** | It silently disables every other test; a green suite that is not green is worse than a red one |
 | Skipped test added this session | NOTE | Routine when deliberate — say which test, so it is not forgotten |
@@ -333,13 +375,14 @@ Fixed shape, values first, no story. Every line carries the remedy next to the f
 
 ```
 SAFE TO EXIT — NOT SAFE — claude-skills @ 2026-09-08 18:42 (check)
-4 blockers, 4 notes, 1 repo, 5/5 sources ran
+5 blockers, 4 notes, 1 repo, 6/6 sources ran
 
 BLOCKERS
   secret     .env staged at repo root       -> git restore --staged .env
   dirty      4 tracked edits [main]         -> git add -A && git commit
   midway     merge in progress [main]       -> leave it; rung 1 records it (see below)
   agent      cavecrew-builder never reported -> wait for it; do not close yet
+  memory     docs/kb ignored, 29 files today  -> docs/kb/tools/export-shared.py (unrun)
 
 NOTES
   stash      3 entries, oldest 2026-08-14   -> git stash list
@@ -359,6 +402,7 @@ VERDICT
 
 basis: git status/rev-list 1 repo; secret+junk scan (tracked and untracked);
        diff-scoped marker scan vs HEAD; pgrep/lsof/tmux + agent inventory;
+       store probe: .planning local-by-convention (0 of 228 tracked), docs/kb ignored;
        gh pr list as noomz (verified)
 ```
 
@@ -386,6 +430,7 @@ The short version: safest first (write a handoff note, commit, push), each comma
 - **Never kill a PID you have not identified**, and never one you did not see the dev start.
 - **Never `gh auth switch`** — it mutates global state to answer a read-only question.
 - **Do not do the work.** A missing test is a finding, not an invitation to write it.
+- **Never propose committing a path the repo keeps local.** Decide from evidence, not preference: `tracked:0` plus files older than this session means the repo has chosen not to track it. Committing that is a change of convention dressed up as a fix. The remedy for a local store is its own export path, or nothing.
 - **One root only.** Stay under the resolved root unless the dev widens it.
 - **Settle scope before running any source.** More than one repo at the root, or a root that is not itself a repo, means ask first. Never open with a sweep.
 - **Do not repeat the audit after a "no thanks."** Print the verdict once and stop.
@@ -408,6 +453,8 @@ After changing any pattern or `rev-list` in this file, run the fixture in [refer
 | Process list is pattern-matched | `pgrep` covers common dev servers by name. A custom binary, or anything inside a container, is missed; `docker ps` is not checked. |
 | No test run | The skill never runs the suite. "Tests were green an hour ago" is not a finding it can make — it only reports skips *added* in this diff. |
 | `gh` covers GitHub only | GitLab, Gitea, and remoteless repos contribute nothing to source E, and their pending work is invisible. |
+| Store list is a guess | Source F probes common names (`.planning`, `docs/kb`, `wiki`, `notes`, ADR dirs). A repo keeping its memory somewhere else reports nothing, and nothing reads as clean. |
+| Export detection is name-based | An `export`/`publish`/`share` script near a store is assumed to be its durable path. It might be unrelated, and a store's real sync might be a Makefile target or a CI job this never sees. Name it as a candidate, not a certainty. |
 | Scope depends on where you launched | Run from a project, the scope is that project. Run from a workspace parent, everything under it is in range and you get asked. Same command, different blast radius — the header names which happened. |
 | `-maxdepth 2` covers children, not siblings | `find .` from the git toplevel sees repos nested below it; sibling repos beside it are invisible unless you run from the parent. A repo at `group/team/repo` needs `-maxdepth 3`. |
 | Worktrees are counted, not inspected | Linked worktrees show up as separate repos when they sit under the root, and are missed entirely when they do not. |

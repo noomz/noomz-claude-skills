@@ -38,7 +38,7 @@ Safest first. This ordering is not cosmetic — each rung reduces what the next 
 
 | Rung | Act | Why it sits here |
 |---|---|---|
-| 1 | Write the handoff | Costs nothing, reversible, and it is the only rung that survives you being wrong about everything else |
+| 1 | Write the handoff, and take the repo's own durable path | Costs nothing, reversible, and it is the only rung that survives you being wrong about everything else |
 | 2 | Stop running agents and servers | Nothing else is stable while something is still writing to the repo |
 | 3 | Unstage secrets | Must happen before any commit, or the commit is the leak |
 | 4 | Commit the work | Turns "on this disk" into "in this repo" |
@@ -63,6 +63,26 @@ Four things, no more:
 ```
 
 Write what is true, including "this did not work." A handoff that reads like a status report to a manager is useless to the person who has to resume it.
+
+### The repo's own durable path
+
+If source F found a store that was written today **and** an `export`/`publish`/`share` script inside it, that script is how this repo gets that content off the machine. A commit will not do it — the store is ignored or local by convention, which is why the script exists.
+
+Name it, show the command, and wait:
+
+```
+docs/kb/ was written today (6 files) and is gitignored by design.
+Its declared durable path is docs/kb/tools/export-shared.py, which has not run.
+Run it?   python3 docs/kb/tools/export-shared.py
+```
+
+Three constraints, because this is the one rung that runs code you did not write:
+
+- **Never run it unprompted, and never on a guess.** The detection is name-based. A file called `export-shared.py` might publish to a shared drive, might open a PR, might do nothing you expect. If you cannot tell what it does from a quick read, say so and let the dev run it.
+- **It may be outward-facing.** Publishing sends content somewhere other people can see, which is not reversible by deleting the output afterwards. Treat it with more care than a commit, not less.
+- **If it fails, stop the ladder.** A half-run export is worse than none, because the next check may see fresh output and call the store exported.
+
+When there is no such script, say the store is local by design and move on. That is a NOTE, not a problem to solve.
 
 ## Rung 2 — stop what is running
 
@@ -114,7 +134,9 @@ Checkpoint at end of session. Not complete: <what is missing>."
 
 Rules that keep this rung safe:
 
-- **Never `git add -A` without showing the file list first.** The audit already printed it; if the dev is adding files they have not seen, the noise filter hid something.
+- **Never commit a local-by-convention store to "fix" it.** If source F reported `tracked:0` with files older than today, the repo has chosen not to track that path. Committing 228 files of `.planning/` because one of them is new is a change of convention presented as a repair, and it is not yours to make. Exclude it and say why.
+
+**Never `git add -A` without showing the file list first.** The audit already printed it; if the dev is adding files they have not seen, the noise filter hid something.
 - **Exclude anything source B flagged.** If a secret is still in the tree, this rung does not run — go back to rung 3.
 - **Never write a message that claims completion.** "implement retry path" for a stubbed function is a lie that survives in history and gets read as truth during a later bisect.
 - **Follow the repo's own commit convention** if it has one; a checkpoint commit that breaks a hook or a lint rule just fails and wastes the moment.
