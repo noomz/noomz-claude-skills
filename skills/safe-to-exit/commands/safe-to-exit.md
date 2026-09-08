@@ -5,7 +5,7 @@ argument-hint: "[secure]"
 
 Invoke the `safe-to-exit` skill and follow it exactly.
 
-Run **check** mode: read-only. Gather the five sources, grade each finding, and print the verdict readout.
+Run **check** mode: read-only. Gather the six sources, grade each finding, and print the verdict readout.
 
 Settle scope before running any source. If the resolved root is not itself a git repo, or holds more than one repo, stop and ask which scope is wanted — this session's writes only, one named repo, or all of them. Never open with a multi-repo sweep; a check the user has to interrupt produces no verdict at all.
 
