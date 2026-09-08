@@ -1,0 +1,21 @@
+{
+  "name": "safe-to-exit",
+  "description": "Verify a working session can be ended safely — uncommitted and unpushed work, secrets about to be committed, unfinished-work markers, still-running servers, subagents and loop modes, pull requests waiting on you — as one SAFE / SAFE WITH NOTES / NOT SAFE verdict with the command that clears each blocker. Read-only until you ask it to secure the session.",
+  "version": "0.1.0",
+  "author": {
+    "name": "noomz",
+    "email": "lazym0m3nt@gmail.com"
+  },
+  "homepage": "https://github.com/noomz/noomz-claude-skills",
+  "license": "MIT",
+  "keywords": [
+    "session-end",
+    "exit-check",
+    "git-hygiene",
+    "secrets",
+    "wip",
+    "handoff",
+    "subagents",
+    "safety"
+  ]
+}

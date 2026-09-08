@@ -1,0 +1,4 @@
+interface:
+  display_name: "Safe To Exit"
+  short_description: "Verdict on whether this session can be ended safely"
+  default_prompt: "Use $safe-to-exit — is it safe to end this session?"
