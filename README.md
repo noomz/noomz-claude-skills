@@ -13,7 +13,7 @@ Each skill lives in its own directory under `skills/` and follows the [official 
 | [`domain-gloss`](skills/domain-gloss) | Keep English domain terms and schema identifiers exact, with first-language explanations beside jargon, false friends, and opaque table or field names. |
 | [`thai-natural-voice`](skills/thai-natural-voice) | Draft natural Thai for agent replies, technical work, and publishing — generic profiles, source-inspired presets, and a `/capture-thai-voice` workflow for links, names, documents, or Slack authors through an authorized connector or local CLI. |
 | [`blank-brain-recap`](skills/blank-brain-recap) | Rebuild yesterday's working context in any repo or multi-repo workspace — last active day from git, planning STATE and HANDOFF notes, open PRs, dated ledger rows — as one terse readout ending in a single next step. |
-| [`safe-to-exit`](skills/safe-to-exit) | End-of-session safety check — uncommitted and unpushed work, secrets about to be committed, unfinished-work markers, still-running servers and subagents, PRs waiting on you — as one SAFE / NOT SAFE verdict with the fix for each blocker. |
+| [`safe-to-exit`](skills/safe-to-exit) | End-of-session safety check (also `/safe-to-exit`) — uncommitted and unpushed work, secrets about to be committed, unfinished-work markers, still-running servers and subagents, PRs waiting on you — as one SAFE / NOT SAFE verdict with the fix for each blocker. |
 
 More skills incoming — see [`CONTRIBUTING.md`](CONTRIBUTING.md) to add your own.
 
