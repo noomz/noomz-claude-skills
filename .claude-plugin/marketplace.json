@@ -29,6 +29,11 @@
       "name": "blank-brain-recap",
       "source": "./skills/blank-brain-recap",
       "description": "Rebuild yesterday's working context in any repo or multi-repo workspace — last active day from git, planning STATE and HANDOFF notes, open pull requests, dated ledger rows — as one terse readout ending in a single next step."
+    },
+    {
+      "name": "safe-to-exit",
+      "source": "./skills/safe-to-exit",
+      "description": "Verify a working session can be ended safely \u2014 uncommitted and unpushed work, secrets about to be committed, unfinished-work markers, still-running servers, subagents and loop modes, and pull requests waiting on you \u2014 as one SAFE / SAFE WITH NOTES / NOT SAFE verdict."
     }
   ]
 }
