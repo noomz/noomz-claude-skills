@@ -164,9 +164,9 @@ done
 exit 0
 ```
 
-**Match the path, never the raw `git status --porcelain` line.** Porcelain prefixes every path with a two-character status field and a space, so a `(^|/)`-anchored pattern can never match a file at the repo root. Measured against a synthetic index: `?? .env`, `A  .npmrc`, `?? id_rsa`, `?? tmp/junk.txt` and `?? nohup.out` all **missed**, while `A  api/.env` and `?? deploy.pem` hit — the first because it has a directory component, the second because it is suffix-anchored. The section prints a partial result and reads as clean, which is the worst way for this particular check to fail. The `awk` pass above extracts the path into `p` and matches on that alone.
+**Match the path, never the raw `git status --porcelain` line.** Porcelain prefixes every path with a two-character status field and a space, so a `(^|/)`-anchored pattern can never match a file at the repo root — every root-level `.env` and the whole junk category go missing while the section prints a partial result and reads as clean. The `awk` above extracts the path into `p` and matches on that alone. The fixture in [reference/smoke-test.md](reference/smoke-test.md) asserts both halves of the pair for exactly this reason.
 
-A collapsed directory is the same bug one level up: `git status --porcelain` reports a wholly-untracked directory as a single `?? newmodule/` entry, so a `.env` inside a brand-new module never reaches the scanner at all. Source A needs the flag to count files; source B needs it to see secrets. Measured on the fixture: without it, `api/.env` and `newmodule/.env` are both missed and the section prints `?? tmp/` where the junk file should be.
+A collapsed directory is the same bug one level up: porcelain reports a wholly-untracked directory as a single `?? newmodule/`, so a `.env` inside a brand-new module never reaches the scanner. Hence `--untracked-files=all` in both A and B.
 
 Four details in that awk worth keeping. `st` is preserved and printed because grading needs it — a staged secret is a blocker, an untracked one is a warning, and stripping the prefix would throw that away. `sub(/^.* -> /,"",p)` resolves a rename to its destination, which is the path that would actually be committed. The patterns use bracket classes rather than backslashes because `awk -v` processes escape sequences in the value — the same failure documented in source C. And `f` is a lowercased copy of `p`, used only for matching: the `ls-files` half below uses `grep -Ei`, so without `tolower()` the two halves of the same source disagree about whether `.ENV` is a secret — on a case-insensitive filesystem, which is the macOS default, that is a file that can exist. Every pattern here is written lowercase to suit it. Note that only the *comparison* is lowercased — the path is printed as it really is, because a readout that offers `config.pem` for a file named `CONFIG.PEM` hands the dev a command that fails on a case-sensitive filesystem.
 
@@ -286,42 +286,69 @@ exit 0
 
 ### Source F — where this repo keeps its memory
 
-Sources A and B only see what git can see. A repo that keeps its knowledge in a **gitignored** store — a kb, a decisions ledger, a wiki — has a whole class of writing that is invisible to both, and invisible is indistinguishable from safe.
+Sources A and B see what git can see **from this repo**. They miss two things, and both are where a repo's actual knowledge lives: paths the repo ignores on purpose, and repos nested inside those paths. Ignored is not the same as unimportant — it is frequently the opposite.
+
+Do not guess store names. A fixed list of `docs/kb`, `.planning`, `wiki` fits one repo's habits and silently reports nothing for the next. Ask git what this repo ignores, then ask what the repo says about why.
 
 ```bash
 cd /abs/path/to/root || exit 1
-find . -maxdepth 2 -name .git 2>/dev/null | sed 's|/\.git$||; s|^\./||; s|^$|.|' | sort |
-while IFS= read -r r; do
-  echo "== $r"
-  for d in .planning docs/kb kb wiki notes docs/adr docs/decisions .omc/wiki; do
-    [ -d "$r/$d" ] || continue
-    ondisk=$(find "$r/$d" -type f 2>/dev/null | grep -c .)
-    [ "$ondisk" -eq 0 ] && continue
-    tracked=$(git -C "$r" ls-files "$d" 2>/dev/null | grep -c .)
-    ign=$(git -C "$r" check-ignore -q "$d" 2>/dev/null && echo ignored || echo visible)
-    fresh=$(find "$r/$d" -type f -mtime -1 2>/dev/null | grep -c .)
-    printf '  store %-16s tracked:%-4s ondisk:%-5s %-8s touched-today:%s\n' \
-      "$d" "$tracked" "$ondisk" "$ign" "$fresh"
-    # The declared durable path, if any — searched INSIDE the store that was
-    # written, not repo-wide. A repo-wide sweep returns every export_*.sql in
-    # the project and buries the one script that belongs to this store.
-    [ "$fresh" -eq 0 ] && continue
-    find "$r/$d" -maxdepth 3 -type f \( -name 'export*' -o -name '*publish*' -o -name '*share*' \) \
-      2>/dev/null | grep -Ev '__pycache__' | head -3 | sed 's|^|    durable-path? |'
-  done
+NOISE='(node_modules|__pycache__|[.]venv|venv|dist|build|target|[.]next|[.]pytest_cache|[.]ruff_cache|[.]mypy_cache|[.]gradle|[.]idea|[.]vscode)/|[.]DS_Store|[.]pyc$|[.]log$'
+# What does this repo SAY stays local? Its own words, not your assumptions.
+grep -nE '^[[:space:]]*#' .gitignore 2>/dev/null | grep -iE 'commit|track|local|secret|credential|export|share' | head -6
+for f in CLAUDE.md AGENTS.md CONTRIBUTING.md; do
+  [ -f "$f" ] && grep -inE 'never commit|do not commit|stays? (local|untracked)|not tracked|deliberately untracked' "$f" 2>/dev/null | cut -c1-160 | head -3 | sed "s|^|$f:|"
+done
+# What does it ignore, and which of those did this session touch?
+git status --porcelain --ignored 2>/dev/null | awk '$1=="!!"{$1="";sub(/^ /,"");print}' |
+  tr -d '"' | grep -Ev "$NOISE" |
+while IFS= read -r p; do
+  case "$p" in */) ;; *) continue ;; esac
+  # Knowledge is TEXT. Counting every file makes a browser-state or build
+  # cache directory look like the busiest store in the workspace.
+  fresh=$(find "$p" -type f -mtime -1 \( -name '*.md' -o -name '*.txt' -o -name '*.rst' -o -name '*.adoc' \) 2>/dev/null | grep -c .)
+  if [ -d "${p}.git" ]; then
+    # A repo hidden inside an ignored path: it has its own git state, and NO
+    # parent-level command can see any of it. Probe it like any other repo.
+    un=$(git -C "$p" rev-list --count HEAD --not --remotes 2>/dev/null)
+    dy=$(git -C "$p" status --porcelain 2>/dev/null | grep -c .)
+    # Clean and fully pushed is not a finding. Twelve quiet repos bury the one
+    # that is not, so only report a nested repo that actually holds something.
+    [ "${un:-0}" -eq 0 ] && [ "$dy" -eq 0 ] && continue
+    printf 'NESTED-REPO %s [%s] upstream:%s unpushed:%s dirty:%s text-today:%s\n' "$p" \
+      "$(git -C "$p" rev-parse --abbrev-ref HEAD 2>/dev/null)" \
+      "$(git -C "$p" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || echo '(none)')" \
+      "$un" "$dy" "$fresh"
+  elif [ "$fresh" -gt 0 ]; then
+    printf 'IGNORED-STORE %s text:%s predating:%s today:%s\n' "$p" \
+      "$(find "$p" -type f -name '*.md' 2>/dev/null | grep -c .)" \
+      "$(find "$p" -type f -mtime +1 2>/dev/null | grep -c .)" "$fresh"
+    find "$p" -maxdepth 3 -type f \( -name 'export*' -o -name '*publish*' -o -name '*share*' \) \
+      2>/dev/null | grep -v __pycache__ | head -2 | sed 's|^|  durable-path? |'
+  fi
+done
+# Untracked-but-not-ignored dirs nothing has ever tracked: local by convention.
+git status --porcelain 2>/dev/null | awk '$1=="??"{$1="";sub(/^ /,"");sub(/\/.*/,"/");print}' |
+  tr -d '"' | sort -u | grep -Ev "$NOISE" |
+while IFS= read -r d; do
+  case "$d" in */) ;; *) continue ;; esac
+  [ -d "$d.git" ] && continue
+  [ "$(git ls-files "$d" 2>/dev/null | grep -c .)" -gt 0 ] && continue
+  printf 'LOCAL-BY-CONVENTION %s ondisk:%s predating:%s\n' "$d" \
+    "$(find "$d" -type f 2>/dev/null | grep -c .)" \
+    "$(find "$d" -type f -mtime +1 2>/dev/null | grep -c .)"
 done
 exit 0
 ```
 
-Read each store against three questions.
+Two filters keep the output readable. Freshness counts **text** files only — a browser-state or cache directory otherwise looks like the busiest store in the workspace — and a nested repo that is clean and fully pushed is skipped, because a list of twelve quiet repos buries the one that is not.
 
-**Is it ignored?** `ignored` means git will never carry it. Anything written there today exists on this machine only — no commit, no push, and no amount of tidying the working tree changes that. This is the finding sources A and B structurally cannot make.
+**`NESTED-REPO` is the one to read first.** A repo inside an ignored path is invisible to every other source — the parent ignores it, so no parent-level command mentions it, and `-maxdepth 2` misses it when it sits a level deeper. Grade its `upstream`, `unpushed` and `dirty` as you would the main repo's. Measured: a knowledge base at `docs/kb/` came back `upstream:(none) unpushed:29 dirty:13` while every other source called that workspace clean.
 
-**Is it local by convention?** `tracked:0` with `ondisk` in the hundreds and files predating this session is an **established local store**: nobody has ever committed it and that is the repo's habit, not an oversight. Contrast a genuinely new directory, which has `tracked:0` and files that are all from today.
+**`LOCAL-BY-CONVENTION` means stop proposing a commit.** `tracked:0` with files predating today is a settled habit — measured: 228 files, 141 older than today, none ever tracked.
 
-**Does a durable path exist?** An `export`/`publish`/`share` script sitting *inside* a store is the repo telling you how that content is meant to leave the machine. Search within the store, never repo-wide: measured on the same workspace, a repo-wide sweep returned four unrelated `export_*.sql` and `export.yaml` files and pushed the store's own `tools/export-shared.py` off the end of the list. If the store was written today and that script has not run since, the durable path exists and was not taken — that is a real loss risk, and the remedy is to run it, never to commit the store.
+**`IGNORED-STORE` with a `durable-path?` is a blocker**, and the remedy is to run that script, not to commit the store.
 
-Measured on a real workspace: `.planning/` held 228 files with 0 ever tracked, and `docs/kb/` was gitignored with an explicit comment saying it stays untracked — while `docs/kb/tools/export-shared.py` sat inside it, unrun. Two findings, neither expressible by any other source, and the earlier version instead proposed committing the planning note, which would have broken a convention 228 files deep.
+Quote the repo's own words when you report any of these — the `.gitignore` comment or `CLAUDE.md` line the grep found. Full guidance on all three, and on why a name list was the wrong instrument, is in [reference/repo-conventions.md](reference/repo-conventions.md).
 
 ## Step 2 — grade every finding
 
@@ -443,28 +470,11 @@ After changing any pattern or `rev-list` in this file, run the fixture in [refer
 
 ## Known gaps
 
-| Limit | Detail |
-|---|---|
-| Subagent detection is conversational | No shell command lists them. It rests on reading this conversation plus `ListAgents`/`TaskList`. An agent spawned in a *different* session is invisible here. |
-| Secret patterns are a denylist | It catches the common names. A credential in `config/prod.yaml` under an unusual key is not detected, and a clean report is not a security audit. |
-| `SAFE_SUFFIX` can hide a real one | A genuinely secret `keys.template.json` is excluded by name. The exclusion is worth it — false alarms get the whole section ignored — but it is a real hole. |
-| Marker scan is session-scoped by design | Added lines vs `HEAD`, plus whole untracked files. A stub committed and pushed last week never appears. Widening to the whole repo makes the section useless, so this is a deliberate trade, not an oversight. |
-| Junk vs source is a guess | An untracked file is graded source-or-scratch by path and extension. A new script in `tmp/` grades as junk and is only a NOTE. |
-| Process list is pattern-matched | `pgrep` covers common dev servers by name. A custom binary, or anything inside a container, is missed; `docker ps` is not checked. |
-| No test run | The skill never runs the suite. "Tests were green an hour ago" is not a finding it can make — it only reports skips *added* in this diff. |
-| `gh` covers GitHub only | GitLab, Gitea, and remoteless repos contribute nothing to source E, and their pending work is invisible. |
-| Store list is a guess | Source F probes common names (`.planning`, `docs/kb`, `wiki`, `notes`, ADR dirs). A repo keeping its memory somewhere else reports nothing, and nothing reads as clean. |
-| Export detection is name-based | An `export`/`publish`/`share` script near a store is assumed to be its durable path. It might be unrelated, and a store's real sync might be a Makefile target or a CI job this never sees. Name it as a candidate, not a certainty. |
-| Scope depends on where you launched | Run from a project, the scope is that project. Run from a workspace parent, everything under it is in range and you get asked. Same command, different blast radius — the header names which happened. |
-| `-maxdepth 2` covers children, not siblings | `find .` from the git toplevel sees repos nested below it; sibling repos beside it are invisible unless you run from the parent. A repo at `group/team/repo` needs `-maxdepth 3`. |
-| Worktrees are counted, not inspected | Linked worktrees show up as separate repos when they sit under the root, and are missed entirely when they do not. |
-| Porcelain quotes odd paths | A path with spaces or non-ASCII is emitted quoted (`?? "we ird.env"`). The awk strips surrounding quotes but does not un-escape the interior, so an exotic filename can still print oddly. It is reported, not missed. |
-| `allowed-tools` barely applies | Prefix matching works on single commands, and every scan here is a compound pipeline starting with `cd` or `find` — so the read blocks prompt regardless of what the list says. The list's real job is the opposite one: keeping mutating commands *out*, so secure mode always meets a prompt. |
-| A repo with no commits reports clean | `git diff HEAD` fails where HEAD does not exist yet, source C swallows it, and the section prints nothing. That is the state of every repo on its first day. |
-| No accepted-blocker memory | "Accepted" lives in the conversation, not on disk. Run the check again in a fresh session and the midway rebase is a fresh blocker. The handoff note is the only durable record. |
-| Grades are opinions | The BLOCKER/NOTE table encodes one view of risk, and it is deliberately strict: a bare dirty tree blocks, so NOT SAFE is the common verdict rather than the rare one. A dev who never loses a laptop may reasonably call that, or `unpushed:2`, a note. Change the table, not the individual calls, so the verdict stays consistent. |
+The limits are real and several are deliberate trade-offs — a store list that is a guess, an export detection that is name-based, a scope that depends on where you launched, a strictness choice that makes NOT SAFE common. **Read [reference/known-gaps.md](reference/known-gaps.md) before trusting a readout**, and before changing anything in this file: it says which limits were chosen and why.
 
 ## Reference
 
+- [Known gaps](reference/known-gaps.md) — every limit, with the reason it was accepted.
+- [Repo conventions](reference/repo-conventions.md) — how source F's three findings differ, and how to report a store using the repo's own declared rules.
 - [Smoke test](reference/smoke-test.md) — a six-repo fixture with observed expected output for sources A, B and C, and what each case is defending against.
 - [Remediation ladder](reference/remediation.md) — what secure mode may run, in what order, with which consent, and the operations that stay banned regardless of how the request is phrased.
