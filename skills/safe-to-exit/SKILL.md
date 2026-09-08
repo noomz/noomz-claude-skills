@@ -38,17 +38,35 @@ Nothing below is hardcoded. Resolve once, print it, reuse it.
 ```bash
 WS=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 cd "$WS" || exit 1
-echo "root: $WS"
-echo "now:  $(date '+%F %H:%M')"
-
-# Repos in scope: this repo plus any nested below it. `find .` sees CHILDREN,
-# never siblings — to cover siblings you must run from the parent (see below).
-find . -maxdepth 2 -name .git 2>/dev/null | sed 's|/\.git$||; s|^\./||; s|^$|.|' | sort
+# Did `git rev-parse` actually resolve, or did we fall back to `pwd`? These are
+# very different situations and the fallback is the one that goes wrong.
+INREPO=$(git rev-parse --is-inside-work-tree 2>/dev/null || echo false)
+echo "root:   $WS"
+echo "inrepo: $INREPO"
+echo "now:    $(date '+%F %H:%M')"
+REPOS=$(find . -maxdepth 2 -name .git 2>/dev/null | sed 's|/\.git$||; s|^\./||; s|^$|.|' | sort)
+echo "repos:  $(printf '%s\n' "$REPOS" | grep -c .)"
+printf '%s\n' "$REPOS" | head -20
 ```
 
-Default scope is **this repo**. If `find` from the parent directory would turn up sibling repos, say so and ask before widening — a 19-repo sweep at the end of a one-repo session is noise, but silently ignoring a sibling you edited an hour ago is worse. When the session's own history shows edits outside this repo, widen and say why.
+**Stop here and read the count before running anything else.** Scope is settled first, every time — the gate is the repo count at the resolved root, not whether you walked upward to find them.
 
-If the repo count is `0` you are not in a git repo. Say so; sources A, B, C and E return nothing and would otherwise read as a clean bill of health.
+| `inrepo` | repos | What to do |
+|---|---|---|
+| `true` | 1 | Proceed. This is the ordinary case and needs no question. |
+| `true` | more than 1 | Nested repos or submodules below this one. Ask before including them. |
+| `false` | 1 or more | **`git rev-parse` failed and the root fell back to `pwd`.** You are sitting in a workspace parent, not a project. Ask; never sweep. |
+| either | 0 | Not a git repo and none below it. Say so and stop — sources A, B, C and E would all return empty and read as a clean bill of health. |
+
+When you have to ask, offer these three and wait:
+
+- **this session's writes only** — the repos holding files you actually created or edited this session. Usually what the dev means, and the cheapest.
+- **one named repo** — they name it.
+- **all N** — an explicit, informed sweep.
+
+**Why this is a hard gate rather than a judgement call.** Launched from a directory that is not itself a repo — `~/Projects`, `~/work`, any workspace parent — `git rev-parse --show-toplevel` fails, `WS` becomes `pwd`, and every project underneath is a legitimate `find` hit. Measured: 19 repos, five sources each, and the dev interrupted the run before any verdict appeared. An exit check that has to be interrupted has failed completely — it produced no answer at all, at the one moment its answer was wanted. Cost is a safety property here, not an efficiency concern.
+
+Whatever scope is chosen, **name it in the readout header and in `basis:`** — `1 repo (this session's writes)` reads very differently from `19 repos`, and a scope the dev cannot see is one they cannot correct.
 
 ## Step 1 — five sources, gathered IN PARALLEL
 
@@ -369,6 +387,7 @@ The short version: safest first (write a handoff note, commit, push), each comma
 - **Never `gh auth switch`** — it mutates global state to answer a read-only question.
 - **Do not do the work.** A missing test is a finding, not an invitation to write it.
 - **One root only.** Stay under the resolved root unless the dev widens it.
+- **Settle scope before running any source.** More than one repo at the root, or a root that is not itself a repo, means ask first. Never open with a sweep.
 - **Do not repeat the audit after a "no thanks."** Print the verdict once and stop.
 
 ## Verify before trusting the run
@@ -389,6 +408,7 @@ After changing any pattern or `rev-list` in this file, run the fixture in [refer
 | Process list is pattern-matched | `pgrep` covers common dev servers by name. A custom binary, or anything inside a container, is missed; `docker ps` is not checked. |
 | No test run | The skill never runs the suite. "Tests were green an hour ago" is not a finding it can make — it only reports skips *added* in this diff. |
 | `gh` covers GitHub only | GitLab, Gitea, and remoteless repos contribute nothing to source E, and their pending work is invisible. |
+| Scope depends on where you launched | Run from a project, the scope is that project. Run from a workspace parent, everything under it is in range and you get asked. Same command, different blast radius — the header names which happened. |
 | `-maxdepth 2` covers children, not siblings | `find .` from the git toplevel sees repos nested below it; sibling repos beside it are invisible unless you run from the parent. A repo at `group/team/repo` needs `-maxdepth 3`. |
 | Worktrees are counted, not inspected | Linked worktrees show up as separate repos when they sit under the root, and are missed entirely when they do not. |
 | Porcelain quotes odd paths | A path with spaces or non-ASCII is emitted quoted (`?? "we ird.env"`). The awk strips surrounding quotes but does not un-escape the interior, so an exotic filename can still print oddly. It is reported, not missed. |
