@@ -201,7 +201,7 @@ done
 exit 0
 ```
 
-Three things this block gets wrong if you rewrite it casually.
+Four things this block gets wrong if you rewrite it casually.
 
 **`awk -v` processes escape sequences, so a regex with backslashes arrives mangled.** Measured: `\.skip\(` reached awk as `.skip(` — an unbalanced paren — and awk died once per file while the scan silently found nothing. Bracket classes survive `-v` untouched. Any pattern passed through `-v` must contain no backslashes at all.
 
@@ -329,15 +329,13 @@ while IFS= read -r p; do
   # ever catches the first, and the second is invisible to every other source.
   find "$p" -maxdepth 3 -type d -name .git 2>/dev/null | sed 's|/\.git$||' |
     while IFS= read -r g; do probe_repo "$g"; done
+  # If the ignored path IS a repo, probe_repo already said everything that
+  # matters, durable path included. A store line on top just repeats it.
+  [ -d "${p}.git" ] && continue
   # Text written today, excluding .git internals. Files inside a nested repo
   # reported above are still counted here — double-reporting, not a miss.
   # Knowledge is text; counting every file makes a cache look like the
   # busiest store in the workspace.
-  # If the ignored path IS a repo, probe_repo already said what matters; a
-  # store line on top of it just repeats a whole checkout back at the dev.
-  # If the ignored path IS a repo, probe_repo already said everything that
-  # matters, durable path included. A store line on top just repeats it.
-  [ -d "${p}.git" ] && continue
   fresh=$(find "$p" -type f -mtime -1 -not -path '*/.git/*' \
             \( -name '*.md' -o -name '*.txt' -o -name '*.rst' -o -name '*.adoc' \) 2>/dev/null | grep -c .)
   [ "$fresh" -eq 0 ] && continue
