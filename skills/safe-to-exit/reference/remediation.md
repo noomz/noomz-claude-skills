@@ -38,7 +38,8 @@ Safest first. This ordering is not cosmetic — each rung reduces what the next 
 
 | Rung | Act | Why it sits here |
 |---|---|---|
-| 1 | Write the handoff, and take the repo's own durable path | Costs nothing, reversible, and it is the only rung that survives you being wrong about everything else |
+| 1 | Write the handoff | Costs nothing, reversible, and it is the only rung that survives you being wrong about everything else |
+| 1b | Take the repo's own durable path, if one was found | Records rather than removes — but it runs a script you did not write, and publishing is not reversible. It sits beside rung 1 rather than inside it for that reason |
 | 2 | Stop running agents and servers | Nothing else is stable while something is still writing to the repo |
 | 3 | Unstage secrets | Must happen before any commit, or the commit is the leak |
 | 4 | Commit the work | Turns "on this disk" into "in this repo" |
@@ -136,7 +137,7 @@ Rules that keep this rung safe:
 
 - **Never commit a local-by-convention store to "fix" it.** If source F reported `tracked:0` with files older than today, the repo has chosen not to track that path. Committing 228 files of `.planning/` because one of them is new is a change of convention presented as a repair, and it is not yours to make. Exclude it and say why.
 
-**Never `git add -A` without showing the file list first.** The audit already printed it; if the dev is adding files they have not seen, the noise filter hid something.
+- **Never `git add -A` without showing the file list first.** The audit already printed it; if the dev is adding files they have not seen, the noise filter hid something.
 - **Exclude anything source B flagged.** If a secret is still in the tree, this rung does not run — go back to rung 3.
 - **Never write a message that claims completion.** "implement retry path" for a stubbed function is a lie that survives in history and gets read as truth during a later bisect.
 - **Follow the repo's own commit convention** if it has one; a checkpoint commit that breaks a hook or a lint rule just fails and wastes the moment.

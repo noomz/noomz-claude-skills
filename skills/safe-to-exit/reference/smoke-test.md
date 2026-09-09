@@ -68,10 +68,29 @@ cd ..
 # repo-empty — git init and nothing else
 mkdir repo-empty && cd repo-empty && git init -q .
 cd ..
+
+# repo-stores — the three shapes source F has to see. All three were invisible
+# to every source before the depth-bounded probe existed.
+mkdir -p repo-stores && cd repo-stores && git init -q .
+printf 'vault/\n' > .gitignore            # scratchdir/ stays UNTRACKED, not ignored
+echo seed > seed.md && git add seed.md .gitignore && git commit -qm seed
+mkdir -p vault/kb && (cd vault/kb && git init -q . && echo secret > note.md \
+  && git add note.md && git commit -qm laptop-only && echo dirty >> note.md)
+mkdir -p vault/fresh && (cd vault/fresh && git init -q . && echo x > a.md)
+mkdir -p scratchdir/proj && (cd scratchdir/proj && git init -q . && echo y > b.md \
+  && git add b.md && git commit -qm c)
+cd ..
 ls -1
 ```
 
-Then run sources A, B and C from SKILL.md against `$SC` as the root.
+Then run the blocks from SKILL.md, substituting the right root for each — this matters:
+
+| Source | Root to substitute | Why |
+|---|---|---|
+| A, B, C | `$SC` | the multi-repo root; these discover repos beneath it |
+| F | `$SC/repo-stores` | source F starts with `git status --ignored`, so it needs to run **inside a repo**. Against `$SC`, which is not one, it prints nothing and exits 0 — an empty run that looks exactly like a pass |
+
+That second row is the regression test for the worst bug this skill has had, so a tester who runs source F against the wrong root gets silence from the case that exists to detect silence.
 
 ## Assertions
 
@@ -80,13 +99,16 @@ Observed output, not predicted. Each line below is what the current skill actual
 **Source A** — one line per repo:
 
 ```
-== repo-branches [feature-work] upstream:(none) unpushed:3 unreachable:0 …
-== repo-detached [HEAD]         upstream:(none) unpushed:3 unreachable:2 …
+== repo-branches [feature-work] upstream:(none) unpushed:3 unreachable:0 … dirty:0
+== repo-detached [HEAD]         upstream:(none) unpushed:3 unreachable:2 … dirty:0
 == repo-empty   [no commits yet] nothing committed; sources C and E have nothing to read
 == repo-main    [main]          upstream:(none) unpushed:1 unreachable:0 … dirty:11
 == repo-midway  [main]          upstream:(none) unpushed:2 unreachable:0 … MIDWAY: MERGE_HEAD
-== repo-tracked [main]          upstream:(none) unpushed:1 unreachable:0 …
+== repo-stores  [main]          upstream:(none) unpushed:1 unreachable:0 … dirty:1
+== repo-tracked [main]          upstream:(none) unpushed:1 unreachable:0 … dirty:0
 ```
+
+`repo-stores` prints `dirty:1` and one `?? scratchdir/proj/` line. Note what is *not* there: `vault/kb` and `scratchdir/proj` are repos carrying unpushed commits, and source A reports neither — `vault/` is ignored and `-maxdepth 2` does not reach `scratchdir/proj`. Source F is the only thing that sees them, which is the whole reason it exists.
 
 | Must hold | Fails if |
 |---|---|
@@ -138,6 +160,27 @@ Observed output, not predicted. Each line below is what the current skill actual
 | `app.js` produces two SKIP lines | `.only`/`.skip` detection broke in code, where it matters |
 | no `Binary file … matches` anywhere | `grep -I` was dropped |
 
+**Source F** against `repo-stores`:
+
+```
+NESTED-REPO vault/kb [main] upstream:(none) unpushed:1 dirty:1
+NESTED-REPO vault/fresh [no commits yet] dirty:1
+IGNORED-STORE vault/ text-today:2 text-predating:0
+NESTED-REPO scratchdir/proj [main] upstream:(none) unpushed:1 dirty:0
+LOCAL-BY-CONVENTION scratchdir/ tracked:0 ondisk:1 predating:0
+```
+
+`scratchdir/` must stay out of `.gitignore`. An earlier draft of this fixture ignored it, and `LOCAL-BY-CONVENTION` — one of the three findings the case exists to test — never fired at all while the assertions claimed it did.
+
+| Must hold | Fails if |
+|---|---|
+| `vault/kb` appears | the nested-repo probe went back to a single `${p}.git` test, which only sees a repo sitting *exactly at* the ignored path. One level deeper it printed nothing, exit 0 — and source A's `-maxdepth 2` misses it too, so a commit on no remote vanished from every source at once |
+| `vault/fresh` shows `[no commits yet]` | the unborn-HEAD guard is gone and `unpushed:` prints blank — the same hole source A already guards |
+| `scratchdir/proj` appears | repos under *untracked* paths are unprobed |
+| `scratchdir/` shows `ondisk:1`, not `ondisk:27` | the counts stopped excluding `.git/`, so the number the dev reasons about is mostly git objects |
+| `LOCAL-BY-CONVENTION` prints `tracked:` | the grading table keys on it; without it a grader reads a field that is not there |
+| each repo appears exactly **once** | the dedupe is gone — both halves of source F can reach the same repo |
+
 ## What each case is defending
 
 Every case here exists because something went wrong, or would have.
@@ -148,6 +191,7 @@ Every case here exists because something went wrong, or would have.
 - **Detached HEAD with commits.** Separates a dev who checked out a tag to read something from one who committed four times into limbo. Before `unreachable:`, both graded identically.
 - **An empty branch beside a branch with commits.** Both have no upstream. The grading table calls that a blocker, so the count has to be real or an untouched branch grades the same as three commits of unpushed work.
 - **A conflicted merge.** The skill's own highest-stakes finding, and the input to the accepted-blocker path in the remediation ladder.
+- **The three store shapes.** A repo one level below an ignored path, an ignored repo with no commits, and a repo under an untracked path. All three were invisible to every source at once, and the first is the worst kind: an unpushed commit on no remote, reported nowhere, exit 0.
 - **A repo with no commits.** The state of every repo on its first day. `git diff HEAD` fails there and the error is swallowed, so without a guard the whole repo reads as clean.
 
 ## Run the blocks, do not retype them

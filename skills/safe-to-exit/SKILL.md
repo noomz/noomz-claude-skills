@@ -60,7 +60,7 @@ printf '%s\n' "$REPOS" | head -20
 
 When you have to ask, offer these three and wait:
 
-- **this session's writes only** — the repos holding files you actually created or edited this session. Usually what the dev means, and the cheapest.
+- **this session's writes only** — the repos holding files you actually created or edited this session. Usually what the dev means, and the cheapest. There is no single command for it: take the paths this session wrote, resolve each to its repo with `git -C <dir> rev-parse --show-toplevel`, and run the sources once per distinct root.
 - **one named repo** — they name it.
 - **all N** — an explicit, informed sweep.
 
@@ -123,15 +123,9 @@ done
 exit 0
 ```
 
-Read every field; each maps to a different way work disappears.
+Read every field; each maps to a different way work disappears. `dirty` is edits that exist on this disk and nowhere else — the most common thing lost at exit. `upstream:(none)` is a branch nobody else can see and no backup holds. `unpushed:N` counts commits that exist on **no remote**, via `rev-list --not --remotes` rather than against an upstream: the obvious `@{u}..HEAD` returns nothing exactly when there is no upstream, which is the case the grading table calls a blocker, so an empty new branch and a branch carrying nine unpushed commits would otherwise print identically. `unreachable:N` counts commits on no branch and no remote — it separates a dev who checked out a tag to read something (`0`) from one who committed four times into limbo, and read together with a `[HEAD]` branch name it is what makes a detached HEAD dangerous.
 
-- `dirty` — edits that exist on this disk and nowhere else. The single most common thing lost at exit.
-- `upstream:(none)` — a branch nobody else can see and no backup holds. Commits on it are not "saved" in any sense that survives a dead laptop.
-- `unpushed:N` — commits that exist on **no remote**, counted with `rev-list --not --remotes` rather than against an upstream. This matters: the obvious `@{u}..HEAD` returns nothing when there is no upstream, which is the exact case the grading table calls a blocker. An empty new branch and a branch carrying nine unpushed commits would otherwise print identically.
-- `unreachable:N` — commits reachable from HEAD but from no branch and no remote. This is what makes a detached HEAD dangerous, and it separates the dev who ran `git checkout <tag>` to read something (`0`) from the one who committed four times into limbo (`4`). Without it the two grade the same.
-- `MIDWAY:` — an interrupted rebase, merge, cherry-pick, revert, or bisect. This is the highest-stakes finding on the list: the repo is in a state that looks broken tomorrow, and the usual cold-start reflex is `git reset --hard`, which destroys the very work the rebase was moving.
-- `HEAD` as the branch name means **detached**. Read it together with `unreachable:` — detached with `0` is a browsing session, detached with anything else is work about to vanish.
-- `filtered:N` is printed even when it is the only thing on the line. A repo that prints nothing at all has not been checked; a repo that prints `dirty:0 filtered:12` has.
+`MIDWAY:` is an interrupted rebase, merge, cherry-pick, revert, or bisect — the highest-stakes finding on the list, because the repo looks broken tomorrow and the cold-start reflex is `git reset --hard`, which destroys the very work the rebase was moving. `filtered:N` prints even when it is the only thing on the line: a repo printing nothing at all has not been checked, while one printing `dirty:0 filtered:12` has.
 
 The `exit 0` is deliberate: the last `grep` returns 1 when it matches nothing, and a non-zero exit here reads as failure when the output is fine. **Judge this step by its output, never by its exit status.**
 
@@ -168,11 +162,9 @@ exit 0
 
 A collapsed directory is the same bug one level up: porcelain reports a wholly-untracked directory as a single `?? newmodule/`, so a `.env` inside a brand-new module never reaches the scanner. Hence `--untracked-files=all` in both A and B.
 
-Four details in that awk worth keeping. `st` is preserved and printed because grading needs it — a staged secret is a blocker, an untracked one is a warning, and stripping the prefix would throw that away. `sub(/^.* -> /,"",p)` resolves a rename to its destination, which is the path that would actually be committed. The patterns use bracket classes rather than backslashes because `awk -v` processes escape sequences in the value — the same failure documented in source C. And `f` is a lowercased copy of `p`, used only for matching: the `ls-files` half below uses `grep -Ei`, so without `tolower()` the two halves of the same source disagree about whether `.ENV` is a secret — on a case-insensitive filesystem, which is the macOS default, that is a file that can exist. Every pattern here is written lowercase to suit it. Note that only the *comparison* is lowercased — the path is printed as it really is, because a readout that offers `config.pem` for a file named `CONFIG.PEM` hands the dev a command that fails on a case-sensitive filesystem.
+Four details in that awk worth keeping. `st` is preserved and printed because grading needs it — a staged secret is a blocker, an untracked one a warning. `sub(/^.* -> /,"",p)` resolves a rename to the path that would actually be committed. Patterns use bracket classes, not backslashes, because `awk -v` processes escape sequences in the value. And `f` is a lowercased copy of `p` used only for matching — the path is printed as it really is, since a remedy naming `config.pem` fails on a case-sensitive filesystem for a file called `CONFIG.PEM`.
 
-`SAFE_SUFFIX` exists because `.env.example`, `secrets.template.yaml`, and `credentials.md` are normal committed files, and a checker that cries wolf on them gets ignored on the day it is right. Anything it excludes still deserves a glance if the name is odd.
-
-A hit is a **question, not a verdict** — `config.key` may be a keyboard mapping. Open the file or check its size before calling it a leak, and never print its contents into the readout.
+`SAFE_SUFFIX` exists because `.env.example` and `credentials.md` are normal committed files, and a checker that cries wolf on them gets ignored on the day it is right. A hit is a **question, not a verdict** — `config.key` may be a keyboard mapping. Check the file before calling it a leak, and never print its contents.
 
 ### Source C — unfinished work markers
 
@@ -209,11 +201,11 @@ done
 exit 0
 ```
 
-Two things this block gets wrong if you rewrite it casually.
+Four things this block gets wrong if you rewrite it casually.
 
-**`awk -v` processes escape sequences in the value, so a regex with backslashes arrives mangled.** Measured here: `MARK` containing `\.skip\(` reached awk as `.skip(` — an unbalanced paren — and awk died with `illegal primary in regular expression`, printing the error *once per file* while the scan silently found nothing. Bracket classes (`[.]`, `[(]`) survive `-v` untouched and mean the same thing. Any pattern passed through `-v` must contain no backslashes at all.
+**`awk -v` processes escape sequences, so a regex with backslashes arrives mangled.** Measured: `\.skip\(` reached awk as `.skip(` — an unbalanced paren — and awk died once per file while the scan silently found nothing. Bracket classes survive `-v` untouched. Any pattern passed through `-v` must contain no backslashes at all.
 
-**A prose file that merely discusses skipping tests is not a skipped test.** The untracked half greps whole files, so without a guard it reports documentation as a finding — measured on this skill's own bundle, it returned six hits, every one of them the SKILL.md text you are reading. Under the grading table a skip marker is a blocker, so a new `.md` file would have produced NOT SAFE for talking about `test.skip`. Hence the split: `MARK_SKIP` is never applied to `.md`/`.rst`/`.txt`/`.adoc`, `MARK_TODO` still is, the `NOISE` filter from source A applies here too, and `grep -I` keeps binaries from printing `Binary file X matches` dressed up as a finding. A checker that flags its own README gets muted inside a week, and then it is not there on the day it is right.
+**A prose file that discusses skipping tests is not a skipped test.** The untracked half greps whole files, so without a guard it reports documentation as a finding — measured on this skill's own bundle, six hits, every one of them the text you are reading. Under the grading table a skip marker is a blocker, so a new `.md` would produce NOT SAFE for describing `test.skip`. Hence `DOCS`, the `case` guard that keeps `MARK_SKIP` away from `.md`/`.rst`/`.txt`/`.adoc`, the reuse of source A's `NOISE`, and `grep -I` so a binary cannot print `Binary file X matches` dressed up as a finding.
 
 **Untracked files never appear in `git diff HEAD`.** A brand-new module full of stubs is invisible to the diff scan, which is exactly the file most likely to hold them. `ls-files --others --exclude-standard` is the second half, and it greps whole files on purpose: in a file git has never seen, every line is new. The read-only alternative would be `git add -N`, which mutates the index — not available to this skill.
 
@@ -293,62 +285,88 @@ Do not guess store names. A fixed list of `docs/kb`, `.planning`, `wiki` fits on
 ```bash
 cd /abs/path/to/root || exit 1
 NOISE='(node_modules|__pycache__|[.]venv|venv|dist|build|target|[.]next|[.]pytest_cache|[.]ruff_cache|[.]mypy_cache|[.]gradle|[.]idea|[.]vscode)/|[.]DS_Store|[.]pyc$|[.]log$'
-# What does this repo SAY stays local? Its own words, not your assumptions.
+
+# What does this repo SAY stays local? Its own words. Keep the match, not the
+# first 160 characters of a paragraph that happens to contain it.
 grep -nE '^[[:space:]]*#' .gitignore 2>/dev/null | grep -iE 'commit|track|local|secret|credential|export|share' | head -6
 for f in CLAUDE.md AGENTS.md CONTRIBUTING.md; do
-  [ -f "$f" ] && grep -inE 'never commit|do not commit|stays? (local|untracked)|not tracked|deliberately untracked' "$f" 2>/dev/null | cut -c1-160 | head -3 | sed "s|^|$f:|"
+  [ -f "$f" ] && grep -inoE ".{0,60}(never commit|do not commit|stays? (local|untracked)|not tracked|deliberately untracked).{0,60}" "$f" 2>/dev/null | head -3 | sed "s|^|$f:|"
 done
-# What does it ignore, and which of those did this session touch?
+
+# probe_repo <path> — grade any repo like a repo. Used for repos found at or
+# under an ignored path AND under an untracked one.
+probe_repo() {
+  g=$1
+  if ! git -C "$g" rev-parse --verify -q HEAD >/dev/null 2>&1; then
+    printf 'NESTED-REPO %s [no commits yet] dirty:%s\n' "$g" \
+      "$(git -C "$g" status --porcelain 2>/dev/null | grep -c .)"
+    return
+  fi
+  un=$(git -C "$g" rev-list --count HEAD --not --remotes 2>/dev/null)
+  dy=$(git -C "$g" status --porcelain 2>/dev/null | grep -c .)
+  [ "${un:-0}" -eq 0 ] && [ "$dy" -eq 0 ] && return    # clean and pushed is not a finding
+  up=$(git -C "$g" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || echo '(none)')
+  printf 'NESTED-REPO %s [%s] upstream:%s unpushed:%s dirty:%s\n' "$g" \
+    "$(git -C "$g" rev-parse --abbrev-ref HEAD 2>/dev/null)" "$up" "${un:-0}" "$dy"
+  # Only a repo with NO remote needs an export path — for one that can be
+  # pushed, push IS the durable path, and every ordinary code project would
+  # otherwise advertise its build script as the workspace's way out.
+  [ "$up" = "(none)" ] || return
+  find "$g" -maxdepth 3 -type f \( -name 'export*' -o -name '*publish*' -o -name '*share*' \) \
+    \( -perm -u+x -o -name '*.py' -o -name '*.sh' -o -name '*.rb' \) \
+    2>/dev/null | grep -v __pycache__ | head -2 | sed 's|^|  durable-path? |'
+}
+
+# Both halves can reach the same repo (an ignored store under a tracked
+# parent). Dedupe so one finding prints once.
+{
+# Ignored paths, straight from git. No list of names.
 git status --porcelain --ignored 2>/dev/null | awk '$1=="!!"{$1="";sub(/^ /,"");print}' |
   tr -d '"' | grep -Ev "$NOISE" |
 while IFS= read -r p; do
   case "$p" in */) ;; *) continue ;; esac
-  # Knowledge is TEXT. Counting every file makes a browser-state or build
-  # cache directory look like the busiest store in the workspace.
-  fresh=$(find "$p" -type f -mtime -1 \( -name '*.md' -o -name '*.txt' -o -name '*.rst' -o -name '*.adoc' \) 2>/dev/null | grep -c .)
-  if [ -d "${p}.git" ]; then
-    # A repo hidden inside an ignored path: it has its own git state, and NO
-    # parent-level command can see any of it. Probe it like any other repo.
-    un=$(git -C "$p" rev-list --count HEAD --not --remotes 2>/dev/null)
-    dy=$(git -C "$p" status --porcelain 2>/dev/null | grep -c .)
-    # Clean and fully pushed is not a finding. Twelve quiet repos bury the one
-    # that is not, so only report a nested repo that actually holds something.
-    [ "${un:-0}" -eq 0 ] && [ "$dy" -eq 0 ] && continue
-    printf 'NESTED-REPO %s [%s] upstream:%s unpushed:%s dirty:%s text-today:%s\n' "$p" \
-      "$(git -C "$p" rev-parse --abbrev-ref HEAD 2>/dev/null)" \
-      "$(git -C "$p" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || echo '(none)')" \
-      "$un" "$dy" "$fresh"
-  elif [ "$fresh" -gt 0 ]; then
-    printf 'IGNORED-STORE %s text:%s predating:%s today:%s\n' "$p" \
-      "$(find "$p" -type f -name '*.md' 2>/dev/null | grep -c .)" \
-      "$(find "$p" -type f -mtime +1 2>/dev/null | grep -c .)" "$fresh"
-    find "$p" -maxdepth 3 -type f \( -name 'export*' -o -name '*publish*' -o -name '*share*' \) \
-      2>/dev/null | grep -v __pycache__ | head -2 | sed 's|^|  durable-path? |'
-  fi
+  # A repo may sit AT the ignored path or BELOW it. A single "$p.git" test only
+  # ever catches the first, and the second is invisible to every other source.
+  find "$p" -maxdepth 3 -type d -name .git 2>/dev/null | sed 's|/\.git$||' |
+    while IFS= read -r g; do probe_repo "$g"; done
+  # If the ignored path IS a repo, probe_repo already said everything that
+  # matters, durable path included. A store line on top just repeats it.
+  [ -d "${p}.git" ] && continue
+  # Text written today, excluding .git internals. Files inside a nested repo
+  # reported above are still counted here — double-reporting, not a miss.
+  # Knowledge is text; counting every file makes a cache look like the
+  # busiest store in the workspace.
+  fresh=$(find "$p" -type f -mtime -1 -not -path '*/.git/*' \
+            \( -name '*.md' -o -name '*.txt' -o -name '*.rst' -o -name '*.adoc' \) 2>/dev/null | grep -c .)
+  [ "$fresh" -eq 0 ] && continue
+  printf 'IGNORED-STORE %s text-today:%s text-predating:%s\n' "$p" "$fresh" \
+    "$(find "$p" -type f -mtime +1 -not -path '*/.git/*' \
+         \( -name '*.md' -o -name '*.txt' -o -name '*.rst' -o -name '*.adoc' \) 2>/dev/null | grep -c .)"
+  # A durable path must be runnable — a file called export-2025.csv is not one.
+  find "$p" -maxdepth 3 -type f \( -name 'export*' -o -name '*publish*' -o -name '*share*' \) \
+    \( -perm -u+x -o -name '*.py' -o -name '*.sh' -o -name '*.rb' \) \
+    2>/dev/null | grep -v __pycache__ | head -2 | sed 's|^|  durable-path? |'
 done
-# Untracked-but-not-ignored dirs nothing has ever tracked: local by convention.
+
+# Untracked-but-not-ignored directories nothing has ever tracked.
 git status --porcelain 2>/dev/null | awk '$1=="??"{$1="";sub(/^ /,"");sub(/\/.*/,"/");print}' |
   tr -d '"' | sort -u | grep -Ev "$NOISE" |
 while IFS= read -r d; do
   case "$d" in */) ;; *) continue ;; esac
-  [ -d "$d.git" ] && continue
-  [ "$(git ls-files "$d" 2>/dev/null | grep -c .)" -gt 0 ] && continue
-  printf 'LOCAL-BY-CONVENTION %s ondisk:%s predating:%s\n' "$d" \
-    "$(find "$d" -type f 2>/dev/null | grep -c .)" \
-    "$(find "$d" -type f -mtime +1 2>/dev/null | grep -c .)"
+  find "$d" -maxdepth 3 -type d -name .git 2>/dev/null | sed 's|/\.git$||' |
+    while IFS= read -r g; do probe_repo "$g"; done
+  [ -d "${d}.git" ] && continue      # a whole checkout, not a knowledge store
+  t=$(git ls-files "$d" 2>/dev/null | grep -c .)
+  [ "$t" -gt 0 ] && continue
+  printf 'LOCAL-BY-CONVENTION %s tracked:%s ondisk:%s predating:%s\n' "$d" "$t" \
+    "$(find "$d" -type f -not -path '*/.git/*' 2>/dev/null | grep -c .)" \
+    "$(find "$d" -type f -mtime +1 -not -path '*/.git/*' 2>/dev/null | grep -c .)"
 done
+} | awk '!seen[$0]++'
 exit 0
 ```
 
-Two filters keep the output readable. Freshness counts **text** files only — a browser-state or cache directory otherwise looks like the busiest store in the workspace — and a nested repo that is clean and fully pushed is skipped, because a list of twelve quiet repos buries the one that is not.
-
-**`NESTED-REPO` is the one to read first.** A repo inside an ignored path is invisible to every other source — the parent ignores it, so no parent-level command mentions it, and `-maxdepth 2` misses it when it sits a level deeper. Grade its `upstream`, `unpushed` and `dirty` as you would the main repo's. Measured: a knowledge base at `docs/kb/` came back `upstream:(none) unpushed:29 dirty:13` while every other source called that workspace clean.
-
-**`LOCAL-BY-CONVENTION` means stop proposing a commit.** `tracked:0` with files predating today is a settled habit — measured: 228 files, 141 older than today, none ever tracked.
-
-**`IGNORED-STORE` with a `durable-path?` is a blocker**, and the remedy is to run that script, not to commit the store.
-
-Quote the repo's own words when you report any of these — the `.gitignore` comment or `CLAUDE.md` line the grep found. Full guidance on all three, and on why a name list was the wrong instrument, is in [reference/repo-conventions.md](reference/repo-conventions.md).
+**`NESTED-REPO` is the one to read first.** A repo inside an ignored or untracked path is invisible to every other source, so its own `upstream`/`unpushed`/`dirty` numbers are the only evidence there is — measured, `docs/kb` came back `upstream:(none) unpushed:29 dirty:13` while every other source called that workspace clean. Quote the repo's own words — the `.gitignore` comment or `CLAUDE.md` line the grep found — whenever you report a store. What the three findings mean, why a name list was the wrong instrument, and a worked example are in [reference/repo-conventions.md](reference/repo-conventions.md).
 
 ## Step 2 — grade every finding
 
@@ -362,9 +380,13 @@ The readout is only useful if the grades are consistent. Grade by one question: 
 | `unpushed:N` where N is not 0 | **BLOCKER** | Commits on no remote at all; one dead laptop from gone, and invisible to every teammate |
 | `unreachable:N` where N is not 0 | **BLOCKER** | Commits on no branch and no remote; gone at the next checkout |
 | Untracked files not matching the junk denylist | **BLOCKER** | Not in the index, so not in a stash and not in any commit |
-| Session wrote to an **ignored** store that has an unrun export path | **BLOCKER** | Knowledge exists on this machine only, and the repo's own way out was not taken |
-| Session wrote to an **ignored** store with no export path | NOTE | Local by design; say which store, and stop |
-| New files in an **established local-by-convention** store (`tracked:0`, files predating today) | NOTE | Normal for that repo — and committing them changes a convention rather than repairing anything |
+| `NESTED-REPO` with `unpushed:` not 0, `upstream:(none)`, or `dirty:` not 0 | **BLOCKER** | A repo inside an ignored or untracked path. No other source can see it, so its own numbers are the only evidence there is |
+| `NESTED-REPO … [no commits yet]` with `dirty:` not 0 | **BLOCKER** | Work in a repo that has never committed anything |
+| `NESTED-REPO` with `upstream:(none)` and a `durable-path?` line | **BLOCKER** | The repo cannot be pushed anywhere, and the script inside it is the only declared way out. Run it; do not treat the commit as the fix |
+| `IGNORED-STORE` with a `durable-path?` line | **BLOCKER** | Written today, ignored, and the repo's own way out was not taken |
+| `IGNORED-STORE` with no `durable-path?` | NOTE | Local by design; say which store, and stop |
+| `LOCAL-BY-CONVENTION` with `predating:` not 0 | NOTE | An established store — `predating:` is the test. Committing it changes a convention rather than repairing anything |
+| `LOCAL-BY-CONVENTION` with `predating:0` | **BLOCKER** | Nothing predates today, so this is new work in no commit anywhere — not a convention |
 | Tracked edits uncommitted | **BLOCKER** | Exists on one disk only; a stray `checkout` or worktree removal eats it |
 | `.only` test added this session | **BLOCKER** | It silently disables every other test; a green suite that is not green is worse than a red one |
 | Skipped test added this session | NOTE | Routine when deliberate — say which test, so it is not forgotten |
@@ -377,13 +399,7 @@ The readout is only useful if the grades are consistent. Grade by one question: 
 | PR with review requested from you | NOTE | Someone else is blocked on you |
 | Untracked files matching the junk denylist | NOTE | Noise, and a future accidental commit |
 
-Two of these rows deserve a word, because they are where an earlier draft of this table went wrong.
-
-**A dirty tree is a blocker on its own, deliberately.** Uncommitted edits exist on exactly one disk, and this skill is asked precisely when the dev is about to stop paying attention to that disk. The strict grade is a choice, and it has a known cost: most people end most days dirty, so NOT SAFE will be the common answer rather than the rare one. Read that as the tool doing its job, not as an alarm — the sections below it say which findings are cheap to clear and which are not, and a single `git commit` usually moves the verdict.
-
-If you would rather the common case be quieter, the change is one row: grade a dirty tree NOTE when it stands alone, and keep it a BLOCKER in combination — with `upstream:(none)`, with a `MIDWAY:` state, or with a secret hit, which are the combinations that actually lose work. Change the row, not the individual calls, so the verdict stays mechanical either way.
-
-**`.only` and `skip` are not the same finding.** `.only` silently disables the rest of the suite, so a green run means nothing; that is a blocker. A deliberately skipped test with a reason is ordinary. Source C labels its hits `SKIP` and `TODO`, but it cannot tell `.only` from `skip` on its own — read the matched line before grading.
+Two rows carry a judgement worth stating. **A dirty tree blocks on its own, deliberately** — uncommitted edits exist on exactly one disk, and this skill is asked precisely when the dev stops watching that disk. The cost is that NOT SAFE becomes the common answer; read that as the tool working, and note that a single `git commit` usually moves it. If you would rather the common case be quieter, the change is one row: NOTE when a dirty tree stands alone, BLOCKER in combination with `upstream:(none)`, a `MIDWAY:` state, or a secret. **`.only` and `skip` are not the same finding** — `.only` silently disables the rest of the suite so a green run means nothing; a deliberately skipped test is ordinary. Source C labels hits `SKIP` and `TODO` but cannot tell `.only` from `skip`, so read the matched line before grading.
 
 Then the verdict is mechanical — **do not soften it**:
 
@@ -409,7 +425,8 @@ BLOCKERS
   dirty      4 tracked edits [main]         -> git add -A && git commit
   midway     merge in progress [main]       -> leave it; rung 1 records it (see below)
   agent      cavecrew-builder never reported -> wait for it; do not close yet
-  memory     docs/kb ignored, 29 files today  -> docs/kb/tools/export-shared.py (unrun)
+  memory     docs/kb is its own repo:          -> git -C docs/kb push  (set an upstream first)
+             upstream:(none) unpushed:29 dirty:13
 
 NOTES
   stash      3 entries, oldest 2026-08-14   -> git stash list
@@ -429,7 +446,8 @@ VERDICT
 
 basis: git status/rev-list 1 repo; secret+junk scan (tracked and untracked);
        diff-scoped marker scan vs HEAD; pgrep/lsof/tmux + agent inventory;
-       store probe: .planning local-by-convention (0 of 228 tracked), docs/kb ignored;
+       store probe: docs/kb is a nested repo, ignored by the parent and seen by
+       no other source; .planning local-by-convention (0 of 228 tracked, 141 predating);
        gh pr list as noomz (verified)
 ```
 
@@ -437,8 +455,7 @@ Rules for the block:
 
 - **Four sections, always, in that order.** An empty one prints `(none)`. A deleted section makes the dev wonder whether you looked.
 - **One line per finding, remedy on the same line.** Three or more facts about one thing become columns, not a comma run-on.
-- **Print the source count** (`5/5 sources ran`). It is the difference between a clean report and a blind one.
-- **CARRY FORWARD is written for tomorrow's blank brain**, not for tonight. One or two sentences, the same content a HANDOFF note would carry.
+- **Print the source count** (`6/6 sources ran`) — the difference between a clean report and a blind one — and write **CARRY FORWARD for tomorrow's blank brain**, not for tonight: one or two sentences, the content a HANDOFF note would carry.
 - **The verdict line is the last word and is never hedged.** No "mostly safe", no "probably fine".
 
 ## Secure mode
