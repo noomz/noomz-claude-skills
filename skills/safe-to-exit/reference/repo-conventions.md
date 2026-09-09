@@ -1,8 +1,8 @@
 # Reading a repo's own conventions
 
-Every repo decides for itself what is committed, what stays on the machine, and how local knowledge gets out. Those decisions are written down — in `.gitignore` comments, in `CLAUDE.md` or `AGENTS.md`, in `CONTRIBUTING.md` — and they differ enough between repos that any fixed list of "knowledge directories" is wrong somewhere.
+Every repo decides what is committed, what stays on the machine, and how local knowledge gets out. Those decisions are written down — in `.gitignore` comments, in `CLAUDE.md` or `AGENTS.md`, in `CONTRIBUTING.md` — and they differ enough between repos that any fixed list of "knowledge directories" is wrong somewhere.
 
-So source F discovers, it does not assume. This file explains what each of its three findings means and how to report it.
+So source F discovers, it does not assume. This file explains its three findings, how each is graded, and how to report one.
 
 ## Contents
 
@@ -15,17 +15,26 @@ So source F discovers, it does not assume. This file explains what each of its t
 
 ## Why not a list of names
 
-An earlier version of this skill probed a hardcoded list — `.planning`, `docs/kb`, `wiki`, `notes`. It worked on the repo it was written against and would have reported nothing for the next one, which is the worst possible failure for a check whose empty output means "safe".
+An earlier version probed a hardcoded list — `.planning`, `docs/kb`, `wiki`, `notes`. It worked on the repo it was written against and would have reported nothing for the next one, which is the worst failure available to a check whose empty output means "safe".
 
 Git already knows what a repo ignores. `git status --porcelain --ignored` is the enumeration, and the repo's own instruction files say *why*. Between them there is nothing left to guess.
 
 ## NESTED-REPO
 
-A git repo living inside a path the parent ignores. **Read this one first.**
+A git repo found under a path the parent **ignores**, or under one it merely leaves **untracked**. Source F probes three levels below each. **Read this finding first.**
 
-It is invisible to every other source. The parent ignores it, so no parent-level `status`, `rev-list`, `diff`, or `ls-files` will ever mention it — and `find -maxdepth 2` from the workspace root misses it whenever it sits a level deeper, which is common for a knowledge base under `docs/`.
+It is invisible to every other source. The parent ignores or does not track it, so no parent-level `status`, `rev-list`, `diff` or `ls-files` mentions it — and source A's `find -maxdepth 2` misses it whenever it sits deeper, which is normal for a knowledge base under `docs/`.
 
-Grade it exactly as you would grade the main repo, because it *is* a repo: `upstream:(none)` means nobody else can see it, `unpushed:N` means N commits exist on one disk, `dirty:N` means N files are not even committed there.
+Grade it exactly as you would grade the main repo, because it *is* a repo:
+
+| Line | Grade |
+|---|---|
+| `upstream:(none)`, or `unpushed:` not 0, or `dirty:` not 0 | **BLOCKER** |
+| `[no commits yet]` with `dirty:` not 0 | **BLOCKER** — work in a repo that has never committed anything |
+| a `durable-path?` line beneath it | **BLOCKER** — see below |
+| clean and fully pushed | not printed at all |
+
+A `durable-path?` appears under a nested repo only when that repo has **no remote**. For a repo that can be pushed, push *is* the durable path — without that condition every ordinary code project advertises its build or codegen script as the workspace's way out. Measured: `clife-phoenix` on `origin/main` correctly stays silent while `docs/kb` on no remote surfaces `tools/export-shared.py`.
 
 The trap: because the parent ignores it, everything else reports the workspace as fine. A clean parent tells you nothing about it.
 
@@ -33,54 +42,57 @@ The trap: because the parent ignores it, everything else reports the workspace a
 
 An untracked, un-ignored directory that **nothing has ever tracked** (`tracked:0`), holding files that predate this session.
 
-That combination is a settled habit, not an oversight. Somebody has been writing there for weeks and never committed any of it. Treat new files there as a NOTE, and say which store they are in so tomorrow starts there.
+| Line | Grade |
+|---|---|
+| `predating:` not 0 | NOTE — an established store |
+| `predating:0` | **BLOCKER** — nothing predates today, so this is new work in no commit anywhere |
 
-**Never propose committing it.** Committing a store the repo has kept local for 141 files is a change of convention presented as a repair, and it is not the skill's call. If the dev wants it tracked, that is a decision they make deliberately, not a remedy they accept at the end of a tired day.
+`predating:` is the whole test, and it is the only thing separating a settled habit from a brand-new directory. Somebody writing there for weeks without ever committing is a convention; a directory created an hour ago is not.
 
-Distinguish this from a genuinely new directory, which also shows `tracked:0` but has *no* files predating today. That one is a real blocker — it is new work in no commit anywhere.
+**Never propose committing an established one.** Committing a store the repo has kept local for 141 files is a change of convention presented as a repair, and it is not the skill's call. If the dev wants it tracked, that is a decision they make deliberately, not a remedy they accept at the end of a tired day.
 
 ## IGNORED-STORE
 
-An ignored directory, not a repo, that was written today.
+An ignored directory that was written today and is **not itself a repo** — if it were, `probe_repo` already reported it and the store line is suppressed as a duplicate.
 
-Content there is on this machine only. No commit reaches it; that is what ignored means. Two cases:
+It may still *contain* repos. `IGNORED-STORE vault/` prints alongside the `NESTED-REPO vault/kb` lines beneath it, and its `text-today:` count includes files inside those repos. That is double-reporting, not a miss.
 
-- **A `durable-path?` was found** — an `export`/`publish`/`share` script inside the store. That is the repo's own way of getting the content out, and if it has not run since the store changed, the path exists and was not taken. **Blocker**, and the remedy is to run that script, never to commit the store.
-- **No durable path** — local by design. Say which store and how many files, and stop. Nothing to fix.
+| Line | Grade |
+|---|---|
+| with a `durable-path?` | **BLOCKER** — the repo's own way out was not taken |
+| without one | NOTE — local by design; say which store, and stop |
 
-Search for the script **inside** the store, never repo-wide. Measured: a repo-wide sweep on one workspace returned four unrelated `export_*.sql` and `export.yaml` files and pushed the store's own `tools/export-shared.py` off the end of the list.
+Search for the script **inside** the store, never repo-wide. Measured: a repo-wide sweep returned four unrelated `export_*.sql` and `export.yaml` files and pushed the store's own `tools/export-shared.py` off the end of the list.
 
 ## Quoting the constitution
 
-The grep at the top of source F pulls the repo's own words — `.gitignore` comments and `never commit` / `stays untracked` lines from the agent instruction files.
+The grep at the top of source F pulls the repo's own words — `.gitignore` comments, and `never commit` / `stays untracked` lines from the agent instruction files, anchored on the match rather than the start of the line.
 
 Quote the matching line when you report a store. It changes the finding from an accusation into a fact:
 
-> `docs/kb/` was written today (8 text files) and is ignored by design —
-> `.gitignore:55` says *"LLM knowledge base — env/access details, stays untracked"*.
+> `docs/kb` was written today and is ignored by design — `.gitignore:55` says *"LLM knowledge base — env/access details, stays untracked"*.
 
-The dev wrote that line. Reporting it back is how they know you understood the repo rather than pattern-matched it.
+The dev wrote that line. Reporting it back is how they know you read the repo rather than pattern-matched it.
 
 If the repo says nothing at all, say that too. A store with no declared rule and no export path is a judgement call, and the dev should know they are making one.
 
 ## A worked example
 
-One real workspace, as source F reported it:
+One real workspace, as source F reports it today. Note the shapes: repo lines carry no trailing slash, store lines do.
 
 ```
-NESTED-REPO docs/kb/ [main] upstream:(none) unpushed:29 dirty:13 text-today:8
-LOCAL-BY-CONVENTION .planning/ ondisk:228 predating:141
-IGNORED-STORE docs/local/ text:37 predating:54 today:1
+NESTED-REPO docs/kb [main] upstream:(none) unpushed:29 dirty:13
+  durable-path? docs/kb/tools/export-shared.py
+IGNORED-STORE docs/local/ text-today:1 text-predating:36
+LOCAL-BY-CONVENTION .planning/ tracked:0 ondisk:229 predating:162
 ```
-
-Three findings, three different verdicts:
 
 | Finding | Grade | Why |
 |---|---|---|
-| `docs/kb/` | **BLOCKER** | A repo with no remote, 29 unpushed commits and 13 dirty files — including the decisions ledger. Genuinely one disk. |
-| `.planning/` | NOTE | 141 files predate today and none was ever tracked. Local by convention; committing it changes that. |
-| `docs/local/` | NOTE | Ignored, one file today, no export script found. Local by design. |
+| `docs/kb` | **BLOCKER** | A repo with no remote, 29 unpushed commits and 13 dirty files — including the decisions ledger. Genuinely one disk, and its own export script has not run. |
+| `docs/local/` | NOTE | Ignored, one file today, no export script. Local by design. |
+| `.planning/` | NOTE | 162 files predate today and none was ever tracked. Committing it changes a convention. |
 
 Before source F existed, the check reported this workspace with a single blocker — an untracked planning note — and proposed committing it. It got the grade wrong on the one it saw, and never saw the one that mattered.
 
-That is the failure mode this file exists to prevent: **a knowledge store is not safe because it is invisible.**
+That is the failure this file exists to prevent: **a knowledge store is not safe because it is invisible.**

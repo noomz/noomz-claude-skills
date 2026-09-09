@@ -25,3 +25,4 @@ Read these before trusting a readout, and before "improving" the skill. Each row
 | Nested-repo probe is depth-bounded | Source F looks 3 levels below an ignored or untracked path for a `.git`. A repo deeper than that is invisible — as it was to every source before this bound existed. |
 | Source F sees ignored and untracked paths only | A repo nested inside a *tracked* directory is reached by neither source F nor source A's `-maxdepth 2`. Uncommon, but it is the same silent-empty shape. |
 | `predating:` is the convention test | The grading table's "files predating today" distinction is read from `predating:`, not from a separate flag. `predating:0` on an untracked dir means genuinely new work, not an established store. |
+| Store text counts double-report | An `IGNORED-STORE` line counts text under it, including files inside nested repos already reported above it. Noise, not a miss — but the same file can appear as evidence twice. |

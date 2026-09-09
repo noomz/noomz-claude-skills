@@ -83,7 +83,14 @@ cd ..
 ls -1
 ```
 
-Then run sources A, B and C from SKILL.md against `$SC` as the root.
+Then run the blocks from SKILL.md, substituting the right root for each — this matters:
+
+| Source | Root to substitute | Why |
+|---|---|---|
+| A, B, C | `$SC` | the multi-repo root; these discover repos beneath it |
+| F | `$SC/repo-stores` | source F starts with `git status --ignored`, so it needs to run **inside a repo**. Against `$SC`, which is not one, it prints nothing and exits 0 — an empty run that looks exactly like a pass |
+
+That second row is the regression test for the worst bug this skill has had, so a tester who runs source F against the wrong root gets silence from the case that exists to detect silence.
 
 ## Assertions
 
@@ -92,13 +99,16 @@ Observed output, not predicted. Each line below is what the current skill actual
 **Source A** — one line per repo:
 
 ```
-== repo-branches [feature-work] upstream:(none) unpushed:3 unreachable:0 …
-== repo-detached [HEAD]         upstream:(none) unpushed:3 unreachable:2 …
+== repo-branches [feature-work] upstream:(none) unpushed:3 unreachable:0 … dirty:0
+== repo-detached [HEAD]         upstream:(none) unpushed:3 unreachable:2 … dirty:0
 == repo-empty   [no commits yet] nothing committed; sources C and E have nothing to read
 == repo-main    [main]          upstream:(none) unpushed:1 unreachable:0 … dirty:11
 == repo-midway  [main]          upstream:(none) unpushed:2 unreachable:0 … MIDWAY: MERGE_HEAD
-== repo-tracked [main]          upstream:(none) unpushed:1 unreachable:0 …
+== repo-stores  [main]          upstream:(none) unpushed:1 unreachable:0 … dirty:1
+== repo-tracked [main]          upstream:(none) unpushed:1 unreachable:0 … dirty:0
 ```
+
+`repo-stores` prints `dirty:1` and one `?? scratchdir/proj/` line. Note what is *not* there: `vault/kb` and `scratchdir/proj` are repos carrying unpushed commits, and source A reports neither — `vault/` is ignored and `-maxdepth 2` does not reach `scratchdir/proj`. Source F is the only thing that sees them, which is the whole reason it exists.
 
 | Must hold | Fails if |
 |---|---|

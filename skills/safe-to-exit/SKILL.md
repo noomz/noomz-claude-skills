@@ -201,9 +201,11 @@ done
 exit 0
 ```
 
-Two things this block gets wrong if you rewrite it casually.
+Three things this block gets wrong if you rewrite it casually.
 
 **`awk -v` processes escape sequences, so a regex with backslashes arrives mangled.** Measured: `\.skip\(` reached awk as `.skip(` — an unbalanced paren — and awk died once per file while the scan silently found nothing. Bracket classes survive `-v` untouched. Any pattern passed through `-v` must contain no backslashes at all.
+
+**A prose file that discusses skipping tests is not a skipped test.** The untracked half greps whole files, so without a guard it reports documentation as a finding — measured on this skill's own bundle, six hits, every one of them the text you are reading. Under the grading table a skip marker is a blocker, so a new `.md` would produce NOT SAFE for describing `test.skip`. Hence `DOCS`, the `case` guard that keeps `MARK_SKIP` away from `.md`/`.rst`/`.txt`/`.adoc`, the reuse of source A's `NOISE`, and `grep -I` so a binary cannot print `Binary file X matches` dressed up as a finding.
 
 **Untracked files never appear in `git diff HEAD`.** A brand-new module full of stubs is invisible to the diff scan, which is exactly the file most likely to hold them. `ls-files --others --exclude-standard` is the second half, and it greps whole files on purpose: in a file git has never seen, every line is new. The read-only alternative would be `git add -N`, which mutates the index — not available to this skill.
 
@@ -283,7 +285,6 @@ Do not guess store names. A fixed list of `docs/kb`, `.planning`, `wiki` fits on
 ```bash
 cd /abs/path/to/root || exit 1
 NOISE='(node_modules|__pycache__|[.]venv|venv|dist|build|target|[.]next|[.]pytest_cache|[.]ruff_cache|[.]mypy_cache|[.]gradle|[.]idea|[.]vscode)/|[.]DS_Store|[.]pyc$|[.]log$'
-TEXT='( -name *.md -o -name *.txt -o -name *.rst -o -name *.adoc )'   # documented below
 
 # What does this repo SAY stays local? Its own words. Keep the match, not the
 # first 160 characters of a paragraph that happens to contain it.
@@ -304,10 +305,16 @@ probe_repo() {
   un=$(git -C "$g" rev-list --count HEAD --not --remotes 2>/dev/null)
   dy=$(git -C "$g" status --porcelain 2>/dev/null | grep -c .)
   [ "${un:-0}" -eq 0 ] && [ "$dy" -eq 0 ] && return    # clean and pushed is not a finding
+  up=$(git -C "$g" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || echo '(none)')
   printf 'NESTED-REPO %s [%s] upstream:%s unpushed:%s dirty:%s\n' "$g" \
-    "$(git -C "$g" rev-parse --abbrev-ref HEAD 2>/dev/null)" \
-    "$(git -C "$g" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || echo '(none)')" \
-    "${un:-0}" "$dy"
+    "$(git -C "$g" rev-parse --abbrev-ref HEAD 2>/dev/null)" "$up" "${un:-0}" "$dy"
+  # Only a repo with NO remote needs an export path — for one that can be
+  # pushed, push IS the durable path, and every ordinary code project would
+  # otherwise advertise its build script as the workspace's way out.
+  [ "$up" = "(none)" ] || return
+  find "$g" -maxdepth 3 -type f \( -name 'export*' -o -name '*publish*' -o -name '*share*' \) \
+    \( -perm -u+x -o -name '*.py' -o -name '*.sh' -o -name '*.rb' \) \
+    2>/dev/null | grep -v __pycache__ | head -2 | sed 's|^|  durable-path? |'
 }
 
 # Both halves can reach the same repo (an ignored store under a tracked
@@ -322,21 +329,15 @@ while IFS= read -r p; do
   # ever catches the first, and the second is invisible to every other source.
   find "$p" -maxdepth 3 -type d -name .git 2>/dev/null | sed 's|/\.git$||' |
     while IFS= read -r g; do probe_repo "$g"; done
-  # Text written today, excluding anything inside a repo we just probed and
-  # anything inside .git. Knowledge is text; counting every file makes a cache
-  # look like the busiest store in the workspace.
+  # Text written today, excluding .git internals. Files inside a nested repo
+  # reported above are still counted here — double-reporting, not a miss.
+  # Knowledge is text; counting every file makes a cache look like the
+  # busiest store in the workspace.
   # If the ignored path IS a repo, probe_repo already said what matters; a
   # store line on top of it just repeats a whole checkout back at the dev.
-  if [ -d "${p}.git" ]; then
-    # Only a repo that actually gained TEXT today is a knowledge store. Without
-    # this, every code project advertises its export_*.py as a "durable path".
-    [ "$(find "$p" -maxdepth 3 -type f -mtime -1 -not -path '*/.git/*' \
-          \( -name '*.md' -o -name '*.txt' -o -name '*.rst' -o -name '*.adoc' \) 2>/dev/null | grep -c .)" -eq 0 ] && continue
-    find "$p" -maxdepth 3 -type f \( -name 'export*' -o -name '*publish*' -o -name '*share*' \) \
-      \( -perm -u+x -o -name '*.py' -o -name '*.sh' -o -name '*.rb' \) \
-      2>/dev/null | grep -v __pycache__ | head -2 | sed 's|^|  durable-path? |'
-    continue
-  fi
+  # If the ignored path IS a repo, probe_repo already said everything that
+  # matters, durable path included. A store line on top just repeats it.
+  [ -d "${p}.git" ] && continue
   fresh=$(find "$p" -type f -mtime -1 -not -path '*/.git/*' \
             \( -name '*.md' -o -name '*.txt' -o -name '*.rst' -o -name '*.adoc' \) 2>/dev/null | grep -c .)
   [ "$fresh" -eq 0 ] && continue
@@ -367,9 +368,7 @@ done
 exit 0
 ```
 
-**`NESTED-REPO` is the one to read first.** A repo inside an ignored or untracked path is invisible to every other source, so its own `upstream`/`unpushed`/`dirty` numbers are the only evidence there is — grade them as you would the main repo's. Measured: a knowledge base at `docs/kb` came back `upstream:(none) unpushed:29 dirty:13` while every other source called that workspace clean.
-
-Two filters keep the rest readable: freshness counts **text** files, or a cache directory outranks the knowledge base, and a nested repo that is clean and fully pushed is skipped. Quote the repo's own words — the `.gitignore` comment or `CLAUDE.md` line the grep found — when you report any of this. How the three findings differ, why a name list was the wrong instrument, and a worked example are in [reference/repo-conventions.md](reference/repo-conventions.md).
+**`NESTED-REPO` is the one to read first.** A repo inside an ignored or untracked path is invisible to every other source, so its own `upstream`/`unpushed`/`dirty` numbers are the only evidence there is — measured, `docs/kb` came back `upstream:(none) unpushed:29 dirty:13` while every other source called that workspace clean. Quote the repo's own words — the `.gitignore` comment or `CLAUDE.md` line the grep found — whenever you report a store. What the three findings mean, why a name list was the wrong instrument, and a worked example are in [reference/repo-conventions.md](reference/repo-conventions.md).
 
 ## Step 2 — grade every finding
 
@@ -385,6 +384,7 @@ The readout is only useful if the grades are consistent. Grade by one question: 
 | Untracked files not matching the junk denylist | **BLOCKER** | Not in the index, so not in a stash and not in any commit |
 | `NESTED-REPO` with `unpushed:` not 0, `upstream:(none)`, or `dirty:` not 0 | **BLOCKER** | A repo inside an ignored or untracked path. No other source can see it, so its own numbers are the only evidence there is |
 | `NESTED-REPO … [no commits yet]` with `dirty:` not 0 | **BLOCKER** | Work in a repo that has never committed anything |
+| `NESTED-REPO` with `upstream:(none)` and a `durable-path?` line | **BLOCKER** | The repo cannot be pushed anywhere, and the script inside it is the only declared way out. Run it; do not treat the commit as the fix |
 | `IGNORED-STORE` with a `durable-path?` line | **BLOCKER** | Written today, ignored, and the repo's own way out was not taken |
 | `IGNORED-STORE` with no `durable-path?` | NOTE | Local by design; say which store, and stop |
 | `LOCAL-BY-CONVENTION` with `predating:` not 0 | NOTE | An established store — `predating:` is the test. Committing it changes a convention rather than repairing anything |
