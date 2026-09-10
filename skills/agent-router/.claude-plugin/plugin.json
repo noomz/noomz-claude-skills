@@ -1,0 +1,12 @@
+{
+  "name": "agent-router",
+  "description": "Route subagents to providers and models using current aub quota, tier fit, cost order, and safe invocation shapes.",
+  "version": "0.1.1",
+  "author": {
+    "name": "noomz",
+    "email": "lazym0m3nt@gmail.com"
+  },
+  "homepage": "https://github.com/noomz/noomz-claude-skills",
+  "license": "MIT",
+  "keywords": ["agents", "routing", "quota", "aub", "subagents"]
+}

@@ -1,0 +1,12 @@
+{
+  "name": "session-audit",
+  "description": "Audit Claude Code JSONL transcripts for CLAUDE.md compliance, delegation, cost, and stall patterns.",
+  "version": "0.1.2",
+  "author": {
+    "name": "noomz",
+    "email": "lazym0m3nt@gmail.com"
+  },
+  "homepage": "https://github.com/noomz/noomz-claude-skills",
+  "license": "MIT",
+  "keywords": ["audit", "transcripts", "claude-code", "compliance", "stall-detection"]
+}

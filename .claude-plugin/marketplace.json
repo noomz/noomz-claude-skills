@@ -8,12 +8,12 @@
     {
       "name": "obsidian",
       "source": "./skills/obsidian",
-      "description": "Drive an Obsidian vault from the terminal \u2014 daily notes, search, file ops, tags, tasks, plugin reloading, and headless scripting via the official obsidian CLI."
+      "description": "Drive an Obsidian vault from the terminal — daily notes, search, file ops, tags, tasks, plugin reloading, and headless scripting via the official obsidian CLI."
     },
     {
       "name": "readout",
       "source": "./skills/readout",
-      "description": "Report operational results as terse machine readouts \u2014 delta bridges, scan tables, verdict blocks, alarm stacks, and event sequences \u2014 instead of narrative prose."
+      "description": "Report operational results as terse machine readouts — delta bridges, scan tables, verdict blocks, alarm stacks, and event sequences — instead of narrative prose."
     },
     {
       "name": "domain-gloss",
@@ -33,7 +33,17 @@
     {
       "name": "safe-to-exit",
       "source": "./skills/safe-to-exit",
-      "description": "Verify a working session can be ended safely \u2014 uncommitted and unpushed work, secrets about to be committed, unfinished-work markers, still-running servers, subagents and loop modes, and pull requests waiting on you \u2014 as one SAFE / SAFE WITH NOTES / NOT SAFE verdict."
+      "description": "Verify a working session can be ended safely — uncommitted and unpushed work, secrets about to be committed, unfinished-work markers, still-running servers, subagents and loop modes, and pull requests waiting on you — as one SAFE / SAFE WITH NOTES / NOT SAFE verdict."
+    },
+    {
+      "name": "agent-router",
+      "source": "./skills/agent-router",
+      "description": "Route subagents to providers and models using current aub quota, tier fit, cost order, and safe invocation shapes."
+    },
+    {
+      "name": "session-audit",
+      "source": "./skills/session-audit",
+      "description": "Audit Claude Code JSONL transcripts for CLAUDE.md compliance, delegation, cost, and stall patterns."
     }
   ]
 }
