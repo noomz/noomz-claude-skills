@@ -1,7 +1,7 @@
 {
   "name": "session-audit",
   "description": "Audit Claude Code JSONL transcripts for CLAUDE.md compliance, delegation, cost, and stall patterns.",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "author": {
     "name": "noomz",
     "email": "lazym0m3nt@gmail.com"

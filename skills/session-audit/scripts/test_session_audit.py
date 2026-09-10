@@ -4,6 +4,11 @@ import unittest
 from pathlib import Path
 import session_audit
 
+# Sample vocabulary for the D4 fixtures. The scanner ships no defaults on purpose --
+# money_terms and truth_paths are per-repo config -- so the tests supply their own.
+MONEY = ["premium", "surrender", "surrender value", "cash value", "CV", "NFO", "maturity", "ANB"]
+TRUTH = ["truth-repo", "docs/kb", "wiki_query"]
+
 def rec(kind, sid, stamp, content, side=False):
     return {"type": kind, "sessionId": sid, "timestamp": stamp, "isSidechain": side, "message": {"content": content}}
 
@@ -41,7 +46,7 @@ class AuditTests(unittest.TestCase):
         records = [rec("user", "unwrap", "2026-09-10T00:00:00Z", "<local-command-caveat>ignore</local-command-caveat>\nreal ask here"), assistant("unwrap", "2026-09-10T00:01:00Z", [])]
         with tempfile.TemporaryDirectory() as td:
             Path(td, "x.jsonl").write_text("\n".join(json.dumps(r) for r in records))
-            session = session_audit.scan(td, 1, None, session_audit.DEFAULT_MONEY, session_audit.DEFAULT_TRUTH)[0]
+            session = session_audit.scan(td, 1, None, MONEY, TRUTH)[0]
             self.assertEqual(session.first_prompt, "real ask here")
             self.assertEqual(session.prompts()[0]["prompt"], "real ask here")
 
@@ -75,14 +80,14 @@ class AuditTests(unittest.TestCase):
         records = [rec("user", "bounds", "2026-09-10T00:00:00Z", "please check the info and the reserved seats"), assistant("bounds", "2026-09-10T00:01:00Z", [])]
         with tempfile.TemporaryDirectory() as td:
             Path(td, "x.jsonl").write_text("\n".join(json.dumps(r) for r in records))
-            session = session_audit.scan(td, 1, None, session_audit.DEFAULT_MONEY, session_audit.DEFAULT_TRUTH)[0]
+            session = session_audit.scan(td, 1, None, MONEY, TRUTH)[0]
             self.assertEqual(session.prompt_hits, 0)
 
     def test_topic_terms_from_assistant_text(self):
         records = [rec("user", "topic", "2026-09-10T00:00:00Z", "work"), assistant("topic", "2026-09-10T00:01:00Z", [{"type": "text", "text": "the NFO table and the CV formula and the surrender value"}])]
         with tempfile.TemporaryDirectory() as td:
             Path(td, "x.jsonl").write_text("\n".join(json.dumps(r) for r in records))
-            session = session_audit.scan(td, 1, None, session_audit.DEFAULT_MONEY, session_audit.DEFAULT_TRUTH)[0]
+            session = session_audit.scan(td, 1, None, MONEY, TRUTH)[0]
             self.assertEqual(session.topic_terms, {"nfo", "cv", "surrender value"})
 
     def test_d4_topic_threshold_and_truth_path(self):
@@ -90,11 +95,41 @@ class AuditTests(unittest.TestCase):
         base = [rec("user", "d4", "2026-09-10T00:00:00Z", "issue"), assistant("d4", "2026-09-10T00:01:00Z", [{"type": "text", "text": text}])]
         with tempfile.TemporaryDirectory() as td:
             path = Path(td, "x.jsonl"); path.write_text("\n".join(json.dumps(r) for r in base))
-            session = session_audit.scan(td, 1, None, session_audit.DEFAULT_MONEY, session_audit.DEFAULT_TRUTH)[0]
+            session = session_audit.scan(td, 1, None, MONEY, TRUTH)[0]
             self.assertEqual(session.topic_hits, 12)
             self.assertEqual({r["status"] for r in session_audit.detector_rows(session, session_audit.DEFAULT_WINDOWS) if r["detector"] == "D4"}, {"FAIL"})
-            with path.open("a") as fh: fh.write("\n" + json.dumps(assistant("d4", "2026-09-10T00:02:00Z", [tool("Bash", command="grep clife-core/ file")])))
-            session = session_audit.scan(td, 1, None, session_audit.DEFAULT_MONEY, session_audit.DEFAULT_TRUTH)[0]
+            with path.open("a") as fh: fh.write("\n" + json.dumps(assistant("d4", "2026-09-10T00:02:00Z", [tool("Bash", command="grep truth-repo/ file")])))
+            session = session_audit.scan(td, 1, None, MONEY, TRUTH)[0]
             self.assertEqual({r["status"] for r in session_audit.detector_rows(session, session_audit.DEFAULT_WINDOWS) if r["detector"] == "D4"}, {"PASS"})
+
+    def test_d4_is_na_without_configured_topics(self):
+        records = [rec("user", "d4na", "2026-09-10T00:00:00Z", "issue"),
+                   assistant("d4na", "2026-09-10T00:01:00Z", [{"type": "text", "text": "premium " * 20}])]
+        with tempfile.TemporaryDirectory() as td:
+            Path(td, "x.jsonl").write_text("\n".join(json.dumps(r) for r in records))
+            session = session_audit.scan(td, 1, None, session_audit.DEFAULT_MONEY, session_audit.DEFAULT_TRUTH)[0]
+            rows = {r["detector"]: r["status"] for r in session_audit.detector_rows(session, session_audit.DEFAULT_WINDOWS)}
+            self.assertEqual(rows["D4"], "N/A")
+            self.assertNotEqual(rows["D2"], "N/A")
+
+    def test_empty_windows_keep_every_detector_applicable(self):
+        records = [rec("user", "old", "2020-01-01T00:00:00Z", "work"), assistant("old", "2020-01-01T00:01:00Z", [])]
+        with tempfile.TemporaryDirectory() as td:
+            Path(td, "x.jsonl").write_text("\n".join(json.dumps(r) for r in records))
+            session = session_audit.scan(td, 1, None, MONEY, TRUTH)[0]
+            rows = {r["detector"]: r["status"] for r in session_audit.detector_rows(session, session_audit.DEFAULT_WINDOWS)}
+            self.assertNotIn("N/A", [rows[d] for d in session_audit.DETECTORS])
+            windowed = {r["detector"]: r["status"] for r in session_audit.detector_rows(session, {"D2": "2026-08-26"})}
+            self.assertEqual(windowed["D2"], "N/A")
+
+    def test_null_bash_command_does_not_crash_d6(self):
+        records = [rec("user", "null", "2026-09-10T00:00:00Z", "work"),
+                   assistant("null", "2026-09-10T00:01:00Z", [tool("Agent", prompt="go", model="haiku"),
+                                                              {"type": "tool_use", "name": "Bash", "input": {"command": None}}])]
+        with tempfile.TemporaryDirectory() as td:
+            Path(td, "x.jsonl").write_text("\n".join(json.dumps(r) for r in records))
+            session = session_audit.scan(td, 1, None, MONEY, TRUTH)[0]
+            rows = {r["detector"]: r["status"] for r in session_audit.detector_rows(session, session_audit.DEFAULT_WINDOWS)}
+            self.assertEqual(rows["D6"], "FAIL")
 
 if __name__ == "__main__": unittest.main()

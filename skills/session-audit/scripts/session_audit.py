@@ -4,9 +4,15 @@ import argparse, datetime as dt, hashlib, json, os, re, sys, time
 from collections import Counter
 from pathlib import Path
 
-DEFAULT_MONEY = ["premium", "surrender", "surrender value", "cash value", "CV", "NFO", "non-forfeit", "paid-up", "rate table", "actuar", "loan interest", "maturity", "ANB", "policy year"]
-DEFAULT_TRUTH = ["clife-core", "kwi-actuarial-archive", "docs/kb", "01_Product_and_Actuarial", "filed_rates", "wiki_query", "wiki_read", "clife-schema"]
-DEFAULT_WINDOWS = {"D1": "2026-08-20", "D2": "2026-08-26", "D3": "2026-08-20", "D4": "2026-08-20", "D5": "2026-08-20", "D6": "2026-08-20", "D7": "2026-08-20", "D8": "2026-08-20", "D9": "2026-08-20"}
+DETECTORS = ("D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9")
+# D4 is topic-specific: it only means something once you list the vocabulary of your own
+# high-stakes domain and the repos that hold the authoritative answers. Both ship empty, so
+# D4 reports N/A until `money_terms` and `truth_paths` are set in a config file.
+DEFAULT_MONEY = []
+DEFAULT_TRUTH = []
+# Per-detector adoption dates. Empty means "always applicable"; set `rule_windows` in a config
+# file to the date each rule started applying in your repo, and earlier sessions report N/A.
+DEFAULT_WINDOWS = {}
 FABLE = re.compile(r"fable", re.I); REVIEW = re.compile(r"\breview\b", re.I); OFF_CLAUDE = re.compile(r"\b(?:codex exec|grok\s+(?:-p|--prompt-file))\b", re.I)
 WRAPPERS = ("local-command-caveat", "local-command-stdout", "command-name", "command-message", "command-args", "system-reminder", "task-notification")
 
@@ -69,6 +75,11 @@ def is_top_prompt(message, side):
     if side or blocks(message, "tool_result"): return ""
     return clean_prompt("\n".join(text_blocks(message)))
 
+def command_of(tool):
+    """A recorded Bash command as a string; transcripts occasionally carry a null or a structure."""
+    try: return str(json.loads(tool["raw"]).get("command") or "")
+    except (ValueError, AttributeError): return ""
+
 def checklist_write(tool):
     name, inp = tool["name"], json.loads(tool["raw"])
     if name in ("Write", "Edit"):
@@ -79,7 +90,7 @@ def checklist_write(tool):
 
 class Session:
     def __init__(self, sid):
-        self.id=sid; self.events=[]; self.tools=[]; self.assistant=0; self.narrated=0; self.money_hits=0; self.prompt_hits=0; self.topic_hits=0; self.topic_terms=set(); self.truth=set(); self.models=Counter(); self.agents=0; self.agent_with_model=0; self.big_briefs=0; self.review_prompts=0; self.off_claude=0; self.tokens=Counter(); self.first_prompt=""; self.kind="main"
+        self.id=sid; self.topics_configured=False; self.events=[]; self.tools=[]; self.assistant=0; self.narrated=0; self.money_hits=0; self.prompt_hits=0; self.topic_hits=0; self.topic_terms=set(); self.truth=set(); self.models=Counter(); self.agents=0; self.agent_with_model=0; self.big_briefs=0; self.review_prompts=0; self.off_claude=0; self.tokens=Counter(); self.first_prompt=""; self.kind="main"
 
     def add(self, record, money_patterns, truth_res):
         typ, when, side = record.get("type"), parse_time(record.get("timestamp")), bool(record.get("isSidechain")); message=record.get("message") or {}; event={"type":typ,"time":when,"side":side}
@@ -137,24 +148,28 @@ def scan(store,min_turns,since,money_terms,truth_paths,include_workers=False):
                     if sid: sessions.setdefault(sid,Session(sid)).add(rec,patterns,truth_res)
         except OSError: continue
     kept=[s for s in sessions.values() if s.assistant>=min_turns and (not since or (s.date() and s.date().date()>=since))]
+    for s in kept: s.topics_configured=bool(money_terms and truth_paths)
     return [s for s in kept if include_workers or s.kind == "main"]
 
 def applicable(session,detector,windows):
-    d=session.date(); return bool(d and d.date() >= dt.date.fromisoformat(windows[detector]))
+    if detector == "D4" and not session.topics_configured: return False
+    window=windows.get(detector)
+    if not window: return True
+    d=session.date(); return bool(d and d.date() >= dt.date.fromisoformat(window))
 
 def detector_rows(session,windows):
     positions=[i+1 for i,t in enumerate(session.tools) if checklist_write(t)]; state=bool(positions and positions[0] <= 6); narration=session.narrated/session.assistant if session.assistant else 1
     rows={"D1":len(session.tools)>=15 and not state,"D2":narration<.30,"D3":sum(t["name"]=="Bash" for t in session.tools)>=100 and session.agents<=3,"D4":session.topic_hits>=10 and len(session.topic_terms)>=3 and not session.truth,"D5":any(FABLE.search(m) for m in session.models) and session.agent_with_model<session.agents,"D6":False,"D7":session.review_prompts>2,"D8":session.big_briefs>0,"D9":any(p["label"] in ("LOOP","GRIND") for p in session.prompts())}
-    delegation=[(i,t) for i,t in enumerate(session.tools) if t["name"] in ("Agent","Task","Workflow") or (t["name"]=="Bash" and OFF_CLAUDE.search(json.loads(t["raw"]).get("command", "")))]
+    delegation=[(i,t) for i,t in enumerate(session.tools) if t["name"] in ("Agent","Task","Workflow") or (t["name"]=="Bash" and OFF_CLAUDE.search(command_of(t)))]
     for i,_ in delegation:
-        if not any(t["name"]=="Bash" and re.search(r"git\s+(?:diff|status)\b",json.loads(t["raw"]).get("command", ""),re.I) for t in session.tools[i+1:i+6]): rows["D6"]=True; break
+        if not any(t["name"]=="Bash" and re.search(r"git\s+(?:diff|status)\b",command_of(t),re.I) for t in session.tools[i+1:i+6]): rows["D6"]=True; break
     return [{"detector":d,"status":"N/A" if not applicable(session,d,windows) else "FAIL" if fail else "PASS"} for d,fail in rows.items()]
 
 def report(sessions,windows,store,min_turns,elapsed,json_out=None,flag=None,top=10,prompt_sid=None,scanned=None,excluded_workers=0):
     prompts=[p for s in sessions for p in s.prompts()]; rows={s.id:detector_rows(s,windows) for s in sessions}; labels=Counter(p["label"] for p in prompts); dates=[s.date() for s in sessions if s.date()]
     print("store: %s\nsessions scanned: %d\nsessions kept: %d main (+%d workers excluded)\ndate range: %s to %s\nelapsed: %.1fs"%(store,scanned if scanned is not None else len(sessions),len(sessions),excluded_workers,min((d.date().isoformat() for d in dates),default="N/A"),max((d.date().isoformat() for d in dates),default="N/A"),elapsed))
     print("\ndetector | rule                 | applicable | fail | fail %"); short={"D1":"checklist","D2":"narrate","D3":"subagents","D4":"truth repos","D5":"cheap models","D6":"artifact verify","D7":"review rounds","D8":"brief size","D9":"not stuck"}
-    for d in windows:
+    for d in DETECTORS:
         statuses=[x["status"] for r in rows.values() for x in r if x["detector"]==d]; app=sum(x!="N/A" for x in statuses); fail=sum(x=="FAIL" for x in statuses); suffix=""
         if d=="D1": suffix=" (late checklist: %d)"%sum(1 for s in sessions if applicable(s,"D1",windows) and len(s.tools)>=15 and not any(checklist_write(t) for t in s.tools[:6]) and any(checklist_write(t) for t in s.tools[6:]))
         print("%-9s | %-20s | %10d | %4d | %5s%s"%(d,short[d],app,fail,("%.1f%%"%(100*fail/app)) if app else "N/A",suffix))
@@ -180,6 +195,6 @@ def report(sessions,windows,store,min_turns,elapsed,json_out=None,flag=None,top=
         payload={"store":str(store),"sessions":[{"session_id":s.id,"kind":s.kind,"assistant_turns":s.assistant,"money_hits":s.money_hits,"prompt_hits":s.prompt_hits,"topic_hits":s.topic_hits,"topic_terms":sorted(s.topic_terms),"truth_paths":sorted(s.truth),"detectors":rows[s.id]} for s in sessions],"prompts":prompts,"aggregates":{"labels":dict(labels),"agent_calls":agent_total,"agent_calls_with_model":with_model,"off_claude":sum(s.off_claude for s in sessions),"tokens_per_model":dict(token_models)}}; Path(json_out).write_text(json.dumps(payload,indent=2,ensure_ascii=False),encoding="utf-8")
 
 def main(argv=None):
-    started=time.monotonic(); ap=argparse.ArgumentParser(); ap.add_argument("--store"); ap.add_argument("--since"); ap.add_argument("--config"); ap.add_argument("--include-workers",action="store_true"); ap.add_argument("--json",dest="json_out"); ap.add_argument("--flag",choices=["D1","D2","D3","D4","D5","D6","D7","D8","D9"]); ap.add_argument("--top",type=int,default=10); ap.add_argument("--prompts"); ap.add_argument("--min-turns",type=int,default=5); args=ap.parse_args(argv); cwd=os.getcwd(); store=Path(args.store) if args.store else default_store(cwd); money,truth,windows=load_config(cwd,args.config); all_sessions=scan(store,args.min_turns,dt.date.fromisoformat(args.since) if args.since else None,money,truth,True); sessions=all_sessions if args.include_workers else [s for s in all_sessions if s.kind=="main"]; report(sessions,windows,str(store),args.min_turns,time.monotonic()-started,args.json_out,args.flag,args.top,args.prompts,len(all_sessions),sum(s.kind=="worker" for s in all_sessions if not args.include_workers))
+    started=time.monotonic(); ap=argparse.ArgumentParser(); ap.add_argument("--store"); ap.add_argument("--since"); ap.add_argument("--config"); ap.add_argument("--include-workers",action="store_true"); ap.add_argument("--json",dest="json_out"); ap.add_argument("--flag",choices=DETECTORS); ap.add_argument("--top",type=int,default=10); ap.add_argument("--prompts"); ap.add_argument("--min-turns",type=int,default=5); args=ap.parse_args(argv); cwd=os.getcwd(); store=Path(args.store) if args.store else default_store(cwd); money,truth,windows=load_config(cwd,args.config); all_sessions=scan(store,args.min_turns,dt.date.fromisoformat(args.since) if args.since else None,money,truth,True); sessions=all_sessions if args.include_workers else [s for s in all_sessions if s.kind=="main"]; report(sessions,windows,str(store),args.min_turns,time.monotonic()-started,args.json_out,args.flag,args.top,args.prompts,len(all_sessions),sum(s.kind=="worker" for s in all_sessions if not args.include_workers))
 
 if __name__ == "__main__": main()

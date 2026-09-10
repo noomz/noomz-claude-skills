@@ -14,3 +14,5 @@ build/
 .claude/local/
 .omc/
 .pi/
+__pycache__/
+*.py[cod]

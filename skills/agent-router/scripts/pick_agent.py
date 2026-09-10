@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -18,8 +19,14 @@ TIERS = {
 }
 STAMP = Path(os.path.expanduser("~/.cache/agent-router/last_read.json"))
 
+def aub_path():
+    """Resolve the aub binary: $AGENT_ROUTER_AUB, then PATH, then the usual install dir."""
+    override = os.getenv("AGENT_ROUTER_AUB")
+    if override: return override
+    return shutil.which("aub") or os.path.expanduser("~/.local/bin/aub")
+
 def aub(fresh=False):
-    cmd = ["/Users/noomz/.local/bin/aub"]
+    cmd = [aub_path()]
     if not fresh: cmd.append("--cached")
     cmd += ["--json", "--provider", "all"]
     try:

@@ -1,17 +1,19 @@
 # Wiring
 
-Add this to the repository's `.claude/settings.local.json`. `CLAUDE_PLUGIN_ROOT` is only defined for hooks shipped inside a plugin's own `hooks/hooks.json`; a repository's `.claude/settings.local.json` does not get it.
+Add this to the repository's `.claude/settings.local.json`. `CLAUDE_PLUGIN_ROOT` is only defined for hooks shipped inside a plugin's own `hooks/hooks.json`; a repository's `.claude/settings.local.json` does not get it, so the commands below spell out the path. `~` is expanded because hook commands run through a shell.
 
 ```json
 {
   "hooks": {
-    "SessionStart": [{"hooks": [{"type": "command", "command": "python3 /Users/noomz/.claude/plugins/marketplaces/noomz-claude-skills/skills/agent-router/scripts/quota_snapshot.py"}]}],
-    "PreToolUse": [{"matcher": "Agent|Task|Workflow", "hooks": [{"type": "command", "command": "python3 /Users/noomz/.claude/plugins/marketplaces/noomz-claude-skills/skills/agent-router/scripts/agent_call_guard.py"}]}]
+    "SessionStart": [{"hooks": [{"type": "command", "command": "python3 ~/.claude/plugins/marketplaces/noomz-claude-skills/skills/agent-router/scripts/quota_snapshot.py"}]}],
+    "PreToolUse": [{"matcher": "Agent|Task|Workflow", "hooks": [{"type": "command", "command": "python3 ~/.claude/plugins/marketplaces/noomz-claude-skills/skills/agent-router/scripts/agent_call_guard.py"}]}]
   }
 }
 ```
 
-A plugin-level `hooks/hooks.json` is the alternative if the router should apply in every repo.
+If the marketplace is installed elsewhere, substitute that directory. A plugin-level `hooks/hooks.json` is the alternative if the router should apply in every repo.
+
+The scripts locate the `aub` binary via `$AGENT_ROUTER_AUB`, then `PATH`, then `~/.local/bin/aub`. Set `AGENT_ROUTER_AUB` if it lives somewhere else; a missing binary is non-fatal and simply produces no output.
 
 Paste this paragraph into the repository `CLAUDE.md`:
 
