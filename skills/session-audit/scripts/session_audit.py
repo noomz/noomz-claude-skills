@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Stream Claude Code JSONL transcripts and measure session-audit detectors."""
 import argparse, datetime as dt, hashlib, json, os, re, sys, time
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 
 DETECTORS = ("D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9")
@@ -90,10 +90,21 @@ def checklist_write(tool):
 
 class Session:
     def __init__(self, sid):
-        self.id=sid; self.topics_configured=False; self.events=[]; self.tools=[]; self.assistant=0; self.narrated=0; self.money_hits=0; self.prompt_hits=0; self.topic_hits=0; self.topic_terms=set(); self.truth=set(); self.models=Counter(); self.agents=0; self.agent_with_model=0; self.big_briefs=0; self.review_prompts=0; self.off_claude=0; self.tokens=Counter(); self.first_prompt=""; self.kind="main"
+        self.id=sid; self.topics_configured=False; self.events=[]; self.tools=[]; self.assistant=0; self.narrated=0; self.money_hits=0; self.prompt_hits=0; self.topic_hits=0; self.topic_terms=set(); self.truth=set(); self.models=Counter(); self.agents=0; self.agent_with_model=0; self.big_briefs=0; self.review_prompts=0; self.off_claude=0; self.tokens=Counter(); self.token_usage=defaultdict(Counter); self.subagent_token_usage=defaultdict(Counter); self.usage_seen=set(); self.first_prompt=""; self.kind="main"
 
-    def add(self, record, money_patterns, truth_res):
+    def add(self, record, money_patterns, truth_res, subagent=False):
         typ, when, side = record.get("type"), parse_time(record.get("timestamp")), bool(record.get("isSidechain")); message=record.get("message") or {}; event={"type":typ,"time":when,"side":side}
+        usage=message.get("usage") or {}
+        usage_key=message.get("id") or record.get("requestId") or record.get("uuid")
+        usage_is_new=usage_key is not None and usage_key not in self.usage_seen
+        if usage_is_new:
+            self.usage_seen.add(usage_key)
+            model=str(message.get("model", ""))
+            fields={name: int(usage.get(name, 0) or 0) for name in ("input_tokens", "cache_read_input_tokens", "output_tokens", "cache_creation_input_tokens")}
+            target=self.subagent_token_usage if subagent else self.token_usage
+            for name, value in fields.items(): target[model][name] += value
+            if not subagent: self.tokens[model] += fields["output_tokens"] + fields["cache_creation_input_tokens"]
+        if subagent: return
         if typ == "user":
             prompt=is_top_prompt(message, side); event.update(prompt=prompt, top_level=bool(prompt))
             if prompt:
@@ -102,7 +113,7 @@ class Session:
                     self.first_prompt=prompt
                     if prompt.startswith("<teammate-message") or "You are a subagent" in prompt: self.kind="worker"
         elif typ == "assistant":
-            self.assistant += 1; narrated=any(len(t.strip()) >= 20 for t in text_blocks(message)); self.narrated += int(narrated); model=str(message.get("model", "")); self.models[model] += 1; usage=message.get("usage") or {}; tokens=int(usage.get("output_tokens",0) or 0)+int(usage.get("cache_creation_input_tokens",0) or 0); self.tokens[model]+=tokens; compact_tools=[]
+            self.assistant += 1; narrated=any(len(t.strip()) >= 20 for t in text_blocks(message)); self.narrated += int(narrated); model=str(message.get("model", "")); self.models[model] += 1; tokens=(int(usage.get("output_tokens",0) or 0)+int(usage.get("cache_creation_input_tokens",0) or 0)) if usage_is_new else 0; compact_tools=[]
             if not side:
                 for value in text_blocks(message):
                     found=matches(value, money_patterns); self.topic_hits+=len(found); self.topic_terms.update(x.lower() for x in found)
@@ -136,16 +147,25 @@ class Session:
             result.append({"session_id":self.id,"prompt":self.events[start]["prompt"],"date":self.events[start]["time"].isoformat() if self.events[start]["time"] else "","wall_min":round(wall,2),"turns":len(assistant_events),"uniq_ratio":round(uniq,4),"max_dark_run":max_dark,"max_gap_min":round(max(gaps) if gaps else 0.0,2),"tokens":sum(e["tokens"] for e in group if e["type"] == "assistant"),"agents":agents,"label":label})
         return result
 
-def scan(store,min_turns,since,money_terms,truth_paths,include_workers=False):
+def scan(store,min_turns,since,money_terms,truth_paths,include_workers=False,include_subagents=True):
     patterns=term_patterns(money_terms); truth_res=[(p,re.compile(re.escape(p),re.I)) for p in truth_paths]; sessions={}
-    for path in sorted(Path(store).glob("*.jsonl")):
+    root=Path(store)
+    paths=sorted(root.rglob("*.jsonl")) if include_subagents else sorted(root.glob("*.jsonl"))
+    for path in paths:
+        relative=path.relative_to(root)
+        parts={part.lower() for part in relative.parts[:-1]}
+        subagent=path.name.startswith("agent-") and "subagents" in parts
+        if not include_workers and ("worker" in parts or "workers" in parts or "team" in parts or "teams" in parts): continue
         try:
             with path.open("r",encoding="utf-8",errors="replace") as fh:
                 for line in fh:
                     try: rec=json.loads(line)
                     except ValueError: continue
                     sid=rec.get("sessionId")
-                    if sid: sessions.setdefault(sid,Session(sid)).add(rec,patterns,truth_res)
+                    if subagent and not sid:
+                        before=list(relative.parts[:relative.parts.index("subagents")])
+                        sid=before[-1] if before else None
+                    if sid: sessions.setdefault(sid,Session(sid)).add(rec,patterns,truth_res,subagent=subagent)
         except OSError: continue
     kept=[s for s in sessions.values() if s.assistant>=min_turns and (not since or (s.date() and s.date().date()>=since))]
     for s in kept: s.topics_configured=bool(money_terms and truth_paths)
@@ -179,7 +199,17 @@ def report(sessions,windows,store,min_turns,elapsed,json_out=None,flag=None,top=
     for p in worst: print("%-8s | %-10s | %8.2f | %5d | %.2f | %s"%(p["session_id"][:8],p["date"][:10],p["wall_min"],p["turns"],p["uniq_ratio"],p["prompt"][:80].replace("\n"," ")))
     agent_total=sum(s.agents for s in sessions); with_model=sum(s.agent_with_model for s in sessions); print("\ndelegation\nAgent calls total: %d; with model: %d; without: %d"%(agent_total,with_model,agent_total-with_model)); print("off-Claude Bash delegations: %d"%sum(s.off_claude for s in sessions)); token_models=Counter()
     for s in sessions: token_models.update(s.tokens)
-    print("tokens per model (output + cache_creation):"); [print("  %-30s %d"%(model or "<unknown>",count)) for model,count in sorted(token_models.items())]
+    token_usage=defaultdict(Counter); subagent_usage=defaultdict(Counter)
+    for s in sessions:
+        for model, fields in s.token_usage.items(): token_usage[model].update(fields)
+        for model, fields in s.subagent_token_usage.items(): subagent_usage[model].update(fields)
+    print("tokens per model (input | cache_read | output | cache_creation):")
+    for model in sorted(set(token_usage) | set(subagent_usage)):
+        fields=token_usage[model]; name=model or "<unknown>"
+        print("  %-30s %d | %d | %d | %d"%(name,fields["input_tokens"],fields["cache_read_input_tokens"],fields["output_tokens"],fields["cache_creation_input_tokens"]))
+        subfields=subagent_usage[model]
+        if subfields:
+            print("    subagent tokens             %d | %d | %d | %d"%(subfields["input_tokens"],subfields["cache_read_input_tokens"],subfields["output_tokens"],subfields["cache_creation_input_tokens"]))
     if flag:
         selected=[(s.date() or dt.datetime.min.replace(tzinfo=dt.timezone.utc),s) for s in sessions if {x["detector"]:x["status"] for x in rows[s.id]}.get(flag)=="FAIL"]; print("\nflagged %s (top %d)"%(flag,top))
         for _,s in sorted(selected,key=lambda x:x[0])[:top]:
@@ -192,9 +222,20 @@ def report(sessions,windows,store,min_turns,elapsed,json_out=None,flag=None,top=
         print("\nprompts for %s"%prompt_sid)
         for p in next((s.prompts() for s in sessions if s.id.startswith(prompt_sid) or s.id==prompt_sid),[]): print(json.dumps(p,ensure_ascii=False,sort_keys=True))
     if json_out:
-        payload={"store":str(store),"sessions":[{"session_id":s.id,"kind":s.kind,"assistant_turns":s.assistant,"money_hits":s.money_hits,"prompt_hits":s.prompt_hits,"topic_hits":s.topic_hits,"topic_terms":sorted(s.topic_terms),"truth_paths":sorted(s.truth),"detectors":rows[s.id]} for s in sessions],"prompts":prompts,"aggregates":{"labels":dict(labels),"agent_calls":agent_total,"agent_calls_with_model":with_model,"off_claude":sum(s.off_claude for s in sessions),"tokens_per_model":dict(token_models)}}; Path(json_out).write_text(json.dumps(payload,indent=2,ensure_ascii=False),encoding="utf-8")
+        payload={"store":str(store),"sessions":[{"session_id":s.id,"kind":s.kind,"assistant_turns":s.assistant,"money_hits":s.money_hits,"prompt_hits":s.prompt_hits,"topic_hits":s.topic_hits,"topic_terms":sorted(s.topic_terms),"truth_paths":sorted(s.truth),"detectors":rows[s.id]} for s in sessions],"prompts":prompts,"aggregates":{"labels":dict(labels),"agent_calls":agent_total,"agent_calls_with_model":with_model,"off_claude":sum(s.off_claude for s in sessions),"tokens_per_model":{model:fields["output_tokens"]+fields["cache_creation_input_tokens"] for model,fields in token_usage.items()},"token_fields_per_model":{model:dict(fields) for model,fields in token_usage.items()},"subagent_tokens_per_model":{model:dict(fields) for model,fields in subagent_usage.items()}}}; Path(json_out).write_text(json.dumps(payload,indent=2,ensure_ascii=False),encoding="utf-8")
+
+def selftest():
+    usage={"input_tokens":11,"cache_read_input_tokens":7,"output_tokens":13,"cache_creation_input_tokens":17}
+    records=[{"type":"assistant","message":{"id":"message-1","model":"selftest","usage":usage}} for _ in range(3)]
+    session=Session("selftest")
+    for record in records: session.add(record, [], [])
+    assert session.token_usage["selftest"] == Counter(usage)
+    assert session.tokens["selftest"] == usage["output_tokens"] + usage["cache_creation_input_tokens"]
+    print("selftest: PASS")
 
 def main(argv=None):
-    started=time.monotonic(); ap=argparse.ArgumentParser(); ap.add_argument("--store"); ap.add_argument("--since"); ap.add_argument("--config"); ap.add_argument("--include-workers",action="store_true"); ap.add_argument("--json",dest="json_out"); ap.add_argument("--flag",choices=DETECTORS); ap.add_argument("--top",type=int,default=10); ap.add_argument("--prompts"); ap.add_argument("--min-turns",type=int,default=5); args=ap.parse_args(argv); cwd=os.getcwd(); store=Path(args.store) if args.store else default_store(cwd); money,truth,windows=load_config(cwd,args.config); all_sessions=scan(store,args.min_turns,dt.date.fromisoformat(args.since) if args.since else None,money,truth,True); sessions=all_sessions if args.include_workers else [s for s in all_sessions if s.kind=="main"]; report(sessions,windows,str(store),args.min_turns,time.monotonic()-started,args.json_out,args.flag,args.top,args.prompts,len(all_sessions),sum(s.kind=="worker" for s in all_sessions if not args.include_workers))
+    started=time.monotonic(); ap=argparse.ArgumentParser(); ap.add_argument("--store"); ap.add_argument("--since"); ap.add_argument("--config"); ap.add_argument("--include-workers",action="store_true"); ap.add_argument("--include-subagents",action=argparse.BooleanOptionalAction,default=True); ap.add_argument("--selftest",action="store_true"); ap.add_argument("--json",dest="json_out"); ap.add_argument("--flag",choices=DETECTORS); ap.add_argument("--top",type=int,default=10); ap.add_argument("--prompts"); ap.add_argument("--min-turns",type=int,default=5); args=ap.parse_args(argv)
+    if args.selftest: selftest(); return
+    cwd=os.getcwd(); store=Path(args.store) if args.store else default_store(cwd); money,truth,windows=load_config(cwd,args.config); all_sessions=scan(store,args.min_turns,dt.date.fromisoformat(args.since) if args.since else None,money,truth,True,args.include_subagents); sessions=all_sessions if args.include_workers else [s for s in all_sessions if s.kind=="main"]; report(sessions,windows,str(store),args.min_turns,time.monotonic()-started,args.json_out,args.flag,args.top,args.prompts,len(all_sessions),sum(s.kind=="worker" for s in all_sessions if not args.include_workers))
 
 if __name__ == "__main__": main()
