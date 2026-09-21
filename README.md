@@ -10,7 +10,7 @@ Each skill lives in its own directory under `skills/` and follows the [official 
 |---|---|
 | [`obsidian`](skills/obsidian) | Drive an Obsidian vault from the terminal — daily notes, search, file ops, tags, tasks, plugin reloading, headless scripting. |
 | [`readout`](skills/readout) | Report operational results as terse machine readouts — delta bridges, scan tables, verdict blocks, alarm stacks, event sequences — instead of narrative prose. |
-| [`domain-gloss`](skills/domain-gloss) | Keep English domain terms and schema identifiers exact, with first-language explanations beside jargon, false friends, and opaque table or field names. |
+| [`domain-gloss`](skills/domain-gloss) | Keep English domain terms and schema identifiers exact, with first-language explanations beside jargon, false friends, and opaque table or field names. Optional standing-mode reminder hook (`CLAUDE_GLOSS_HOOK=on`), silent by default. |
 | [`thai-natural-voice`](skills/thai-natural-voice) | Draft natural Thai for agent replies, technical work, and publishing — generic profiles, source-inspired presets, and a `/capture-thai-voice` workflow for links, names, documents, or Slack authors through an authorized connector or local CLI. |
 | [`blank-brain-recap`](skills/blank-brain-recap) | Rebuild yesterday's working context in any repo or multi-repo workspace — last active day from git, planning STATE and HANDOFF notes, open PRs, dated ledger rows — as one terse readout ending in a single next step. |
 | [`safe-to-exit`](skills/safe-to-exit) | End-of-session safety check (also `/safe-to-exit`) — uncommitted and unpushed work, secrets about to be committed, unfinished-work markers, still-running servers and subagents, PRs waiting on you — as one SAFE / NOT SAFE verdict with the fix for each blocker. |
@@ -54,6 +54,8 @@ ln -s "$(pwd)/skills/safe-to-exit" .agents/skills/safe-to-exit
 
 Each skill requires `SKILL.md`; the optional `agents/openai.yaml` files provide Codex display metadata and starter prompts.
 
+Bundled hooks (for example `domain-gloss`'s standing-mode reminder) load only through plugin install; a symlinked or copied skill directory gets the skill without its hook.
+
 ### Claude Code — `/plugin` (recommended)
 
 This repo is also a Claude Code plugin marketplace. Install from inside Claude Code:
@@ -96,6 +98,8 @@ Or symlink so updates flow through:
 ```bash
 ln -s "$(pwd)/skills/obsidian" ~/.claude/skills/obsidian
 ```
+
+Manual copies and symlinks skip bundled hooks; use `/plugin` install when a skill ships one.
 
 ### Claude.ai
 

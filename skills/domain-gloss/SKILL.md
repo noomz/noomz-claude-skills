@@ -265,7 +265,7 @@ Unknown status semantics — the spelling alone does not define the workflow:
 
 | Invocation | Effect |
 |---|---|
-| *(none)* | Off until asked — ambient repo state does not trigger this skill |
+| *(none)* | Off until asked — ambient repo state does not trigger this skill. The one exception is the opt-in hook in [Standing mode](#standing-mode-opt-in-hook) |
 | `/domain-gloss` | On, using the resolved language |
 | `/domain-gloss th` | On, forcing a language for this thread |
 | `gloss off` | Off |
@@ -284,13 +284,74 @@ Before sending, confirm all six:
 5. Every inline rendering is one line, ASCII-parenthesised, and outside backticks; dedicated glossary tables keep the literal and gloss in separate cells.
 6. Every opaque identifier supporting a finding has a first-mention role anchor or an earlier glossary row, including an explicit unknown where evidence is missing. The artifact exclusion and vocabulary budget did not suppress these mappings.
 
+## Standing mode (opt-in hook)
+
+Asking once does not last: a mode set by prose decays across turns. The plugin
+bundles a `UserPromptSubmit` hook ([hooks/hooks.json](hooks/hooks.json) → [scripts/gloss_reminder.py](scripts/gloss_reminder.py))
+that restates the rule on every prompt. It prints **nothing** unless you opt in,
+so installing or updating the plugin changes nothing by default.
+
+Opt in through settings.json `env` (user, project, or local):
+
+```json
+{ "env": { "CLAUDE_GLOSS_LANG": "th", "CLAUDE_GLOSS_HOOK": "on" } }
+```
+
+| Variable | Effect |
+|---|---|
+| `CLAUDE_GLOSS_HOOK` | Trimmed and case-insensitive `on` activates. Anything else, including unset, keeps the hook silent |
+| `CLAUDE_GLOSS_LANG` | Must be a non-English tag; every entry of a comma chain must be well-formed, and the chain at most 80 characters. `simple-en` counts as active |
+| `CLAUDE_GLOSS_SKIP` | Passed into the reminder for the model to apply, sanitized: control characters removed, first 80 characters |
+| `CLAUDE_GLOSS_SUBAGENT_MARKER` | Optional. Prompts starting with this string get no reminder |
+
+When active it adds one line (about 60 tokens) per prompt:
+
+```
+domain-gloss ON (<lang>[; skip: <CLAUDE_GLOSS_SKIP>]): keep each domain term in English; gloss Band 2 on first use and Band 3 false friends once per answer as "term (gloss)". Chat prose only — never in code, commits, files on disk, or text sent to tools or other agents.
+```
+
+The reminder does not load this skill body. Invoke `/domain-gloss` once when the
+band rules or rendering details are needed.
+
+It stays silent inside subagents: Claude Code documents an `agent_id` field inside
+subagent calls, and the hook stays silent when it is present. The marker and
+slash-command guards exist because that field has not been confirmed for every way a
+subagent can start. It also stays silent for prompts starting with
+`CLAUDE_GLOSS_SUBAGENT_MARKER`, for slash-command prompts other than `/domain-gloss`,
+when any `CLAUDE_GLOSS_LANG` entry is malformed, when the primary subtag is `en`,
+`eng`, or `english`, and when the prompt is missing or not text. Headless workers
+(`claude -p`) are new main sessions, so an orchestrator must not hand them
+`CLAUDE_GLOSS_HOOK=on` — unset it or set `off`.
+
+The hook reads the process environment only, meaning what settings.json `env`
+provides. It cannot see a per-turn request or an invocation tag such as
+`/domain-gloss th`; those still work through the skill itself.
+
+Why it exists: on real transcripts, a standing rule in a project `CLAUDE.md` alone
+produced about 10% gloss compliance on Band 3 terms (7% before the rule), decaying
+to about 3% past the tenth prompt.
+
+### Measure it
+
+[scripts/gloss_rate.py](scripts/gloss_rate.py) is a read-only stdlib script that reports the glossed rate
+for a term list from Claude Code JSONL transcripts:
+
+```bash
+python3 <skill-root>/scripts/gloss_rate.py --terms premium,claim
+```
+
+Flags: `--store` (transcript directory), `--terms a,b` or `--terms @file`,
+`--since YYYY-MM-DD`, `--window N` (characters after the term to look for a gloss,
+default 60), `--json PATH`, and `--leak-check` (exits 1 if the reminder string
+appears in any subagent transcript). A missing transcript store exits 2. `--leak-check` counts only hook-injected context records, so a subagent that merely reads this skill's text is not a leak. It cannot detect `simple-en` glosses.
+
 ## Known limitations
 
-- **Stickiness is best-effort.** This is prompt text with no cross-turn state; across a long session the mode decays. Re-invoke it, or put the preference in your `CLAUDE.md`.
+- **Stickiness is best-effort.** This is prompt text with no cross-turn state; across a long session the mode decays. A sentence in `CLAUDE.md` alone measured about 10% compliance on Band 3 terms. For standing mode, use the [opt-in hook](#standing-mode-opt-in-hook); otherwise re-invoke the skill.
 - **No bundled glossary.** Renderings come from model knowledge and will vary slightly between sessions. For a fixed house translation, keep a glossary file in the repo and point at it.
 - **Band 3 depends on repo evidence.** Cue (c) is the strongest signal; in a repo with thin schema and no defined terms, false-friend coverage degrades quietly.
 - **Identifier roles need a source of truth.** With no inspected schema, data dictionary, or query result, most identifiers resolve to an explicit unknown rather than a role. That is the correct output, but a legacy database with no dictionary will produce a page of unknowns instead of a reading aid. Supply a dictionary first, or accept the unknowns as a map of what is undocumented.
 - **The `allowed-tools` entry pins an exact command.** `Bash(printenv CLAUDE_GLOSS_LANG)` is deliberate — the `:*` prefix form would pre-allow bare `printenv` and dump every token and key in the environment into context. If exact-command matching is not honoured, the only symptom is a one-time permission prompt, which is the safe way to fail.
 - **Overlaps with `explain-clear`** (`~/.claude/skills/explain-clear/SKILL.md`), whose `thai` / `th` command has its own bilingual mode. That skill replaces hard words; this one keeps them. If the wrong one activates, name it explicitly.
 - **Breadth is the default.** Any locked domain is glossed, software included, so an ordinary repo with a dependency manifest will produce glosses. Narrow it with `CLAUDE_GLOSS_SKIP` rather than expecting the skill to guess which domains you already know.
-- **Situational auto-firing is not available.** A skill is selected by matching your words, not by ambient facts about the repo, so working in an insurance codebase will not turn this on by itself.
+- **Situational auto-firing is not available.** A skill is selected by matching your words, not by ambient facts about the repo, so working in an insurance codebase will not turn this on by itself. The opt-in hook is driven by your environment variables, not by the repo.

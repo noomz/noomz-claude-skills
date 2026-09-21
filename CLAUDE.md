@@ -20,7 +20,7 @@ These are used as `/plugin marketplace add noomz/noomz-claude-skills` and `/plug
 4. Add the skill to the table in `README.md`.
 5. Run the validation block below before committing.
 
-For bigger skills, also add `skills/<skill-name>/reference/*.md` and `skills/<skill-name>/examples/*.md`. All bundled files must be linked **directly from SKILL.md** — one level deep only.
+For bigger skills, also add `skills/<skill-name>/reference/*.md`, `skills/<skill-name>/examples/*.md`, and, for a skill that needs runtime helpers, `skills/<skill-name>/hooks/hooks.json` plus `skills/<skill-name>/scripts/`. All bundled files must be linked **directly from SKILL.md** — one level deep only.
 
 ## Validation before every commit
 
@@ -108,4 +108,4 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 
 ## Scope discipline
 
-This repo hosts Agent Skills only. Do not add: generic CLAUDE.md templates for other projects, agents/commands/hooks (those belong in separate plugins), user-specific config, built artifacts, or anything requiring a build step. Each skill stays focused on a single tool or workflow — if scope creeps, split it into a new skill rather than bloating SKILL.md.
+This repo hosts Agent Skills only. Do not add: generic CLAUDE.md templates for other projects, standalone agents/commands/hooks (those belong in separate plugins), user-specific config, built artifacts, or anything requiring a build step. Each skill stays focused on a single tool or workflow — if scope creeps, split it into a new skill rather than bloating SKILL.md. Exception: a hook may ship inside a skill's plugin when it only serves that skill, prints nothing until the user opts in through an env var, and ships with unit tests.
