@@ -63,6 +63,17 @@ class PickTests(unittest.TestCase):
         self.assertEqual((chosen[0], chosen[1]), ("claude", "sonnet"))
         self.assertIn("ccs: UNKNOWN", pick_agent.explain_text("T3", pick_agent.states(data, "work")))
 
+    def test_t1_claude_prefers_sonnet_5_5_over_opus(self):
+        data = copy.deepcopy(FIXTURE)
+        for p in data["providers"]:
+            if p["id"] == "codex": p["status"] = "stale"
+            if p["id"] == "claude":
+                p["accounts"][0]["quotaWindows"][0]["utilization"] = .05
+                p["accounts"][0]["quotaWindows"][1]["utilization"] = .05
+        chosen, _, _ = pick_agent.pick("T1", data, "work")
+        self.assertEqual((chosen[0], chosen[1]), ("claude", "sonnet-5.5"))
+        self.assertIn("Sonnet 5.5 only", chosen[3])
+
     def test_guard_model_warning_respects_plugin_agent_types(self):
         guard = __import__("pathlib").Path(__file__).with_name("agent_call_guard.py")
         def run(subagent_type):

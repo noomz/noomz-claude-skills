@@ -8,7 +8,8 @@ Cost order inside a tier: local runtimes, then ccs, then Grok, then the Codex ch
 |---|---|---|---|---|---|---|---|
 | T0 | Codex | gpt-6-astra | codex | `codex exec -m gpt-6-astra - < brief.md` | frontier | adversarial review, hard root cause, money logic | Codex `-p` is `--profile`, not prompt. Verify with `git diff`, never exit code. |
 | T0 | Claude | fable | — | main loop only; never a subagent | frontier | hardest reasoning | Not selectable by the picker. Keep the main frontier model for planning and synthesis. |
-| T1 | Codex | gpt-5.6-terra | codex | `codex exec -m gpt-5.6-terra - < brief.md` | mid | deep reasoning and synthesis | Codex `-p` is `--profile`; verify by artifact. |
+| T1 | Codex | gpt-6-sol | codex | `codex exec -m gpt-6-sol - < brief.md` | mid | deep reasoning and synthesis | Codex `-p` is `--profile`; verify by artifact. |
+| T1 | Claude | sonnet-5.5 | claude + account | `Agent model: sonnet (Sonnet 5.5 only, claude-sonnet-5-5)` | reasoning | architecture, synthesis, planner/critic — same tier as opus, cheaper so listed first | **Version matters:** only Sonnet 5.5 qualifies; older Sonnet stays T2. Confirm the `sonnet` alias resolves to 5.5 before routing T1 work. Pin `model:`. |
 | T1 | Claude | opus | claude + account | `Agent model: opus` | frontier | architecture, synthesis, planner/critic | Pin `model:`. |
 | T2 | Ollama | local | ollama | `ollama` | free | scoped local work | GREEN when status is `ok`; skipped entirely when absent. |
 | T2 | LM Studio | local | lmstudio | `lmstudio` | free | scoped local work | GREEN when status is `ok`; skipped entirely when absent. |
