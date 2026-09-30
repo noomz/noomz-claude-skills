@@ -15,8 +15,7 @@ Cost order inside a tier: local runtimes, then ccs, then Grok, then the Codex ch
 | T2 | LM Studio | local | lmstudio | `lmstudio` | free | scoped local work | GREEN when status is `ok`; skipped entirely when absent. |
 | T2 | Llama.cpp | local | llamacpp | `llamacpp` | free | scoped local work | GREEN when status is `ok`; skipped entirely when absent. |
 | T2 | Grok | grok-4.6 | grok | `grok --prompt-file brief.md -m grok-4.6 --permission-mode auto --max-turns 40 --output-format json --cwd DIR` | cheap | standard implementation and research | `acceptEdits` and `dontAsk` are silent no-ops. `-p` is single prompt and conflicts with `--prompt-file`. Verify `git diff`, not exit code. |
-| T2 | Codex | gpt-5.6-luna | codex | `codex exec -m gpt-5.6-luna - < brief.md` | cheap | standard implementation and research | Codex `-p` is `--profile`; verify by `git diff`. |
-| T2 | Codex | gpt-5.6-sol | codex | `codex exec -m gpt-5.6-sol - < brief.md` | cheap | standard implementation | Codex `-p` is `--profile`; verify by artifact. |
+| T2 | Codex | gpt-6-sol | codex | `codex exec -m gpt-6-sol - < brief.md` | cheap | standard implementation and research | Codex `-p` is `--profile`; verify by `git diff`. |
 | T2 | Claude | sonnet | claude + account | `Agent model: sonnet` | mid | scoped implementation, standard review | Pin `model:`; account quota is selected explicitly. |
 | T2 | Gemini | default | gemini | `gemini` | mid | standard work when eligible | Unverified (last seen returning `IneligibleTierError`). Ranked last on purpose; do not assume it works. |
 | T3 | Ollama | local | ollama | `ollama` | free | mechanical work | GREEN when status is `ok`; skip when absent. |
@@ -25,8 +24,10 @@ Cost order inside a tier: local runtimes, then ccs, then Grok, then the Codex ch
 | T3 | ccs | glm | ccs | `ccs glm -p "..."` | cheap | mechanical edits and checks | Treated as UNKNOWN (never skipped) when `aub` reports no ccs provider. Brief must include the subagent off-switch line. |
 | T3 | ccs | kimi | ccs | `ccs kimi -p "..."` | cheap | mechanical edits and checks | Treated as UNKNOWN when absent. Brief must include the subagent off-switch line. |
 | T3 | Grok | grok-4.6 | grok | `grok --prompt-file brief.md -m grok-4.6 --permission-mode auto --max-turns 40 --output-format json --cwd DIR` | cheap | wide greps and bulk audits | Use `--permission-mode auto`; `acceptEdits`/`dontAsk` silently do nothing. |
-| T3 | Codex | gpt-5.6-luna (low) | codex | `codex exec -m gpt-5.6-luna -c model_reasoning_effort=low - < brief.md` | cheap | mechanical work | Codex `-p` is `--profile`; verify by artifact. |
+| T3 | Codex | gpt-6-luna (low) | codex | `codex exec -m gpt-6-luna -c model_reasoning_effort=low - < brief.md` | cheap | mechanical work | Codex `-p` is `--profile`; verify by artifact. |
 | T3 | Claude | haiku | claude + account | `Agent model: haiku` | cheap | verify passes and mechanical work | Pin `model:`. |
+
+Codex rows use the gpt-6 family only (astra / sol / luna); there is no `gpt-6-terra`.
 
 The frontier Codex row is the only selectable T0 subagent; Claude fable is main-loop only.
 
