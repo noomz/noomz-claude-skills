@@ -44,6 +44,11 @@
       "name": "session-audit",
       "source": "./skills/session-audit",
       "description": "Audit Claude Code JSONL transcripts for CLAUDE.md compliance, delegation, cost, and stall patterns."
+    },
+    {
+      "name": "bang-actions",
+      "source": "./mods/bang-actions",
+      "description": "Claude Code mod: turns Claude's `! cmd` suggestions into one-press Run buttons above the prompt (Bash permission rules checked on press; runs with bash in the session folder; exit code and output tail shown, output sent to Claude). Denied and over-long commands only fill the prompt for review."
     }
   ]
 }

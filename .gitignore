@@ -16,3 +16,6 @@ build/
 .pi/
 __pycache__/
 *.py[cod]
+
+# Mod types the Claude Code engine writes per build
+mods/*/.claude-plugin/types/
