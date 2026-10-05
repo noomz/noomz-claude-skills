@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repo is
 
-A Claude Code plugin marketplace hosting Agent Skills. No source code to build — content is Markdown + JSON manifests. End users install skills via `/plugin` in Claude Code.
+A Claude Code plugin marketplace hosting Agent Skills, plus a few Claude Code mods under `mods/`. No build step — skills are Markdown + JSON manifests; mods are TypeScript hooks modules the engine loads as-is. End users install either via `/plugin` in Claude Code.
 
 Two separate names are in play and must stay in sync:
 - **GitHub repo**: `noomz/noomz-claude-skills`
@@ -21,6 +21,16 @@ These are used as `/plugin marketplace add noomz/noomz-claude-skills` and `/plug
 5. Run the validation block below before committing.
 
 For bigger skills, also add `skills/<skill-name>/reference/*.md`, `skills/<skill-name>/examples/*.md`, and, for a skill that needs runtime helpers, `skills/<skill-name>/hooks/hooks.json` plus `skills/<skill-name>/scripts/`. All bundled files must be linked **directly from SKILL.md** — one level deep only.
+
+## Adding a new mod — operational workflow
+
+A mod is a plugin of function hooks (a live band, pane, status line or hook inside Claude Code), not a skill: no SKILL.md. Develop it with the `plugin-authoring` skill in its hot-reload dev folder, then copy it here.
+
+1. `mods/<mod-name>/.claude-plugin/plugin.json` (same fields as a skill's, plus `"types": "./types/index.d.ts"` when it keeps `$.state`).
+2. `mods/<mod-name>/hooks/hooks.json` → `{ "modules": ["./register.tsx"] }`, the module beside it, `types/index.d.ts` for its state contract, and `tests/*.test.ts(x)`.
+3. Keep the engine's one-line `tsconfig.json`; never commit `.claude-plugin/types/` (the engine writes it per build; gitignored).
+4. Append a plugins-array entry with `"source": "./mods/<mod-name>"` to `.claude-plugin/marketplace.json` and a row to the Mods table in `README.md`. Mods are Claude Code only: no Codex manifest entry.
+5. Run `claude plugin validate mods/<mod-name>` and `claude plugin test mods/<mod-name>` plus the validation block below before committing.
 
 ## Validation before every commit
 
@@ -52,6 +62,9 @@ python3 -c "import json, glob; [json.load(open(p)) for p in glob.glob('**/.claud
 
 # 3. SKILL.md line cap (progressive disclosure: under 500)
 awk 'FNR>500{print FILENAME,"exceeds 500 lines:",FNR}' skills/*/SKILL.md
+
+# 4. Mods: manifest + module the way the engine reads them, and their tests
+for m in mods/*/; do claude plugin validate "$m" && claude plugin test "$m"; done
 ```
 
 ## Content rules that matter here
@@ -108,4 +121,4 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 
 ## Scope discipline
 
-This repo hosts Agent Skills only. Do not add: generic CLAUDE.md templates for other projects, standalone agents/commands/hooks (those belong in separate plugins), user-specific config, built artifacts, or anything requiring a build step. Each skill stays focused on a single tool or workflow — if scope creeps, split it into a new skill rather than bloating SKILL.md. Exception: a hook may ship inside a skill's plugin when it only serves that skill, prints nothing until the user opts in through an env var, and ships with unit tests.
+This repo hosts Agent Skills, and mods under `mods/`. A mod earns a place here when it is a single focused behaviour, ships with tests that `claude plugin test` runs, and never runs a command without a deliberate press by the person. Do not add: generic CLAUDE.md templates for other projects, standalone agents/commands/hooks (those belong in separate plugins), user-specific config, built artifacts, or anything requiring a build step. Each skill stays focused on a single tool or workflow — if scope creeps, split it into a new skill rather than bloating SKILL.md. Exception: a hook may ship inside a skill's plugin when it only serves that skill, prints nothing until the user opts in through an env var, and ships with unit tests.

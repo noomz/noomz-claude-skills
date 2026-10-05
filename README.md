@@ -19,6 +19,16 @@ Each skill lives in its own directory under `skills/` and follows the [official 
 
 More skills incoming — see [`CONTRIBUTING.md`](CONTRIBUTING.md) to add your own.
 
+## Available mods
+
+Mods are Claude Code plugins of function hooks: live UI and behaviour inside the Claude Code terminal or desktop Code tab, not instructions for the model. Claude Code only.
+
+| Mod | Description |
+|---|---|
+| [`bang-actions`](mods/bang-actions) | Turns Claude's "run `! cmd` yourself" suggestions into ▶ Run buttons above the prompt. A press first checks your Bash permission rules, then runs the command with bash in the session folder, as you, outside Claude Code's Bash tool. The band shows ✓/✗, the exit code and the output's tail, and Claude reads the full output next turn. Denied and over-long commands only fill `! cmd` into the prompt for you to review. Run buttons have no hotkeys, so typing never runs anything. |
+
+Install like a skill: `/plugin install bang-actions@noomz-claude-skills`.
+
 ## Installation
 
 ### Codex — repo marketplace
@@ -150,6 +160,13 @@ claude-skills/
 ├── README.md
 ├── LICENSE
 ├── CONTRIBUTING.md
+├── mods/
+│   └── bang-actions/
+│       ├── .claude-plugin/
+│       │   └── plugin.json      # Plugin manifest (+ state contract path)
+│       ├── hooks/               # hooks.json + the TypeScript hooks module
+│       ├── types/index.d.ts     # $.state contract
+│       └── tests/               # run by `claude plugin test`
 └── skills/
     └── obsidian/
         ├── .claude-plugin/
