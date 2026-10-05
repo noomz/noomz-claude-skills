@@ -94,3 +94,39 @@ export function outputTail(output: string, lines = 5, width = 200): string {
     .slice(-lines)
     .join('\n')
 }
+
+// The command as the band draws it: one step per line, split after each
+// top-level `&&`, `||`, `;` or `|` (none inside quotes or parentheses), later
+// steps indented. Display only: every character stays, and what runs is the
+// command as given.
+export function displayCommand(cmd: string): string {
+  const steps: string[] = []
+  let quote: string | null = null
+  let depth = 0
+  let start = 0
+  for (let i = 0; i < cmd.length; i++) {
+    const c = cmd[i]
+    if (c === '\\' && quote !== "'") {
+      i++
+    } else if (quote !== null) {
+      if (c === quote) quote = null
+    } else if (c === "'" || c === '"' || c === '`') {
+      quote = c
+    } else if (c === '(') {
+      depth++
+    } else if (c === ')') {
+      depth = Math.max(0, depth - 1)
+    } else if (depth === 0) {
+      const pair = cmd.slice(i, i + 2)
+      const op = pair === '&&' || pair === '||' ? pair : c === ';' || c === '|' ? c : null
+      if (op !== null) {
+        steps.push(cmd.slice(start, i + op.length).trim())
+        start = i + op.length
+        i += op.length - 1
+      }
+    }
+  }
+  steps.push(cmd.slice(start).trim())
+
+  return steps.filter(s => s !== '').map((s, i) => (i === 0 ? s : `  ${s}`)).join('\n')
+}

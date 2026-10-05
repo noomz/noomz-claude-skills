@@ -1,7 +1,7 @@
 {
   "name": "bang-actions",
   "description": "Turns `! cmd` suggestions in Claude's answers into one-press Run buttons above the prompt: a press checks your Bash permission rules, runs the command with bash in the session folder, shows the exit code and output tail, and sends the output to Claude. Permission-denied and over-long commands become fill-only Review buttons.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": {
     "name": "noomz",
     "email": "lazym0m3nt@gmail.com"

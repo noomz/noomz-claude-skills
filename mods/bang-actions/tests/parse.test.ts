@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { buttonLabel, commandKey, extractBangCommands, mergeCommands, MAX_COMMANDS, outputTail } from '../hooks/parse'
+import { buttonLabel, commandKey, displayCommand, extractBangCommands, mergeCommands, MAX_COMMANDS, outputTail } from '../hooks/parse'
 
 describe('extractBangCommands', () => {
   test('finds inline `! cmd` code spans in order', () => {
@@ -65,4 +65,25 @@ test('outputTail strips ANSI, keeps a progress line\'s last redraw, caps lines a
   const esc = String.fromCodePoint(0x1b)
   const out = `a\nb\n${esc}[32mgreen${esc}[0m\n10%\r50%\r100%\r\nc\nd\n${'x'.repeat(300)}\n`
   expect(outputTail(out)).toBe(`green\n100%\nc\nd\n${'x'.repeat(199)}…`)
+})
+
+describe('displayCommand', () => {
+  test('puts each top-level step on its own indented line', () => {
+    const cmd = 'export T=$(gh auth token --user a); gh pr ready 1 -R o/r && gh pr merge 1 -R o/r --merge'
+    expect(displayCommand(cmd)).toBe(
+      'export T=$(gh auth token --user a);\n  gh pr ready 1 -R o/r &&\n  gh pr merge 1 -R o/r --merge',
+    )
+  })
+
+  test('never splits inside quotes or parentheses', () => {
+    expect(displayCommand(`echo "a && b; c" | grep 'x || y' && (cd d; ls)`)).toBe(
+      `echo "a && b; c" |\n  grep 'x || y' &&\n  (cd d; ls)`,
+    )
+  })
+
+  test('keeps every character: collapsing whitespace gives back the button label', () => {
+    for (const cmd of ['a && b || c | d; e', 'git status', 'x=$(y; z) && w']) {
+      expect(buttonLabel(displayCommand(cmd))).toBe(buttonLabel(cmd))
+    }
+  })
 })
