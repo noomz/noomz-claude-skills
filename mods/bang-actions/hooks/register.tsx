@@ -3,30 +3,46 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { Gate, Suggestion } from '../types'
 
-import {
-  buttonLabel, commandKey, displayCommand, extractBangCommands, formatRunMessage, mergeCommands, outputTail, parseRunMessage,
-} from './parse'
+import { buttonLabel, commandKey, displayCommand, extractBangCommands, formatRunMessage, mergeCommands } from './parse'
 
 const TIMEOUT_MS = 5 * 60 * 1000
 
+// A command button ignores a press this soon after the previous one. After a
+// press the focus ring stays in the band, so a double Enter, a key repeat or a
+// double click would run the next command, or an armed one.
+const DEBOUNCE_MS = 500
+
 const commands = atom({ plugin: 'bang-actions', key: 'commands' } as const, [])
 const armed = atom({ plugin: 'bang-actions', key: 'armed' } as const, null as string | null)
+const succeeded = atom({ plugin: 'bang-actions', key: 'succeeded' } as const, [] as string[])
 
 // The button beside a command: by its gate, and for the one `confirm`
 // command the person armed. No hotkeys: while the band holds the focus every
 // letter goes to it, so a hotkey would let typing run commands.
 const BUTTON = {
   run: { label: '▶ Run' },
-  confirm: { label: '⚠ Run (denied, press twice)' },
+  confirm: { label: '⚠ Run (press twice)' },
   armed: { label: '▶ Press again to run', variant: 'primary' },
 } as const
 const buttonFor = (s: Suggestion, armedCmd: string | null) => BUTTON[s.cmd === armedCmd ? 'armed' : s.gate]
 
 const running = new Set<string>()
+let lastPressAt = Number.NEGATIVE_INFINITY
+// Presses are decided one at a time, so a burst of them reads the time the
+// first one wrote.
+let deciding: Promise<unknown> = Promise.resolve()
 
 const forget = (cmd: string) => (prev: Suggestion[]) => prev.filter(c => c.cmd !== cmd)
-const regate = (cmd: string, gate: Gate) => (prev: Suggestion[]) => mergeCommands(prev, [{ cmd, gate }])
+const add = (found: Suggestion[]) => (prev: Suggestion[]) => mergeCommands(prev, found)
+// A press-time denial tightens the command only while it is listed: one that
+// Dismiss or a typed prompt cleared during the check stays gone.
+const tighten = (cmd: string) => (prev: Suggestion[]) => (prev.some(c => c.cmd === cmd) ? mergeCommands(prev, [{ cmd, gate: 'confirm' }]) : prev)
 const disarm = ($: EngineInterface) => update($, armed, () => null)
+
+// The gate the session's Bash permission rules give a suggestion: two-press
+// when they deny it, or when the check itself fails.
+const gateOf = ($: EngineInterface, cmd: string): Promise<Gate> =>
+  $.tool.check({ tool: 'Bash', input: { command: cmd } }).then(r => (r.decision === 'deny' ? 'confirm' : 'run'), () => 'confirm')
 
 // Runs a command as the person's own `! cmd` would, in the session's cwd,
 // then submits the output as this plugin's prompt: Claude's next turn starts
@@ -40,6 +56,9 @@ async function run($: EngineInterface, cmd: string) {
     $.ui.status(`running: ${buttonLabel(cmd)}`)
     const r = await $.process.run(['/bin/bash', '-c', cmd], { stdin: '', timeoutMs: TIMEOUT_MS })
     await update($, commands, forget(cmd))
+    if (r.exitCode === 0) {
+      await update($, succeeded, prev => [...prev, cmd])
+    }
 
     const sent = await $.prompt.submit({ text: formatRunMessage(cmd, r) }).catch(() => undefined)
     if (!sent || sent.drop !== undefined) {
@@ -53,45 +72,65 @@ async function run($: EngineInterface, cmd: string) {
   }
 }
 
-// A press on a command's button. A `run` command is checked against the
-// session's Bash permission rules again first, since they may have changed
-// since the band listed it; a `confirm` one runs on its second press in a row.
-async function press($: EngineInterface, cmd: string) {
+// Whether a press on a command's button runs it now. A press within
+// DEBOUNCE_MS of the previous one does nothing. A `run` command is checked
+// against the session's Bash permission rules again first, since they may
+// have changed since the band listed it; a `confirm` one runs on its second
+// press in a row.
+async function decide($: EngineInterface, cmd: string): Promise<boolean> {
+  const now = await $.clock.now()
+  if (now - lastPressAt < DEBOUNCE_MS) {
+    return false
+  }
+  lastPressAt = now
+
   const entry = (await read($, commands)).find(c => c.cmd === cmd)
   const wasArmed = (await read($, armed)) === cmd
   await disarm($)
   if (entry === undefined) {
-    return
+    return false
   }
   if (entry.gate === 'confirm') {
-    if (wasArmed) {
-      return run($, cmd)
+    if (!wasArmed) {
+      await update($, armed, () => cmd)
     }
-    await update($, armed, () => cmd)
-    return
+    return wasArmed
   }
 
   const verdict = await $.tool.check({ tool: 'Bash', input: { command: cmd } })
   if (verdict.decision === 'deny') {
-    await update($, commands, regate(cmd, 'confirm'))
-    $.ui.toast('Your permission rules deny this command: press twice to run it')
-    return
+    const listed = (await update($, commands, tighten(cmd))).some(c => c.cmd === cmd)
+    if (listed) {
+      $.ui.toast('Your permission rules deny this command: press twice to run it')
+    }
+    return false
   }
 
-  return run($, cmd)
+  return true
+}
+
+async function press($: EngineInterface, cmd: string) {
+  const decision = deciding.then(() => decide($, cmd))
+  deciding = decision.catch(() => undefined)
+  if (await decision) {
+    await run($, cmd)
+  }
 }
 
 export const register: Register = on => {
   // Each suggestion is listed with the rules' verdict on it, so a denied one
-  // draws the two-press button from the start.
+  // draws the two-press button from the start. A command that ran with exit 0
+  // since the last answer is not listed: Claude's reply to a run usually
+  // quotes the command again.
   on('turn.complete', async ($, e, next) => {
     if (e.agentId === undefined && e.reason === 'answer') {
-      const found = await Promise.all(extractBangCommands(e.answer).map(async (cmd): Promise<Suggestion> => {
-        const { decision } = await $.tool.check({ tool: 'Bash', input: { command: cmd } })
-        return { cmd, gate: decision === 'deny' ? 'confirm' : 'run' }
-      }))
+      const ran = await read($, succeeded)
+      await update($, succeeded, () => [])
+      const found = await Promise.all(extractBangCommands(e.answer)
+        .filter(cmd => !ran.includes(cmd))
+        .map(async (cmd): Promise<Suggestion> => ({ cmd, gate: await gateOf($, cmd) })))
       if (found.length > 0) {
-        await update($, commands, prev => mergeCommands(prev, found))
+        await update($, commands, add(found))
       }
       await disarm($)
     }
@@ -105,7 +144,7 @@ export const register: Register = on => {
     const r = await next(e)
     const input = e.input as { command?: unknown }
     if (r.decision === 'deny' && e.tool_use_id && typeof input.command === 'string') {
-      await update($, commands, regate(input.command, 'confirm'))
+      await update($, commands, add([{ cmd: input.command, gate: 'confirm' }]))
     }
 
     return r
@@ -157,26 +196,6 @@ export const register: Register = on => {
             }}
           />
         </Box>
-      </Box>
-    )
-  })
-
-  // A run's row in the transcript: one line with the verdict, the command and
-  // the exit code, then the output's tail. ctrl+o shows the whole message.
-  on('ui.render', { component: 'UserMessage', props: { origin: { kind: 'plugin', name: 'bang-actions' } } }, async ($, e, next) => {
-    const r = parseRunMessage(e.props.text)
-    if (e.props.isExpanded || r === null) {
-      return next(e)
-    }
-
-    const { Box, Text } = $.ui.resolve(e)
-    const ok = r.exitCode === 0
-    const tail = outputTail(r.output)
-
-    return (
-      <Box flexDirection="column">
-        <Text color={ok ? 'green' : 'red'}>{`${ok ? '✓' : '✗'} ! ${buttonLabel(r.cmd)}  (exit ${r.exitCode})`}</Text>
-        {tail !== '' && <Text dimColor>{tail}</Text>}
       </Box>
     )
   })

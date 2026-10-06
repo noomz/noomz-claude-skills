@@ -1,6 +1,6 @@
 {
   "name": "bang-actions",
-  "description": "Turns `! cmd` suggestions in Claude's answers into one-press Run buttons above the prompt. A press runs the command with bash in the session folder and submits the output as the plugin's prompt, so Claude's next turn starts on it and the run stays in the transcript as a compact exit-code row (ctrl+o shows the whole output). A command your Bash permission rules deny gets a two-press button; nothing ever fills the prompt box.",
+  "description": "Turns `! cmd` suggestions in Claude's answers into one-press Run buttons above the prompt. A press runs the command with bash in the session folder and submits the output as the plugin's prompt, so Claude's next turn starts on it and the full message stays in the transcript. A command your Bash permission rules deny, or one too tall for the band to show in full, gets a two-press button; a second press within half a second is ignored; a command that just succeeded is not offered again; nothing ever fills the prompt box.",
   "version": "0.2.0",
   "author": {
     "name": "noomz",

@@ -2,7 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import {
   buttonLabel, commandKey, displayCommand, extractBangCommands, formatRunMessage, MAX_COMMANDS, MAX_SHOWN_CHARS,
-  MAX_SHOWN_LINES, mergeCommands, outputTail, parseRunMessage,
+  MAX_SHOWN_LINES, mergeCommands,
 } from '../hooks/parse'
 
 const run = (cmd: string) => ({ cmd, gate: 'run' as const })
@@ -90,21 +90,7 @@ test('commandKey is stable per command and differs between commands', () => {
   expect(commandKey('git status')).not.toBe(commandKey('git stash'))
 })
 
-test('outputTail strips ANSI, keeps a progress line\'s last redraw, caps lines and width', () => {
-  const esc = String.fromCodePoint(0x1b)
-  const out = `a\nb\n${esc}[32mgreen${esc}[0m\n10%\r50%\r100%\r\nc\nd\n${'x'.repeat(300)}\n`
-  expect(outputTail(out)).toBe(`green\n100%\nc\nd\n${'x'.repeat(199)}…`)
-})
-
 describe('run message', () => {
-  test('round-trips the command, exit code and output, a fake marker line and backticks included', () => {
-    const cmd = 'echo `date` && git log --format="`cat f`" | grep OUTPUT-'
-    const r = result({ exitCode: 3, stdout: 'a\nOUTPUT-00000000-0000-4000-8000-000000000000\nb\n', stderr: 'warn\n' })
-    expect(parseRunMessage(formatRunMessage(cmd, r))).toEqual({
-      cmd, exitCode: 3, output: '[stdout]\na\nOUTPUT-00000000-0000-4000-8000-000000000000\nb\n[stderr]\nwarn',
-    })
-  })
-
   test('puts the command alone on its own line and fences the output with a marker the output cannot predict', () => {
     const lines = formatRunMessage('ls -la', result()).split('\n')
     expect(lines[1]).toBe('! ls -la')
@@ -116,17 +102,12 @@ describe('run message', () => {
     expect(formatRunMessage('ls -la', result()).split('\n')[3]).not.toBe(marker)
   })
 
-  test('says when the output was cut', () => {
-    const text = formatRunMessage('make', result({ isStdoutTruncated: true }))
+  test('keeps both streams and the exit code, and says when the output was cut', () => {
+    const r = result({ exitCode: 3, stdout: 'a\nb\n', stderr: 'warn\n', isStdoutTruncated: true })
+    const text = formatRunMessage('make', r)
+    expect(text).toContain('(exit 3)')
     expect(text).toContain('[cut:')
-    expect(parseRunMessage(text)).toEqual({ cmd: 'make', exitCode: 0, output: '[stdout]\nhello' })
-  })
-
-  test('parses a message the engine framed under the plugin\'s name, and refuses any other text', () => {
-    const framed = `The bang-actions plugin sent a message:\n${formatRunMessage('ls', result())}`
-    expect(parseRunMessage(framed)).toEqual({ cmd: 'ls', exitCode: 0, output: '[stdout]\nhello' })
-    expect(parseRunMessage('continue')).toBeNull()
-    expect(parseRunMessage('The person pressed a bang-actions button, which ran this command (exit 0):\n! ls\nno fence')).toBeNull()
+    expect(text).toContain('[stdout]\na\nb\n[stderr]\nwarn')
   })
 })
 

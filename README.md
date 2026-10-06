@@ -25,7 +25,7 @@ Mods are Claude Code plugins of function hooks: live UI and behaviour inside the
 
 | Mod | Description |
 |---|---|
-| [`bang-actions`](mods/bang-actions) | Turns Claude's "run `! cmd` yourself" suggestions into ▶ Run buttons above the prompt. A press runs the command with bash in the session folder, as you, outside Claude Code's Bash tool, then submits the output as the plugin's prompt, so Claude's next turn starts on it and the run stays in the transcript as a compact ✓/✗ row with the exit code and the output's tail (ctrl+o shows all of it). A command your Bash permission rules deny gets a two-press button, one press to arm it and one to run it. Buttons have no hotkeys, so typing never runs anything. |
+| [`bang-actions`](mods/bang-actions) | Turns Claude's "run `! cmd` yourself" suggestions into ▶ Run buttons above the prompt. A press runs the command with bash in the session folder, as you, outside Claude Code's Bash tool, then submits the output as the plugin's prompt, so Claude's next turn starts on it and the whole message stays in the transcript. A command your Bash permission rules deny, or one too tall for the band to show in full, gets a two-press button, one press to arm it and one to run it. A second press within half a second is ignored, a command that just succeeded is not offered again, and buttons have no hotkeys, so typing never runs anything. |
 
 Install like a skill: `/plugin install bang-actions@noomz-claude-skills`.
 

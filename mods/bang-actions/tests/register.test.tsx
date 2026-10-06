@@ -24,7 +24,6 @@ const turnDone = (answer: string, agentId?: string) => ({
 const typed = (text: string) => ({ text, wait: false, origin: { kind: 'composer' as const } })
 
 type TestBody = Extract<Parameters<typeof test>[1], (...args: never[]) => unknown>
-type Engine = Parameters<TestBody>[0]
 type On = Parameters<TestBody>[1]
 
 type EngineOptions = {
@@ -93,13 +92,8 @@ const rows = async (ui: Drawing) => {
   return (await ui.findAll({ type: 'Button' })).map(b => (b.text === 'Dismiss' ? 'Dismiss' : `${b.text}  ${codes.shift()}`))
 }
 
-// The transcript row of a prompt the plugin submitted, as the engine asks the
-// plugins to draw it.
-const transcriptRow = ($: Engine, text: string, surface: (typeof SURFACES)[number] = 'terminal', isExpanded = false) =>
-  $.ui.mount({ plugin: 'bang-actions', surface, component: 'UserMessage', props: { text, origin: PLUGIN_ORIGIN, isExpanded } })
-
 for (const surface of SURFACES) {
-  test(`${surface}: a suggested \`! cmd\` runs on press, its output starts Claude's next turn and stays as a transcript row`, async ($, on) => {
+  test(`${surface}: a suggested \`! cmd\` runs on press and its output starts Claude's next turn as the plugin's prompt`, async ($, on) => {
     const { runs, submitted, filled, toasts } = engine(on)
 
     await $.turn.complete(turnDone(ANSWER))
@@ -115,11 +109,6 @@ for (const surface of SURFACES) {
     expect(submitted[0]?.text).toContain('hello')
     expect(toasts).toEqual([])
     expect(await rows(ui)).toEqual([])
-
-    const row = await transcriptRow($, submitted[0]?.text ?? '', surface)
-    expect(await row.find({ type: 'Text', text: '✓ ! gcloud auth login  (exit 0)' })).toMatchObject({ props: { color: 'green' } })
-    expect(await row.find({ type: 'Text', text: 'hello' })).toBeDefined()
-    expect(await row.find({ key: 'engine' })).toBeUndefined()
   })
 
   test(`${surface}: a Bash call the rules deny draws a two-press button; the first press arms it, the second runs it`, async ($, on) => {
@@ -352,43 +341,6 @@ test('a command too long to show in full is never listed, so a button never runs
   await $.turn.complete(turnDone(`Run \`! ${long}\` or \`! ls\`.`))
   const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
   expect(await rows(ui)).toEqual([`${RUN}  ls`, 'Dismiss'])
-})
-
-test('a failing command draws its exit code in red in the transcript row; ANSI output is cleaned', async ($, on) => {
-  const esc = String.fromCodePoint(0x1b)
-  const { submitted } = engine(on, { exitCode: 2, stdout: `${esc}[31mboom${esc}[0m\n` })
-
-  await $.turn.complete(turnDone(ANSWER))
-  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
-  await ui.press({ key: RUN_LOGIN })
-  const row = await transcriptRow($, submitted[0]?.text ?? '')
-  expect(await row.find({ type: 'Text', text: '✗ ! gcloud auth login  (exit 2)' })).toMatchObject({ props: { color: 'red' } })
-  expect(await row.find({ type: 'Text', text: 'boom' })).toBeDefined()
-  expect(JSON.stringify(await row.drawn())).not.toContain(esc)
-})
-
-test('ctrl+o shows the whole run message: an expanded row is left to the engine', async ($, on) => {
-  const { submitted } = engine(on)
-
-  await $.turn.complete(turnDone(ANSWER))
-  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
-  await ui.press({ key: RUN_LOGIN })
-  const expanded = await transcriptRow($, submitted[0]?.text ?? '', 'terminal', true)
-  expect(await expanded.find({ key: 'engine' })).toBeDefined()
-  expect(await expanded.find({ type: 'Text', text: '✓ ! gcloud auth login' })).toBeUndefined()
-})
-
-test('a user row from another plugin, or a bang-actions prompt that is not a run, is left to the engine', async ($, on) => {
-  engine(on)
-
-  const other = await $.ui.mount({ plugin: 'bang-actions', surface: 'terminal', component: 'UserMessage', props: {
-    text: 'The person pressed a bang-actions button, which ran this command (exit 0):\n! ls\nno fence',
-    origin: { kind: 'plugin', name: 'other-plugin' }, isExpanded: false,
-  } })
-  expect(await other.find({ key: 'engine' })).toBeDefined()
-
-  const notARun = await transcriptRow($, 'hello from a later version')
-  expect(await notARun.find({ key: 'engine' })).toBeDefined()
 })
 
 test('a typed prompt clears the band; dismiss clears it too', async ($, on) => {

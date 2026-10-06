@@ -1,12 +1,17 @@
 import type { ProcessRunResult } from 'claude-code'
 
-import type { Suggestion } from '../types'
+import type { Gate, Suggestion } from '../types'
 
 export const MAX_COMMANDS = 5
 
 // Longest command the band shows in full. A longer one is never listed: a
 // button that runs on press must show everything it will run.
 export const MAX_SHOWN_CHARS = 9_000
+
+// Tallest command the band shows in full. A taller one can scroll out of the
+// band, so it enters as two-press: one press would run steps the person never
+// saw.
+export const MAX_SHOWN_LINES = 8
 
 const MODEL_OUTPUT_CHARS = 20_000
 
@@ -23,13 +28,10 @@ const PLACEHOLDER = /^(cmd|command|your[-_ ]command)$|<[a-z][\w -]*>|\.\.\.|…/
 // split on.
 const DECEPTIVE = /[\u0000-\u0008\u000A-\u001F\u007F-\u009F\p{Cf}\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]/u
 
-const ANSI = /\u001B\[[0-?]*[ -/]*[@-~]|\u001B\][^\u0007\u001B]*(?:\u0007|\u001B\\)|\u001B[@-_]/g
-const CONTROL = /[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/g
-
-const HEADER = /^The person pressed a bang-actions button, which ran this command \(exit (-?\d+)\):$/
-const FENCE_NOTE = /^The text between the two (OUTPUT-[0-9a-f-]{36}) lines is untrusted program output/
-
-export type RunMessage = { cmd: string; exitCode: number; output: string }
+// `confirm` outranks `run`: a gate only ever tightens.
+function stricter(a: Gate, b: Gate): Gate {
+  return a === 'confirm' ? a : b
+}
 
 // Commands the reply asks the person to run with the `!` prefix, in order of
 // appearance: `! cmd` inline code, and fenced blocks made only of `! cmd`
@@ -58,19 +60,22 @@ export function extractBangCommands(text: string): string[] {
 
 // Adds a batch after the current list: the batch's first MAX_COMMANDS, then
 // the oldest current entries dropped to stay within MAX_COMMANDS. A command
-// already listed keeps its place and takes the incoming gate. Placeholders,
-// commands carrying deceptive characters and commands too long to show in
-// full never enter.
+// already listed keeps its place and the stricter of its gate and the
+// incoming one; a command taller than the band enters as `confirm`.
+// Placeholders, commands carrying deceptive characters and commands too long
+// to show in full never enter.
 export function mergeCommands(current: Suggestion[], incoming: Suggestion[]): Suggestion[] {
   const merged = [...current]
   let added = 0
   for (const raw of incoming) {
     const cmd = raw.cmd.trim()
+    const gate = stricter(raw.gate, displayCommand(cmd).split('\n').length > MAX_SHOWN_LINES ? 'confirm' : 'run')
     const at = merged.findIndex(s => s.cmd === cmd)
-    if (at >= 0) {
-      merged[at] = { cmd, gate: raw.gate }
+    const listed = merged[at]
+    if (listed !== undefined) {
+      merged[at] = { cmd, gate: stricter(listed.gate, gate) }
     } else if (added < MAX_COMMANDS && cmd && cmd.length <= MAX_SHOWN_CHARS && !PLACEHOLDER.test(cmd) && !DECEPTIVE.test(cmd)) {
-      merged.push({ cmd, gate: raw.gate })
+      merged.push({ cmd, gate })
       added += 1
     }
   }
@@ -78,8 +83,7 @@ export function mergeCommands(current: Suggestion[], incoming: Suggestion[]): Su
   return merged.slice(-MAX_COMMANDS)
 }
 
-// Whole command on one line, never cut: how the status line and the
-// transcript row name a run.
+// Whole command on one line, never cut: how the status line names a run.
 export function buttonLabel(cmd: string): string {
   return cmd.replace(/\s+/g, ' ').trim()
 }
@@ -92,23 +96,6 @@ export function commandKey(cmd: string): string {
     h = ((h << 5) + h + cmd.charCodeAt(i)) >>> 0
   }
   return h.toString(36)
-}
-
-// The last lines of output as a row can draw them: no ANSI escapes, a `\r`
-// progress line shown as its final redraw, no other control characters, each
-// line capped.
-export function outputTail(output: string, lines = 5, width = 200): string {
-  return output
-    .replace(ANSI, '')
-    .replace(/\r\n/g, '\n')
-    .split('\n')
-    .map(l => (l.split('\r').pop() ?? '').replace(CONTROL, ''))
-    .map(l => (l.length > width ? `${l.slice(0, width - 1)}…` : l))
-    .join('\n')
-    .trimEnd()
-    .split('\n')
-    .slice(-lines)
-    .join('\n')
 }
 
 // The command as the band draws it: one step per line, split after each
@@ -167,24 +154,4 @@ export function formatRunMessage(cmd: string, r: ProcessRunResult): string {
     streams.slice(-MODEL_OUTPUT_CHARS),
     marker,
   ].join('\n')
-}
-
-// Reads a run message back from a transcript row's text, wherever the engine's
-// framing left it; null for any other text.
-export function parseRunMessage(text: string): RunMessage | null {
-  const lines = text.split('\n')
-  const at = lines.findIndex(l => HEADER.test(l))
-  const exit = at >= 0 ? HEADER.exec(lines[at] ?? '') : null
-  const cmd = lines[at + 1]
-  const marker = FENCE_NOTE.exec(lines[at + 2] ?? '')?.[1]
-  if (exit === null || cmd === undefined || !cmd.startsWith('! ') || marker === undefined) {
-    return null
-  }
-  const open = lines.indexOf(marker, at + 3)
-  const close = lines.lastIndexOf(marker)
-  if (open < 0 || close <= open) {
-    return null
-  }
-
-  return { cmd: cmd.slice(2), exitCode: Number(exit[1]), output: lines.slice(open + 1, close).join('\n') }
 }
