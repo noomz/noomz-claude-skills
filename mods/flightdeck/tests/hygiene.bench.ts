@@ -1,6 +1,10 @@
 import { toolDetail } from '../hooks/core'
 import { scrub } from '../hooks/hygiene'
 
+// Bun runs this file, outside the hooks environment the mod's tsconfig describes.
+declare const process: { argv: string[]; exit: (code: number) => never }
+declare const console: { log: (...args: unknown[]) => void; error: (...args: unknown[]) => void }
+
 const ROUNDS = 20
 const CALLS = 1000
 
