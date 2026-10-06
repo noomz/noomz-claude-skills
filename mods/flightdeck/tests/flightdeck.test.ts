@@ -543,21 +543,21 @@ test('/flightdeck audit lists each stored text field by path and length, never a
   const { values, logged } = await auditSession($, on)
   const answer = await $.command.run({ command: 'flightdeck', args: 'audit' } as never)
   expect(answer.text).toBeUndefined()
-  expect(logged).toHaveLength(1)
-  const report = logged[0] ?? ''
   const masked = (flightdeck(values).hygiene as { masked: number }).masked
   expect(masked).toBe(1)
-  expect(report).toStartWith(`flightdeck audit · 6 stored text fields · ${masked} masked`)
-  expect(report).toContain('  agents.0.description · 28 chars')
-  expect(report).toContain('  log.0.text · 19 chars')
-  for (const value of ['ship with', 'token=', '[masked]', 'new turn', 'general-purpose']) expect(report).not.toContain(value)
+  expect(logged).toEqual([
+    `flightdeck audit · 6 stored text fields · ${masked} masked · lengths in chars`,
+    'log: 0.who 3, 0.text 19, 1.who 12, 1.text 25',
+    'agents: 0.type 15, 0.description 28',
+  ])
+  for (const row of logged) for (const value of ['\n', 'ship with', 'token=', '[masked]', 'new turn', 'general-purpose']) expect(row).not.toContain(value)
 })
 
 test('/flightdeck audit after /flightdeck reset reports 0 stored text fields', async ($, on) => {
   const { logged } = await auditSession($, on)
   await $.command.run({ command: 'flightdeck', args: 'reset' } as never)
   await $.command.run({ command: 'flightdeck', args: 'audit' } as never)
-  expect(logged).toEqual(['flightdeck audit · 0 stored text fields · 0 masked'])
+  expect(logged).toEqual(['flightdeck audit · 0 stored text fields · 0 masked · lengths in chars'])
 })
 
 for (const placement of ['dock', 'inline'] as const) {

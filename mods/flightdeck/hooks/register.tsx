@@ -125,7 +125,13 @@ async function getHygiene($: EngineInterface): Promise<Hygiene> {
 async function audit($: EngineInterface) {
   const [l, a, g, ar, r, h] = await Promise.all([getLog($), getCards($), getGate($), getArchitect($), getRoster($), getHygiene($)])
   const fields = textFields({ log: l, agents: a, gate: g, architect: ar, roster: r })
-  $.ui.log([`flightdeck audit · ${plural(fields.length, 'stored text field')} · ${h.masked} masked`, ...fields.map(f => `  ${f.path} · ${f.length} chars`)].join('\n'))
+  const rows = new Map<string, string[]>()
+  for (const f of fields) {
+    const [key = '', ...rest] = f.path.split('.')
+    rows.set(key, [...(rows.get(key) ?? []), `${rest.join('.')} ${f.length}`])
+  }
+  $.ui.log(`flightdeck audit · ${plural(fields.length, 'stored text field')} · ${h.masked} masked · lengths in chars`)
+  for (const [key, entries] of rows) $.ui.log(`${key}: ${entries.join(', ')}`)
 }
 
 async function resetIfOlderSchema($: EngineInterface) {
@@ -1088,10 +1094,13 @@ export const register: Register = (on, options) => {
           <Box>
             {!m.isRunning && r ? (
               <Text dimColor wrap="truncate">
-                {`last turn ${fmtDuration(r.durationMs)} · ${plural(r.agents, 'agent')} · ${plural(r.edits, 'edit')} · ${plural(r.errors, 'error')}${r.costDelta !== null ? ` · +${fmtUsd(r.costDelta)}` : ''} · `}
+                {`last turn ${fmtDuration(r.durationMs)} · ${plural(r.agents, 'agent')} · ${plural(r.edits, 'edit')} · ${plural(r.errors, 'error')}${r.costDelta !== null ? ` · +${fmtUsd(r.costDelta)}` : ''}`}
               </Text>
             ) : null}
-            <Box flexShrink={0}>{hygieneCell}</Box>
+            <Box flexShrink={0}>
+              {!m.isRunning && r ? <Text dimColor> · </Text> : null}
+              {hygieneCell}
+            </Box>
           </Box>
         </Box>
       )
