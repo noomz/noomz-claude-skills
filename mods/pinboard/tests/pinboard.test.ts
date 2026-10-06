@@ -810,3 +810,35 @@ describe('parsePin keeps a port beside a later @ in the path', () => {
     expect(parsePin('https://example.com:8443/@scope/x%3Ftoken%3Dabc123')).toBeNull()
   })
 })
+
+describe('a call that names agentId at all reads as a subagent call', () => {
+  for (const agentId of ['', 0, false, null]) {
+    test(`agentId ${JSON.stringify(agentId)} is denied and counts nothing`, async ($, on) => {
+      const { value } = stateStore(on)
+      on('ui.open', () => ({ value: { isPlaced: true } }))
+      const result = await $.tool.call({ tool: TOOL, add_todos: ['from a subagent'], agentId } as unknown as Parameters<typeof $.tool.call>[0])
+      expect(result).toEqual({ deny: 'Only the main conversation updates the Pinboard.' })
+      expect(value('board')).toBeUndefined()
+    })
+  }
+})
+
+describe('the deny text names an unknown key as it was received', () => {
+  const deny = async ($: Parameters<Extract<Parameters<typeof test>[1], (...args: never[]) => unknown>>[0], key: string) =>
+    $.tool.call({ tool: TOOL, add_todos: ['a'], [key]: 'x' } as Parameters<typeof $.tool.call>[0])
+
+  test('an invisible character in the key is written as its escape', async $ => {
+    expect(await deny($, 'agent​Id')).toEqual({ deny: 'The update has an unknown key "agent\\u200bId".' })
+    expect(await deny($, 'café\u0007')).toEqual({ deny: 'The update has an unknown key "caf\\u00e9\\u0007".' })
+  })
+
+  test('a reserved name with a trailing space keeps the space inside the quotes', async $ => {
+    expect(await deny($, 'agentId ')).toEqual({ deny: 'The update has an unknown key "agentId ".' })
+  })
+
+  test('a key that holds a secret is masked', async $ => {
+    const result = await deny($, 'password=hunter2')
+    expect(JSON.stringify(result)).not.toContain('hunter2')
+    expect('deny' in result && result.deny).toMatch(/^The update has an unknown key .*\[masked\]/)
+  })
+})

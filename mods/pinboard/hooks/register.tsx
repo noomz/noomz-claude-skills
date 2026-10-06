@@ -73,6 +73,9 @@ const reject = (error: string): never => {
   throw new Rejected(error)
 }
 
+const asReceived = (key: string): string =>
+  scrub(JSON.stringify(key).replace(/[^ -~]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`), TEXT_CAP).text
+
 const isRecord = (raw: unknown): raw is Record<string, unknown> => typeof raw === 'object' && raw !== null && !Array.isArray(raw)
 
 export function parseUpdate(raw: unknown): Parsed {
@@ -94,7 +97,7 @@ export function parseUpdate(raw: unknown): Parsed {
   const record = (value: unknown, where: string, keys: readonly string[]): Record<string, unknown> => {
     if (!isRecord(value)) return reject(`${where} must be an object.`)
     const extra = Object.keys(value).find(key => !keys.includes(key))
-    return extra === undefined ? value : reject(`${where} has an unknown key ${JSON.stringify(scrub(extra, 40).text)}.`)
+    return extra === undefined ? value : reject(`${where} has an unknown key ${asReceived(extra)}.`)
   }
   const fields: { [K in keyof Update]-?: (value: unknown) => NonNullable<Update[K]> } = {
     add_todos: value => list(value, 'add_todos').map((item, i) => text(item, `add_todos[${i}]`)),
@@ -349,7 +352,7 @@ export const register: Register = on => {
   })
 
   on('tool.call', { tool: TOOL }, async ($, e) => {
-    if (e.agentId) return { deny: 'Only the main conversation updates the Pinboard.' }
+    if (e.agentId !== undefined) return { deny: 'Only the main conversation updates the Pinboard.' }
     const { tool, tool_use_id, agentId, consent, ...input } = e
     const parsed = parseUpdate(input)
     if (!parsed.ok) {
