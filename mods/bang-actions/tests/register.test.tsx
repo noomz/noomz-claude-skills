@@ -17,6 +17,8 @@ const AGAIN = '▶ Press again to run'
 
 // A command button ignores a press this soon after the previous one.
 const DEBOUNCE_MS = 500
+// Hook denials the plugin remembers for the session, newest last.
+const MAX_DENIED = 200
 
 const turnDone = (answer: string, agentId?: string) => ({
   answer, durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' as const, ...(agentId ? { agentId } : {}),
@@ -267,6 +269,27 @@ test('a held key never gets past a two-press button, and runs a one-press comman
   expect(await rows(ui)).toEqual([`${TWICE}  a`, 'Dismiss'])
 })
 
+test('a press queued behind a permission check slower than the debounce window is ignored: the window restarts when the check ends', async ($, on) => {
+  const { runs, clock } = engine(on, { checkDelayMs: DEBOUNCE_MS + 100 })
+  const RUN_A = `run-${commandKey('a')}`
+  const RUN_B = `run-${commandKey('b')}`
+
+  const answered = $.turn.complete(turnDone('Run `! a` and `! b`.'))
+  await clock.advance(DEBOUNCE_MS + 100)
+  await answered
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+
+  const first = ui.press({ key: RUN_A })
+  await clock.settle()
+  const second = ui.press({ key: RUN_B })
+  await clock.advance(DEBOUNCE_MS + 100)
+  await first
+  await clock.advance(DEBOUNCE_MS + 100)
+  await second
+  expect(runs).toEqual([['/bin/bash', '-c', 'a']])
+  expect(await rows(ui)).toEqual([`${RUN}  b`, 'Dismiss'])
+})
+
 test('a press whose row Dismiss or a typed prompt cleared during the check never runs, even when the check allows it', async ($, on) => {
   const { runs, toasts, clock, press } = engine(on, { checkDelayMs: 10 })
 
@@ -335,6 +358,24 @@ test('a command a hook denied on the model\'s call stays two-press for the sessi
   expect(await rows(ui)).toEqual([`${AGAIN}  sudo make install`, 'Dismiss'])
 })
 
+test('a hook denial the session keeps repeating is never evicted by newer ones: a repeat deny counts as the newest', async ($, on) => {
+  const others = (batch: number) => Array.from({ length: MAX_DENIED - 1 }, (_, i) => `other${batch}-${i}`)
+  const { runs, press } = engine(on, { denyCalls: ['x', ...others(1), ...others(2)] })
+  const denyCall = (cmd: string) => $.tool.check({ tool: 'Bash', input: { command: cmd }, tool_use_id: `tu-${cmd}` })
+
+  await denyCall('x')
+  for (const cmd of others(1)) await denyCall(cmd)
+  await denyCall('x')
+  for (const cmd of others(2)) await denyCall(cmd)
+
+  await $.turn.complete(turnDone('Run `! x` yourself.'))
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await rows(ui)).toContain(`${TWICE}  x`)
+  await press(ui, `run-${commandKey('x')}`)
+  expect(runs).toHaveLength(0)
+  expect(await rows(ui)).toContain(`${AGAIN}  x`)
+})
+
 test('a run that exits 0 while the next answer\'s checks are pending is still left out of that answer\'s suggestions', async ($, on) => {
   const { runs, clock } = engine(on, { deny: ['gcloud auth login'], checkDelayMs: 10 })
 
@@ -384,6 +425,26 @@ test('a command taller than the band can show enters as two-press, since one pre
   expect(runs).toHaveLength(0)
   await press(ui, `run-${commandKey(tall)}`)
   expect(runs).toEqual([['/bin/bash', '-c', tall]])
+})
+
+test('tallness is measured against the band as drawn: a command that fits beside its button at 80 columns but wraps past the band at 40 is one-press at 80 and two-press at 40', async ($, on) => {
+  const { runs, press } = engine(on)
+  const wide = `echo ${'x'.repeat(195)}`
+  const narrow = `echo ${'y'.repeat(195)}`
+
+  await $.turn.complete(turnDone(`Run \`! ${wide}\` then \`! ${narrow}\`.`))
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await rows(ui)).toEqual([`${RUN}  ${wide}`, `${RUN}  ${narrow}`, 'Dismiss'])
+  await press(ui, `run-${commandKey(wide)}`)
+  expect(runs).toEqual([['/bin/bash', '-c', wide]])
+
+  await ui.redraw({ ...BAND.props, bodyColumns: 40 })
+  expect(await rows(ui)).toEqual([`${TWICE}  ${narrow}`, 'Dismiss'])
+  await press(ui, `run-${commandKey(narrow)}`)
+  expect(runs).toHaveLength(1)
+  expect(await rows(ui)).toEqual([`${AGAIN}  ${narrow}`, 'Dismiss'])
+  await press(ui, `run-${commandKey(narrow)}`)
+  expect(runs).toEqual([['/bin/bash', '-c', wide], ['/bin/bash', '-c', narrow]])
 })
 
 test('a command that just ran with exit 0 is not listed again when the next answer quotes it; the answer after that may', async ($, on) => {
