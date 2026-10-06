@@ -1,3 +1,8 @@
+/** Text that went through scrub() in hooks/hygiene.ts; the same brand, restated because a contract imports nothing. */
+export type SafeText = string & { readonly __safe: true }
+
+export type Hygiene = { masked: number; rejected: number }
+
 export type Moment = 'before a plan' | 'error repeats' | 'before done'
 
 export type Bucket = 'file' | 'shell' | 'other'
@@ -17,9 +22,9 @@ export type Usage = {
   lastCompactAt: number | null
 }
 
-export type Consult = { id: string; at: number; endAt: number | null; moment: Moment; via: string }
+export type Consult = { id: string; at: number; endAt: number | null; moment: Moment; via: SafeText }
 
-export type Architect = { consults: Consult[]; ids: string[]; seen: string[]; lastAdvice: string }
+export type Architect = { consults: Consult[]; ids: string[]; seen: string[]; lastAdvice: SafeText }
 
 export type Check = {
   id: string
@@ -27,7 +32,7 @@ export type Check = {
   bucket: Bucket
   verdict: Verdict
   inSubagent: boolean
-  detail: string
+  detail: SafeText
   at: number
 }
 
@@ -35,16 +40,18 @@ export type Tally = { rule: number; ask: number; cleared: number; deny: number }
 
 export type Gate = { recent: Check[]; totals: Record<Bucket, Tally> }
 
-export type ToolNote = { tool: string; text: string; isError: boolean }
+export type ToolNote = { tool: string; text: SafeText; isError: boolean }
 
 export type AgentCard = {
   id: string
-  type: string
+  type: SafeText
   model: string
-  description: string
+  description: SafeText
   status: string
   spawnedAt: number
   endedAt: number | null
+  /** How long its loop ran, from its turn.complete. */
+  durationMs: number | null
   /** The agent's context now: input + cache read + cache write of its latest step. */
   ctx: number
   /** Output tokens summed over its steps. */
@@ -52,7 +59,6 @@ export type AgentCard = {
   steps: number
   lastStop: string | null
   tools: ToolNote[]
-  answer: string
 }
 
 /** A model loop whose id matches no card: a workflow agent, a compaction or a memory fork. */
@@ -60,8 +66,8 @@ export type Loop = { id: string; steps: number; firstAt: number; lastAt: number;
 
 export type LogLine = {
   at: number
-  who: string
-  text: string
+  who: SafeText
+  text: SafeText
   agentId: string | null
   kind: 'info' | 'error' | 'consult' | 'done'
 }
@@ -88,7 +94,7 @@ export type Layout = 'auto' | 'compact' | 'wide' | 'mini'
 
 export type View = { expanded: string | null; gateOpen: Bucket | null; layout: Layout | null }
 
-export type Roster = { architectTypes: string[] }
+export type Roster = { architectTypes: SafeText[] }
 
 declare module 'claude-code' {
   interface PluginState {
@@ -105,6 +111,7 @@ declare module 'claude-code' {
       receipt: Receipt | null
       view: View
       roster: Roster
+      hygiene: Hygiene
     }
   }
 }

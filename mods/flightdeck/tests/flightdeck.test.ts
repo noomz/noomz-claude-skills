@@ -8,7 +8,6 @@ import {
   afterCall,
   applyStep,
   consultTimeline,
-  describeInput,
   endConsult,
   fitLegend,
   gateSummary,
@@ -27,23 +26,36 @@ import {
   adviceLine,
   receiptOf,
   recordCheck,
-  redact,
   settleCheck,
   trimRecent,
   startConsult,
+  toolDetail,
 } from '../hooks/core'
 import type { Check } from '../types'
+import { scrub } from '../hooks/hygiene'
+import { flightdeck, leaves, stateStore } from './store'
+import type { Engine } from './store'
 
 // ---------------------------------------------------------------- pure behaviour
 
-test('redaction masks credentials before anything is stored', () => {
-  expect(redact('curl -H "Authorization: Bearer abc.def.ghi123" x')).not.toContain('abc.def')
-  expect(redact('export OPENAI_API_KEY=sk-proj-1234567890abcdef')).not.toContain('1234567890')
-  expect(redact('gh auth --token ghp_abcdefghijklmnop')).not.toContain('abcdefghijklmnop')
-  expect(redact('psql postgres://bob:hunter2@db/x')).not.toContain('hunter2')
-  expect(redact('password=hunter2 ls')).not.toContain('hunter2')
-  expect(redact('ls -la src/')).toBe('ls -la src/')
-  expect(describeInput('Read', { file_path: 'C:\\Users\\me\\proj\\src\\main.ts' })).toBe('Read → src/main.ts')
+test('a Bash detail keeps only the program the command runs', () => {
+  expect(toolDetail('Bash', { command: 'curl -u admin:s3cr3t https://h.example/x?sig=abc' })).toEqual({ text: 'Bash → curl', masked: 0 })
+  expect(toolDetail('Bash', { command: '  /usr/local/bin/psql postgres://bob:hunter2@db/x' }).text).toBe('Bash → psql')
+  expect(toolDetail('Bash', { command: 'DB_PASS=hunter2 GITHUB_TOKEN=abc "/opt/tool/run" --go' }).text).toBe('Bash → run')
+  expect(toolDetail('Bash', { command: 'export OPENAI_API_KEY=sk-proj-1234567890abcdef' }).text).toBe('Bash → export')
+})
+
+test('a file tool detail keeps the last two path segments and drops the pattern', () => {
+  expect(toolDetail('Read', { file_path: 'C:\\Users\\me\\proj\\src\\main.ts' }).text).toBe('Read → src/main.ts')
+  expect(toolDetail('Read', { file_path: '/home/me/password=hunter2/notes.txt' }).text).toBe('Read → password=[masked]')
+  expect(toolDetail('Grep', { pattern: 'password=hunter2', path: '/repo/src/auth' }).text).toBe('Grep → src/auth')
+  expect(toolDetail('Grep', { pattern: 'AKIAABCDEFGHIJKLMNOP' }).text).toBe('Grep')
+})
+
+test('a URL tool detail keeps the host alone', () => {
+  expect(toolDetail('WebFetch', { url: 'https://bob:hunter2@docs.example.com:8443/a/b?token=abc#frag', prompt: 'summarise' }).text).toBe('WebFetch → docs.example.com')
+  expect(toolDetail('WebFetch', { url: 'not a url' }).text).toBe('WebFetch')
+  expect(toolDetail('WebSearch', { query: 'my password is hunter2' }).text).toBe('WebSearch')
 })
 
 const check = (id: string, verdict: Check['verdict'], bucket: Check['bucket'] = 'shell'): Check => ({
@@ -52,7 +64,7 @@ const check = (id: string, verdict: Check['verdict'], bucket: Check['bucket'] = 
   bucket,
   verdict,
   inSubagent: false,
-  detail: 'Bash → ls',
+  detail: toolDetail('Bash', { command: 'ls' }).text,
   at: 1,
 })
 
@@ -117,11 +129,13 @@ test("a card's context is its latest step's whole input; output adds up", () => 
   expect([c.ctx, c.out, c.steps, c.lastStop, c.model]).toEqual([40_005, 1200, 2, 'max_tokens', 'claude-sonnet-5-5'])
 })
 
+const VIA = scrub('advisor tool', 40).text
+
 test('consults open, close by id, and draw on a shared timeline', () => {
-  let a = startConsult(DEFAULT_ARCHITECT, { id: 's1', at: 0, moment: 'before a plan', via: 'advisor tool' })
-  a = startConsult(a, { id: 's1', at: 5, moment: 'before a plan', via: 'again' }) // same id: ignored
+  let a = startConsult(DEFAULT_ARCHITECT, { id: 's1', at: 0, moment: 'before a plan', via: VIA })
+  a = startConsult(a, { id: 's1', at: 5, moment: 'before a plan', via: VIA }) // same id: ignored
   a = endConsult(a, 10, null, 's1')
-  a = startConsult(a, { id: 's2', at: 90, moment: 'before done', via: 'advisor tool' })
+  a = startConsult(a, { id: 's2', at: 90, moment: 'before done', via: VIA })
   expect(a.consults.length).toBe(2)
   expect(a.consults[0]?.endAt).toBe(10)
   const tl = consultTimeline(a, 100, 11)
@@ -167,14 +181,14 @@ test('layout math: lanes share one axis, the log gets 4-8 rows, the legend never
   expect(prettyModel('claude-3-opus-20240229')).toBe('Opus 3')
   expect(prettyModel('z-ai/glm-5.3-flash-with-a-long-name')).toBe('z-ai/glm-5.3-flash-wi…')
   expect(prettyModel('')).toBe('—')
-  expect(promptLine('fix the parser')).toEqual({ who: 'you', text: 'fix the parser' })
+  expect(promptLine('fix the parser')).toEqual({ who: 'you', text: 'new turn · 14 chars' })
   const hb = '<agent-message from="a1940a83d593229d5">\n[Subagent hand-back] The text below is the final report. The report follows:\n  Add gate tests: redaction edge cases.\n  - more\n</agent-message>'
   expect(handbackOf(hb)).toEqual({ from: 'a1940a83d593229d5', body: 'Add gate tests: redaction edge cases.' })
   expect(handbackOf('<agent-message from="x">\nPlain report line\n</agent-message>')).toEqual({ from: 'x', body: 'Plain report line' })
   expect(handbackOf('fix the parser')).toBe(null)
-  expect(adviceLine('## Ship it after one more gate test.\n- details')).toBe('Ship it after one more gate test.')
-  expect(adviceLine('[Subagent hand-back] header\n\n**Fix card overflow first**')).toBe('Fix card overflow first')
-  expect(adviceLine('')).toBe('')
+  expect(adviceLine('## Ship it after one more gate test.\n- details').text).toBe('Ship it after one more gate test.')
+  expect(adviceLine('[Subagent hand-back] header\n\n**Fix card overflow first**').text).toBe('Fix card overflow first')
+  expect(adviceLine('').text).toBe('')
   expect(promptLine('<agent-message from="a1492260715f3be7b"> [Subagent hand-back]')).toEqual({ who: 'engine', text: 'agent message from a1492260' })
   expect(receiptOf({ ...DEFAULT_TURN, costAtStart: 5 }, { durationMs: 1, agentsSince: 0, costNow: 5, reason: 'answer' }).costDelta).toBe(null)
   expect(titleLines('Write tinyqueue test suite', 13, 16)).toEqual(['Write', 'tinyqueue test…'])
@@ -327,7 +341,7 @@ test('the server-side advisor is read from assistant rows: consulting, then on c
   await after.unmount()
 })
 
-test('the gate strip fills from checks and a row opens its redacted drill-down', async ($, on) => {
+test('the gate strip fills from checks and a row opens its drill-down, which names the program alone', async ($, on) => {
   engine(on)
   on('tool.check', (_$, e) => ({ decision: e.tool === 'Read' ? 'allow' : 'ask' }))
   await $.tool.check({ tool: 'Read', input: { file_path: '/a/b.ts' }, tool_use_id: 'k1' })
@@ -336,8 +350,8 @@ test('the gate strip fills from checks and a row opens its redacted drill-down',
   expect(await ui.find({ text: /2 checks/ })).toBeDefined()
   expect(await ui.find({ text: /1 pending/ })).toBeDefined()
   await ui.press({ key: 'gate-shell' })
-  expect(await ui.find({ text: /Authorization: Bearer •••/ })).toBeDefined()
-  expect(await ui.find({ text: /abcdefgh12345/ })).toBeUndefined()
+  expect(await ui.find({ text: /Bash → curl/ })).toBeDefined()
+  expect(await ui.find({ text: /abcdefgh12345|Authorization/ })).toBeUndefined()
   await ui.unmount()
 })
 
@@ -419,3 +433,92 @@ test("a background architect's advice is read from its hand-back", async ($, on)
   expect(await ui.find({ text: /» Ship it after one more gate test\./ })).toBeDefined()
   await ui.unmount()
 })
+
+test('a typed prompt shows in the log as its length alone', async ($, on) => {
+  engine(on)
+  await $.turn.start({ text: 'password=hunter2 rotate the API keys', turnId: 'P1' })
+  const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  expect(await ui.find({ text: /^you$/ })).toBeDefined()
+  expect(await ui.find({ text: /^new turn · 36 chars$/ })).toBeDefined()
+  expect(await ui.find({ text: /hunter2|rotate/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('a finished card keeps its status and duration, never its answer', async ($, on) => {
+  engine(on)
+  on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: 'd1' }))
+  await $.turn.start({ text: 'go', turnId: 'D1' })
+  await $.agent.spawn(spawn('general-purpose', 'Count the lines'))
+  await $.turn.complete({ answer: 'There are 42 lines.', durationMs: 75_000, isAborted: false, turnId: 'D2', agentId: 'd1', reason: 'answer' })
+  const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  await ui.press({ key: 'card-d1' })
+  expect(await ui.find({ text: /· done · 1m15s ·/ })).toBeDefined()
+  expect(await ui.find({ text: /42 lines/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('an agent description is masked and cut to 80 characters, its name to 40', async ($, on) => {
+  engine(on)
+  on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: 'j1' }))
+  await $.turn.start({ text: 'go', turnId: 'J1' })
+  await $.agent.spawn({ ...spawn('general-purpose', `deploy eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2ln ${'x'.repeat(120)}`), name: 'n'.repeat(300) })
+  const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  await ui.press({ key: 'card-j1' })
+  const full = await ui.find({ text: /^deploy \[masked\] x+…$/ })
+  expect(full?.text.length).toBe(80)
+  expect(await ui.find({ text: new RegExp(`^${'n'.repeat(39)}… · `) })).toBeDefined()
+  await ui.unmount()
+})
+
+for (const [path, fire] of [
+  ['its turn.complete answer', ($: Engine) => $.turn.complete({ answer: 'Rotate ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA first', durationMs: 5, isAborted: false, turnId: 'A2', agentId: 'arc1', reason: 'answer' })],
+  ['its hand-back turn', ($: Engine) => $.turn.start({ text: '<agent-message from="arc1">\nThe report follows:\nRotate ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA first\n</agent-message>', turnId: 'A3' })],
+  ['its SubagentHandback call', ($: Engine) => $.tool.call({ tool: 'SubagentHandback', message: 'Rotate ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA first', agentId: 'arc1', tool_use_id: 'h1' } as never)],
+] as const) {
+  test(`architect advice from ${path} is masked`, async ($, on) => {
+    engine(on)
+    on('agent.spawn', () => ({ model: 'claude-fable-5-1', agentId: 'arc1' }))
+    on('tool.call', () => ({ result: {}, text: 'ok' }) as never)
+    await $.turn.start({ text: 'review it', turnId: 'A1' })
+    await $.agent.spawn(spawn('architect', 'final review'))
+    await fire($)
+    const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+    expect(await ui.find({ text: /» Rotate \[masked\] first/ })).toBeDefined()
+    expect(await ui.find({ text: /ghp_/ })).toBeUndefined()
+    await ui.unmount()
+  })
+}
+
+const SESSION_TEXT_KEYS = ['log', 'agents', 'gate', 'architect', 'roster'] as const
+
+const textFields = (values: Map<string, { value: unknown }>) => {
+  const state = flightdeck(values)
+  return SESSION_TEXT_KEYS.flatMap(key => leaves(state[key], key)).filter(([, text]) => text !== '')
+}
+
+for (const [how, end] of [
+  ['/flightdeck reset', ($: Engine) => $.command.run({ command: 'flightdeck', args: 'reset' } as never)],
+  ['session.end on resume', ($: Engine) => $.session.end({ reason: 'resume', sessionId: 's' } as never)],
+] as const) {
+  test(`${how} empties every text field, roster and meta included, and a second run changes nothing`, async ($, on) => {
+    const values = stateStore(on)
+    engine(on)
+    on('session.end', (_$, e) => ({ sessionId: e.sessionId }) as never)
+    on('agent.offer', () => ({ isOffered: true }) as never)
+    on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: 'z1' }))
+    await $.agent.offer({ agent: 'architect', description: 'reviews', source: 'plugin', provider: { plugin: 'engine', tier: 'core' } } as never)
+    await $.turn.start({ text: 'go', turnId: 'Z1' })
+    await $.agent.spawn(spawn('Explore', 'look around'))
+    expect(textFields(values).length).toBeGreaterThan(0)
+    expect((flightdeck(values).roster as { architectTypes: string[] }).architectTypes).toEqual(['architect'])
+    await $.command.run({ command: 'flightdeck', args: 'layout wide' } as never).catch(() => undefined)
+    await end($)
+    const once = JSON.stringify(flightdeck(values))
+    expect(textFields(values)).toEqual([])
+    expect(flightdeck(values).roster).toEqual({ architectTypes: [] })
+    expect(flightdeck(values).meta).toEqual({ schemaVersion: 3 })
+    expect(flightdeck(values).hygiene).toEqual({ masked: 0, rejected: 0 })
+    await end($)
+    expect(JSON.stringify(flightdeck(values))).toBe(once)
+  })
+}

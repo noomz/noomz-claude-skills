@@ -1,5 +1,8 @@
 import { expect, mock, test } from 'claude-code/testing'
 
+import { flightdeck, leaves, stateStore } from './store'
+import type { Engine, On } from './store'
+
 const SURFACES = ['terminal', 'desktop'] as const
 const LAYOUTS = ['auto', 'compact', 'wide', 'mini'] as const
 
@@ -13,7 +16,7 @@ const COMMAND = 'curl -u admin:s3cr3t https://h.example/x?sig=abc'
 
 const SECRETS = ['hunter2', 'ABCDEFGHIJKLMNOPQRST', 'eyJhbGciOiJIUzI1NiJ9', 'eyJzdWIiOiIxIn0', 'sk-ant-', 'ghp_', 's3cr3t', 'sig=abc']
 const SESSION_TEXT = ['aws_secret_access_key', 'All set', 'ANSWERMARK', 'admin:', 'h.example/x']
-const HIDDEN = /[\u001b\u009b​-‏‪-‮⁦-⁩﻿]/
+const HIDDEN = /[\u001b\u009b\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/
 
 const CAPS: [path: RegExp, cap: number][] = [
   [/^agents\.\d+\.description$/, 80],
@@ -26,29 +29,6 @@ const CAPS: [path: RegExp, cap: number][] = [
   [/^log\.\d+\.who$/, 40],
   [/^log\.\d+\.text$/, 160],
 ]
-
-type On = Parameters<Extract<Parameters<typeof test>[1], (...args: never[]) => unknown>>[1]
-type Engine = Parameters<Extract<Parameters<typeof test>[1], (...args: never[]) => unknown>>[0]
-
-function stateStore(on: On) {
-  const values = new Map<string, { value: unknown; version: number }>()
-  const name = (e: { plugin: string; key: string; id?: string }) => `${e.plugin}/${e.key}/${e.id ?? ''}`
-  on('state.get', (_$, e) => ({ value: values.get(name(e)) ?? { value: undefined, version: 0 } }))
-  on('state.set', (_$, e) => {
-    const version = values.get(name(e))?.version ?? 0
-    if (e.ifVersion !== undefined && e.ifVersion !== version) return { value: { isSet: false as const, version } }
-    values.set(name(e), { value: e.value, version: version + 1 })
-    return { value: { isSet: true as const, version: version + 1 } }
-  })
-  return values
-}
-
-const leaves = (value: unknown, path: string, out: [string, string][]) => {
-  if (typeof value === 'string') out.push([path, value])
-  else if (Array.isArray(value)) value.forEach((v, i) => leaves(v, `${path}.${i}`, out))
-  else if (typeof value === 'object' && value !== null) for (const [k, v] of Object.entries(value)) leaves(v, path ? `${path}.${k}` : k, out)
-  return out
-}
 
 const spawnArgs = (n: number, subagentType: string, description: string, name?: string) => ({
   prompt: 'do the task',
@@ -86,23 +66,16 @@ async function seed($: Engine, on: On) {
   await $.tool.call({ tool: 'SubagentHandback', message: ADVICE, agentId: 'arch1', tool_use_id: 'c2' } as never)
   await $.turn.start({ text: `<agent-message from="arch1">\nThe report follows:\n${ADVICE} two\n</agent-message>`, turnId: 'T4' })
   await $.turn.complete({ answer: `${ADVICE} three`, durationMs: 900, isAborted: false, turnId: 'T5', agentId: 'arch1', reason: 'answer' } as never)
-  await $.command.run({ command: 'flightdeck', args: 'open' })
+  await $.command.run({ command: 'flightdeck', args: 'open' } as never)
   return values
 }
 
-const stored = (values: Map<string, { value: unknown }>) => {
-  const out: [string, string][] = []
-  for (const [name, { value }] of values) {
-    const [plugin, key] = name.split('/')
-    if (plugin === 'flightdeck' && key) leaves(value, key, out)
-  }
-  return out
-}
+const stored = (values: Map<string, { value: unknown }>) => leaves(flightdeck(values))
 
 const panes = async ($: Engine, surface: (typeof SURFACES)[number]) => {
   const out: [string, string][] = []
   for (const layout of LAYOUTS) {
-    await $.command.run({ command: 'flightdeck', args: `layout ${layout}` })
+    await $.command.run({ command: 'flightdeck', args: `layout ${layout}` } as never)
     for (const placement of ['dock', 'inline'] as const) {
       const ui = await $.ui.mount({
         plugin: 'flightdeck',
@@ -137,7 +110,7 @@ test('state holds no canary secret, no prompt or answer text, and no ESC or bidi
 test('every stored text field stays inside its cap', async ($, on) => {
   const values = await seed($, on)
   const strings = stored(values)
-  for (const [pattern, cap] of CAPS) expect(strings.some(([path]) => pattern.test(path)), `no stored ${pattern}`).toBe(true)
+  for (const [pattern] of CAPS) expect(strings.some(([path]) => pattern.test(path)), `no stored ${pattern}`).toBe(true)
   for (const [path, text] of strings) {
     const cap = CAPS.find(([pattern]) => pattern.test(path))?.[1]
     if (cap !== undefined) expect(text.length <= cap, `${path} is ${text.length} long, cap ${cap}`).toBe(true)

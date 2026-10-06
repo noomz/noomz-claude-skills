@@ -6,6 +6,7 @@ import type {
   Architect,
   Bucket,
   Check,
+  Consult,
   Gate,
   Layout,
   LogLine,
@@ -20,8 +21,15 @@ import type {
   Usage,
   View,
 } from '../types'
+import { scrub } from './hygiene'
+import type { Hygiene, SafeText, Scrubbed } from './hygiene'
 
-export const SCHEMA_VERSION = 2
+export const SCHEMA_VERSION = 3
+
+/** The most characters each kind of stored text keeps, after scrub() masks it. */
+export const CAP = { description: 80, name: 40, detail: 64, advice: 160, who: 40, line: 160 } as const
+
+export const NO_TEXT = '' as SafeText
 
 // ---------------------------------------------------------------- defaults
 
@@ -35,12 +43,13 @@ export const DEFAULT_USAGE: Usage = {
   compactions: 0,
   lastCompactAt: null,
 }
-export const DEFAULT_ARCHITECT: Architect = { consults: [], ids: [], seen: [], lastAdvice: '' }
+export const DEFAULT_ARCHITECT: Architect = { consults: [], ids: [], seen: [], lastAdvice: NO_TEXT }
 const ZERO: Tally = { rule: 0, ask: 0, cleared: 0, deny: 0 }
 export const DEFAULT_GATE: Gate = { recent: [], totals: { file: ZERO, shell: ZERO, other: ZERO } }
 export const DEFAULT_TURN: Turn = { edits: 0, errorStreak: 0, errors: 0, isReviewing: false, startedAt: 0, costAtStart: null }
 export const DEFAULT_VIEW: View = { expanded: null, gateOpen: null, layout: null }
 export const DEFAULT_ROSTER: Roster = { architectTypes: [] }
+export const DEFAULT_HYGIENE: Hygiene = { masked: 0, rejected: 0 }
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 
@@ -64,18 +73,18 @@ export const normalizeCard = (stored: unknown): AgentCard =>
   normalize<AgentCard>(
     {
       id: '',
-      type: 'agent',
+      type: 'agent' as SafeText,
       model: '',
-      description: '',
+      description: NO_TEXT,
       status: 'running',
       spawnedAt: 0,
       endedAt: null,
+      durationMs: null,
       ctx: 0,
       out: 0,
       steps: 0,
       lastStop: null,
       tools: [],
-      answer: '',
     },
     stored,
   )
@@ -83,8 +92,8 @@ export const normalizeCard = (stored: unknown): AgentCard =>
 export const normalizeLog = (stored: unknown): LogLine[] =>
   listOf<Record<string, unknown>>(stored).map(l => ({
     at: typeof l.at === 'number' ? l.at : 0,
-    who: String(l.who ?? ''),
-    text: String(l.text ?? ''),
+    who: String(l.who ?? '') as SafeText,
+    text: String(l.text ?? '') as SafeText,
     agentId: typeof l.agentId === 'string' ? l.agentId : null,
     kind: l.kind === 'error' || l.kind === 'consult' || l.kind === 'done' ? l.kind : 'info',
   }))
@@ -244,21 +253,6 @@ export const limitLabel = (kind: string) =>
     .replace(/[_-]+/g, ' ')
     .trim()
 
-// ---------------------------------------------------------------- redaction
-
-const SECRETS: [RegExp, string][] = [
-  [/(authorization\s*[:=]\s*)(bearer\s+|basic\s+)?\S+/gi, '$1$2•••'],
-  [/\b(bearer)\s+[A-Za-z0-9._~+/-]{8,}=*/gi, '$1 •••'],
-  [/\b(sk|pk|rk|ghp|gho|ghs|github_pat|xox[abprs])[-_][A-Za-z0-9_-]{8,}/g, '•••'],
-  [/((?:api[_-]?key|access[_-]?token|token|secret|password|passwd|pwd)\s*[=:]\s*)("[^"]*"|'[^']*'|\S+)/gi, '$1•••'],
-  [/(--(?:token|password|api-key|secret)[= ])\S+/gi, '$1•••'],
-  [/(\b[A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD)=)\S+/g, '$1•••'],
-  [/(\b[a-z][a-z0-9+.-]*:\/\/[^\s/:@]+:)[^\s@]+@/gi, '$1•••@'],
-]
-
-/** What the gate drill-down may store: credentials masked before anything is written to state. */
-export const redact = (s: string) => SECRETS.reduce((t, [re, to]) => t.replace(re, to), s)
-
 // ---------------------------------------------------------------- tools and gate
 
 const FILE_TOOLS = new Set(['Read', 'Edit', 'Write', 'NotebookEdit', 'Glob', 'Grep'])
@@ -268,15 +262,30 @@ export const EDIT_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit'])
 export const bucketOf = (tool: string): Bucket =>
   FILE_TOOLS.has(tool) ? 'file' : SHELL_TOOLS.has(tool) ? 'shell' : 'other'
 
-/** One line saying what a call was about: its command, path or pattern; redacted. */
-export const describeInput = (tool: string, input: unknown) => {
+const lastSegments = (path: string, n: number) => path.split(/[\\/]/).filter(Boolean).slice(-n).join('/')
+
+/** The program a command runs: its first word that is not a `NAME=value` assignment, as a basename. */
+const programOf = (command: string) =>
+  lastSegments((command.trim().split(/\s+/).find(w => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w)) ?? '').replace(/^["']|["']$/g, ''), 1)
+
+const hostOf = (url: string) => {
+  try {
+    return new URL(url).hostname
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * One line saying what a call was about, derived so it holds no argument text: a command's
+ * program, a file's last two path segments, a URL's host. Patterns, queries and descriptions are dropped.
+ */
+export const toolDetail = (tool: string, input: unknown): Scrubbed => {
   const i = isObject(input) ? input : {}
-  const path = typeof i.file_path === 'string' ? i.file_path.split(/[\\/]/).slice(-2).join('/') : ''
-  const what =
-    typeof i.command === 'string'
-      ? i.command
-      : path || (typeof i.pattern === 'string' ? i.pattern : typeof i.url === 'string' ? i.url : typeof i.description === 'string' ? i.description : '')
-  return redact(what ? `${tool} → ${what}` : tool)
+  const str = (k: string) => (typeof i[k] === 'string' ? (i[k] as string) : '')
+  const path = str('file_path') || str('notebook_path') || str('path')
+  const what = str('command') ? programOf(str('command')) : path ? lastSegments(path, 2) : str('url') ? hostOf(str('url')) : ''
+  return scrub(what ? `${tool} → ${what}` : tool, CAP.detail)
 }
 
 /** Keeps the last `max` checks, but never drops a pending ask: its settle must still find it. */
@@ -344,11 +353,11 @@ export const afterCall = (t: Turn, c: { inSubagent: boolean; hasFailed: boolean;
 export const momentOf = (t: Pick<Turn, 'edits' | 'errorStreak'>): Moment =>
   t.errorStreak >= 2 ? 'error repeats' : t.edits === 0 ? 'before a plan' : 'before done'
 
-export const startConsult = (a: Architect, c: { id: string; at: number; moment: Moment; via: string }): Architect =>
+export const startConsult = (a: Architect, c: Omit<Consult, 'endAt'>): Architect =>
   a.consults.some(x => x.id === c.id) ? a : { ...a, consults: [...a.consults, { ...c, endAt: null }].slice(-40) }
 
 /** Ends the open consult (the latest without an end), or the one named. */
-export const endConsult = (a: Architect, at: number, advice: string | null, id?: string): Architect => {
+export const endConsult = (a: Architect, at: number, advice: SafeText | null, id?: string): Architect => {
   const open = [...a.consults].reverse().find(c => c.endAt === null && (id === undefined || c.id === id))
   return {
     ...a,
@@ -444,7 +453,7 @@ export const fitLegend = <T extends { label: string }>(items: T[], width: number
 }
 
 /** A card's title row: the task in the agent's own words, the type only when there is none. */
-export const cardTitle = (c: AgentCard) => c.description || c.type
+export const cardTitle = (c: AgentCard): SafeText => c.description || c.type
 
 /** A title split over two rows at a word boundary: `first` cells on row one, `rest` on row two. */
 export const titleLines = (title: string, first: number, rest: number): [string, string] => {
@@ -456,14 +465,15 @@ export const titleLines = (title: string, first: number, rest: number): [string,
 }
 
 /**
- * What a turn's opening text was, for the log: the person's words, or for a turn the engine
- * opened with a tagged message (a subagent's hand-back, a task notification), that message's kind.
+ * The log row for a turn's opening text, which it never keeps: the person's turn as its length, or
+ * for a turn the engine opened with a tagged message (a hand-back, a task notification), that
+ * message's kind and the sender's id when it is an id.
  */
 export const promptLine = (text: string): { who: string; text: string } => {
-  const tag = /^\s*<([a-z][\w-]*)/i.exec(text)?.[1]
-  if (!tag) return { who: 'you', text: shorten(text, 70) }
-  const from = /\bfrom="([^"]+)"/.exec(text)?.[1]
-  return { who: 'engine', text: shorten(`${tag.replace(/[-_]/g, ' ')}${from ? ` from ${from.slice(0, 8)}` : ''}`, 70) }
+  const tag = /^\s*<([a-z][a-z-]{0,31})[\s>]/.exec(text)?.[1]
+  if (!tag) return { who: 'you', text: `new turn · ${plural([...text].length, 'char')}` }
+  const from = /\bfrom="([a-z0-9]+)"/i.exec(text)?.[1]
+  return { who: 'engine', text: `${tag.replace(/-/g, ' ')}${from ? ` from ${from.slice(0, 8)}` : ''}` }
 }
 
 /**
@@ -483,10 +493,10 @@ export const handbackOf = (text: string): { from: string; body: string } | null 
   return body ? { from, body } : null
 }
 
-/** The advice line a pane shows for a report: its first real line, markdown markers stripped, cut to 160. */
-export const adviceLine = (report: string) => {
+/** The advice line a pane shows for a report: its first real line, markdown markers stripped, masked and cut. */
+export const adviceLine = (report: string): Scrubbed => {
   const first = report.split('\n').map(l => l.trim()).find(l => l && !l.startsWith('[') && !l.startsWith('<')) ?? ''
-  return shorten(first.replace(/\*\*|__/g, '').replace(/^[#>*\s-]+/, ''), 160)
+  return scrub(first.replace(/\*\*|__/g, '').replace(/^[#>*\s-]+/, ''), CAP.advice)
 }
 
 export const elapsedOf = (c: AgentCard, now: number) => (c.endedAt ?? now) - c.spawnedAt

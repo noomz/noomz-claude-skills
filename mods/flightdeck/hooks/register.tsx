@@ -2,9 +2,13 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { AgentCard, Architect, Bucket, Check, Gate, Layout, LogLine, Loop, Main, Roster, Turn, Usage, View } from '../types'
+import { scrub } from './hygiene'
+import type { SafeText, Scrubbed } from './hygiene'
 import {
+  CAP,
   DEFAULT_ARCHITECT,
   DEFAULT_GATE,
+  DEFAULT_HYGIENE,
   DEFAULT_MAIN,
   DEFAULT_ROSTER,
   DEFAULT_TURN,
@@ -18,7 +22,6 @@ import {
   cardTitle,
   titleLines,
   consultTimeline,
-  describeInput,
   endConsult,
   fitLegend,
   fmtClock,
@@ -54,6 +57,7 @@ import {
   shorten,
   startConsult,
   stepLoop,
+  toolDetail,
 } from './core'
 import type { Config, Panel } from './core'
 
@@ -76,6 +80,7 @@ const turn = atom({ plugin: 'flightdeck', key: 'turn' } as const, DEFAULT_TURN)
 const receipt = atom({ plugin: 'flightdeck', key: 'receipt' } as const, null)
 const view = atom({ plugin: 'flightdeck', key: 'view' } as const, DEFAULT_VIEW)
 const roster = atom({ plugin: 'flightdeck', key: 'roster' } as const, DEFAULT_ROSTER)
+const hygiene = atom({ plugin: 'flightdeck', key: 'hygiene' } as const, DEFAULT_HYGIENE)
 
 type ServerBlock = { type: string; id?: string; name?: string; tool_use_id?: string }
 
@@ -113,18 +118,28 @@ async function getRoster($: EngineInterface): Promise<Roster> {
   return { architectTypes: listOf(r.architectTypes) }
 }
 
-/** A stored shape older than this build's: drop what cannot be read, keep the rest. */
+/** A stored shape older than this build's held text that never went through scrub(): start over. */
 async function migrate($: EngineInterface) {
   const m = await read($, meta)
-  if ((m?.schemaVersion ?? 0) >= SCHEMA_VERSION) return
-  await update($, log, list => normalizeLog(list))
-  await update($, agents, list => listOf<unknown>(list).map(normalizeCard))
-  await update($, gate, g => normalizeGate(g))
-  await update($, meta, () => ({ schemaVersion: SCHEMA_VERSION }))
+  if ((m?.schemaVersion ?? 0) < SCHEMA_VERSION) await resetAll($)
+}
+
+/** Counts what scrub() masked, for the hygiene cell and `/flightdeck audit`. */
+async function tally($: EngineInterface, ...found: Scrubbed[]) {
+  const masked = found.reduce((n, f) => n + f.masked, 0)
+  if (masked > 0) await update($, hygiene, h => ({ ...normalize(DEFAULT_HYGIENE, h), masked: normalize(DEFAULT_HYGIENE, h).masked + masked }))
+}
+
+/** Session text as flightdeck may keep it: through scrub(), cut to `cap`, its masks counted. */
+async function clean($: EngineInterface, raw: unknown, cap: number): Promise<SafeText> {
+  const s = scrub(raw, cap)
+  await tally($, s)
+  return s.text
 }
 
 async function say($: EngineInterface, who: string, text: string, kind: LogLine['kind'] = 'info', agentId: string | null = null) {
-  const line: LogLine = { at: await $.clock.now(), who, text, kind, agentId }
+  const [at, w, t] = await Promise.all([$.clock.now(), clean($, who, CAP.who), clean($, text, CAP.line)])
+  const line: LogLine = { at, who: w, text: t, kind, agentId }
   await update($, log, list => [...normalizeLog(list), line].slice(-60))
 }
 
@@ -150,7 +165,8 @@ async function whoIs($: EngineInterface, agentId: string | undefined) {
   return card ? shorten(cardTitle(card), 14) : 'agent'
 }
 
-async function consultStarted($: EngineInterface, cfg: Config, id: string, via: string) {
+async function consultStarted($: EngineInterface, cfg: Config, id: string, rawVia: string) {
+  const via = await clean($, rawVia, CAP.name)
   const t = await getTurn($)
   const moment = momentOf(t)
   const at = await $.clock.now()
@@ -162,21 +178,26 @@ async function consultStarted($: EngineInterface, cfg: Config, id: string, via: 
 
 async function consultEnded($: EngineInterface, cfg: Config, advice: string | null, id?: string) {
   const at = await $.clock.now()
-  const first = advice?.split('\n').find(l => l.trim()) ?? null
-  const text = first ? shorten(first.replace(/^[#>*\s-]+/, ''), 160) : null
+  const line = advice ? adviceLine(advice) : null
+  if (line) await tally($, line)
+  const text = line?.text || null
   await update($, architect, a => endConsult(normalize(DEFAULT_ARCHITECT, a), at, text, id))
   await update($, turn, t => ({ ...normalize(DEFAULT_TURN, t), isReviewing: false }))
   await say($, cfg.architectLabel.toLowerCase(), text ? `advice: ${shorten(text, 60)}` : 'advice returned', 'consult')
   await refreshStatus($, cfg)
 }
 
-async function noteAdvice($: EngineInterface, cfg: Config, advice: string) {
-  await update($, architect, x => ({ ...normalize(DEFAULT_ARCHITECT, x), lastAdvice: advice }))
-  await say($, cfg.architectLabel.toLowerCase(), `advice: ${shorten(advice, 60)}`, 'consult')
+/** An architect's report seen again on another path: kept only when its masked first line is new. */
+async function noteAdvice($: EngineInterface, cfg: Config, report: string) {
+  const advice = adviceLine(report)
+  if (!advice.text || advice.text === (await getArchitect($)).lastAdvice) return
+  await tally($, advice)
+  await update($, architect, x => ({ ...normalize(DEFAULT_ARCHITECT, x), lastAdvice: advice.text }))
+  await say($, cfg.architectLabel.toLowerCase(), `advice: ${shorten(advice.text, 60)}`, 'consult')
 }
 
 async function isArchitectType($: EngineInterface, cfg: Config, type: string) {
-  return cfg.architect.test(type) || (await getRoster($)).architectTypes.includes(type)
+  return cfg.architect.test(type) || (await getRoster($)).architectTypes.includes(scrub(type, CAP.name).text)
 }
 
 async function openPane($: EngineInterface) {
@@ -184,7 +205,9 @@ async function openPane($: EngineInterface) {
   return $.ui.open({ id: PANE, title: TITLE, columns: PANE_COLUMNS, rows: 8 })
 }
 
+/** Empties every value that holds session text or counts it; a second call changes nothing. */
 async function resetAll($: EngineInterface) {
+  await update($, meta, () => ({ schemaVersion: SCHEMA_VERSION }))
   await update($, main, m => ({ ...DEFAULT_MAIN, model: normalize(DEFAULT_MAIN, m).model, mode: normalize(DEFAULT_MAIN, m).mode }))
   await update($, architect, () => DEFAULT_ARCHITECT)
   await update($, gate, () => DEFAULT_GATE)
@@ -194,6 +217,8 @@ async function resetAll($: EngineInterface) {
   await update($, turn, () => DEFAULT_TURN)
   await update($, receipt, () => null)
   await update($, view, () => DEFAULT_VIEW)
+  await update($, roster, () => DEFAULT_ROSTER)
+  await update($, hygiene, () => DEFAULT_HYGIENE)
   // The context gauge waits for the next measurement rather than showing the pre-clear fill.
   await update($, usage, x => ({ ...normalize(DEFAULT_USAGE, x), pct: null, tokens: null }))
 }
@@ -241,7 +266,7 @@ export const register: Register = (on, options) => {
   })
 
   on('session.end', async ($, e, next) => {
-    if (e.reason === 'clear') {
+    if (e.reason === 'clear' || e.reason === 'resume') {
       await resetAll($)
       await refreshStatus($, cfg)
     }
@@ -279,10 +304,15 @@ export const register: Register = (on, options) => {
   on('agent.offer', async ($, e, next) => {
     const offered = await next(e)
     if (cfg.architect.test(e.agent) || (cfg.matchDescriptions && cfg.architect.test(e.description))) {
-      await update($, roster, r => {
-        const x = normalize(DEFAULT_ROSTER, r)
-        return x.architectTypes.includes(e.agent) ? x : { architectTypes: [...listOf<string>(x.architectTypes), e.agent].slice(-20) }
-      })
+      // Offered every turn: the name is counted once, when it joins the roster.
+      const name = scrub(e.agent, CAP.name)
+      if (!(await getRoster($)).architectTypes.includes(name.text)) {
+        await tally($, name)
+        await update($, roster, r => {
+          const x = normalize(DEFAULT_ROSTER, r)
+          return x.architectTypes.includes(name.text) ? x : { architectTypes: [...listOf<SafeText>(x.architectTypes), name.text].slice(-20) }
+        })
+      }
     }
     return offered
   })
@@ -296,8 +326,7 @@ export const register: Register = (on, options) => {
     const back = e.text ? handbackOf(e.text) : null
     const a = back ? await getArchitect($) : null
     if (back && a && a.ids.includes(back.from)) {
-      const advice = adviceLine(back.body)
-      if (advice && advice !== a.lastAdvice) await noteAdvice($, cfg, advice)
+      await noteAdvice($, cfg, back.body)
     } else if (e.text) {
       const p = promptLine(e.text)
       await say($, p.who, p.text)
@@ -357,13 +386,15 @@ export const register: Register = (on, options) => {
   on('tool.check', async ($, e, next) => {
     const verdict = await next(e)
     if (e.tool_use_id) {
+      const detail = toolDetail(e.tool, e.input)
+      await tally($, detail)
       const check: Check = {
         id: e.tool_use_id,
         tool: e.tool,
         bucket: bucketOf(e.tool),
         verdict: verdict.decision === 'allow' ? 'rule' : verdict.decision,
         inSubagent: Boolean(callLoop.get(e.tool_use_id)),
-        detail: shorten(describeInput(e.tool, e.input), 90),
+        detail: detail.text,
         at: await $.clock.now(),
       }
       await update($, gate, g => recordCheck(normalizeGate(g), check))
@@ -388,10 +419,7 @@ export const register: Register = (on, options) => {
     if (String(e.tool) === 'SubagentHandback') {
       const message = (e as unknown as { message?: unknown }).message
       const a = e.agentId ? await getArchitect($) : null
-      if (a && e.agentId && a.ids.includes(e.agentId) && typeof message === 'string') {
-        const advice = adviceLine(message)
-        if (advice && advice !== a.lastAdvice) await noteAdvice($, cfg, advice)
-      }
+      if (a && e.agentId && a.ids.includes(e.agentId) && typeof message === 'string') await noteAdvice($, cfg, message)
       return ran
     }
     if (e.tool === 'Agent') {
@@ -404,7 +432,9 @@ export const register: Register = (on, options) => {
     if (isEdit || hasFailed || (!e.agentId && t0.errorStreak > 0)) {
       await update($, turn, t => afterCall(normalize(DEFAULT_TURN, t), { inSubagent: Boolean(e.agentId), hasFailed, isEdit }))
     }
-    const text = shorten(describeInput(e.tool, e), 64)
+    const detail = toolDetail(e.tool, e)
+    if (e.agentId || ran.deny !== undefined || hasFailed || isEdit) await tally($, detail)
+    const text = detail.text
     if (e.agentId) {
       const id = e.agentId
       await update($, agents, list =>
@@ -461,12 +491,13 @@ export const register: Register = (on, options) => {
       await consultStarted($, cfg, id, e.subagentType.split(':').pop() ?? 'agent')
       return started
     }
+    const [type, description] = await Promise.all([clean($, e.name ?? e.subagentType, CAP.name), clean($, e.description, CAP.description)])
     const card: AgentCard = {
       ...normalizeCard({}),
       id,
-      type: e.name ?? e.subagentType,
+      type,
       model: started.model,
-      description: e.description,
+      description,
       spawnedAt: await $.clock.now(),
     }
     await update($, agents, list => [...listOf<unknown>(list).map(normalizeCard), card].slice(-24))
@@ -503,7 +534,7 @@ export const register: Register = (on, options) => {
       await update($, agents, list =>
         listOf<unknown>(list)
           .map(normalizeCard)
-          .map(c => (c.id === id ? { ...c, status, endedAt: now, answer: shorten(e.answer, 400) } : c)),
+          .map(c => (c.id === id ? { ...c, status, endedAt: now, durationMs: e.durationMs } : c)),
       )
       const card = cards.find(c => c.id === id)
       const took = card ? fmtDuration(now - card.spawnedAt) : ''
@@ -846,18 +877,13 @@ export const register: Register = (on, options) => {
           <Text bold wrap="wrap">
             {expandedCard.description || expandedCard.type}
           </Text>
-          <Text dimColor wrap="truncate">{`${expandedCard.type} · ${prettyModel(expandedCard.model)} · ${expandedCard.status} · ${expandedCard.steps} steps`}</Text>
+          <Text dimColor wrap="truncate">{`${expandedCard.type} · ${prettyModel(expandedCard.model)} · ${expandedCard.status}${expandedCard.durationMs !== null ? ` · ${fmtDuration(expandedCard.durationMs)}` : ''} · ${expandedCard.steps} steps`}</Text>
           {expandedCard.tools.length === 0 ? <Text color={C.faint}>no tool calls yet</Text> : null}
           {expandedCard.tools.map(n => (
             <Text color={n.isError ? C.warn : C.text} wrap="truncate">
               {`${n.isError ? '✗' : '·'} ${n.text}`}
             </Text>
           ))}
-          {expandedCard.answer ? (
-            <Text dimColor wrap="wrap">
-              {`» ${shorten(expandedCard.answer, 240)}`}
-            </Text>
-          ) : null}
         </Box>
       ) : null
 
