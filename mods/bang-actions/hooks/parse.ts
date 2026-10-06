@@ -8,15 +8,6 @@ export const MAX_COMMANDS = 5
 // button that runs on press must show everything it will run.
 export const MAX_SHOWN_CHARS = 9_000
 
-// Tallest command the band shows in full, in drawn rows, wrapping counted. A
-// taller one can scroll out of the band, so it enters as two-press: one press
-// would run steps the person never saw.
-export const MAX_SHOWN_LINES = 8
-
-// Columns the code beside a button is assumed to get: deliberately narrow for
-// an 80-column terminal, so the row estimate errs toward two-press.
-const CODE_COLUMNS = 50
-
 const MODEL_OUTPUT_CHARS = 20_000
 
 const FENCE = /^[ \t]*(`{3,}|~{3,})[^\n]*\n([\s\S]*?)^[ \t]*\1[ \t]*$/gm
@@ -37,9 +28,11 @@ function stricter(a: Gate, b: Gate): Gate {
   return a === 'confirm' ? a : b
 }
 
-// Rows the band draws a command over, at CODE_COLUMNS per line.
-function drawnRows(cmd: string): number {
-  return displayCommand(cmd).split('\n').reduce((rows, line) => rows + Math.max(1, Math.ceil(line.length / CODE_COLUMNS)), 0)
+// Rows the band draws a command over with `columns` cells per line, each
+// step's wrapping counted.
+export function drawnRows(cmd: string, columns: number): number {
+  const perLine = Math.max(1, columns)
+  return displayCommand(cmd).split('\n').reduce((rows, line) => rows + Math.max(1, Math.ceil(line.length / perLine)), 0)
 }
 
 // Commands the reply asks the person to run with the `!` prefix, in order of
@@ -69,22 +62,20 @@ export function extractBangCommands(text: string): string[] {
 
 // Adds a batch after the current list: the batch's first MAX_COMMANDS, then
 // the oldest current entries dropped to stay within MAX_COMMANDS. A command
-// already listed keeps its place and the stricter of its gate and the
-// incoming one; a command taller than the band enters as `confirm`.
-// Placeholders, commands carrying deceptive characters and commands too long
-// to show in full never enter.
+// already listed keeps its place, its arming, and the stricter of its gate
+// and the incoming one. Placeholders, commands carrying deceptive characters
+// and commands too long to show in full never enter.
 export function mergeCommands(current: Suggestion[], incoming: Suggestion[]): Suggestion[] {
   const merged = [...current]
   let added = 0
   for (const raw of incoming) {
     const cmd = raw.cmd.trim()
-    const gate = stricter(raw.gate, drawnRows(cmd) > MAX_SHOWN_LINES ? 'confirm' : 'run')
     const at = merged.findIndex(s => s.cmd === cmd)
     const listed = merged[at]
     if (listed !== undefined) {
-      merged[at] = { cmd, gate: stricter(listed.gate, gate) }
+      merged[at] = { ...listed, gate: stricter(listed.gate, raw.gate) }
     } else if (added < MAX_COMMANDS && cmd && cmd.length <= MAX_SHOWN_CHARS && !PLACEHOLDER.test(cmd) && !DECEPTIVE.test(cmd)) {
-      merged.push({ cmd, gate })
+      merged.push({ cmd, gate: raw.gate })
       added += 1
     }
   }

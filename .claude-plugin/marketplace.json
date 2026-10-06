@@ -48,7 +48,7 @@
     {
       "name": "bang-actions",
       "source": "./mods/bang-actions",
-      "description": "Claude Code mod: turns Claude's `! cmd` suggestions into one-press Run buttons above the prompt (runs with bash in the session folder; the output is submitted as the plugin's prompt, so Claude's next turn starts on it and the message stays in the transcript). Commands your Bash permission rules or hooks deny, or too tall to show in full once wrapped, take two presses."
+      "description": "Claude Code mod: turns Claude's `! cmd` suggestions into one-press Run buttons above the prompt (runs with bash in the session folder; the output is submitted as the plugin's prompt, so Claude's next turn starts on it and the message stays in the transcript). Commands your Bash permission rules or hooks deny, or too tall for the band as drawn (wrapped lines counted), take two presses."
     }
   ]
 }

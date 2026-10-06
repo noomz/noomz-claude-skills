@@ -1,6 +1,6 @@
 {
   "name": "bang-actions",
-  "description": "Turns `! cmd` suggestions in Claude's answers into one-press Run buttons above the prompt. A press runs the command with bash in the session folder and submits the output as the plugin's prompt, so Claude's next turn starts on it and the full message stays in the transcript. A command your Bash permission rules or hooks deny, or one too tall to show in full (wrapped lines counted), gets a two-press button, and a hook's denial holds for the session; a press within half a second of the previous one is ignored, so a held key runs nothing; a command that just succeeded is not offered again; nothing ever fills the prompt box.",
+  "description": "Turns `! cmd` suggestions in Claude's answers into one-press Run buttons above the prompt. A press runs the command with bash in the session folder and submits the output as the plugin's prompt, so Claude's next turn starts on it and the full message stays in the transcript. A command your Bash permission rules or hooks deny, or one too tall for the band as drawn (wrapped lines counted), gets a two-press button, and a hook's denial holds for the session; a press within half a second of the previous one is ignored, so a held key runs nothing; a command that just succeeded is not offered again; nothing ever fills the prompt box.",
   "version": "0.2.0",
   "author": {
     "name": "noomz",

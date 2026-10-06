@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import {
-  buttonLabel, commandKey, displayCommand, extractBangCommands, formatRunMessage, MAX_COMMANDS, MAX_SHOWN_CHARS,
-  MAX_SHOWN_LINES, mergeCommands,
+  buttonLabel, commandKey, displayCommand, drawnRows, extractBangCommands, formatRunMessage, MAX_COMMANDS,
+  MAX_SHOWN_CHARS, mergeCommands,
 } from '../hooks/parse'
 
 const run = (cmd: string) => ({ cmd, gate: 'run' as const })
@@ -62,19 +62,9 @@ describe('mergeCommands', () => {
     expect(mergeCommands([], [run(tooLong), run(fits)]).map(s => s.cmd)).toEqual([fits])
   })
 
-  test('a single step that wraps past MAX_SHOWN_LINES rows enters as two-press; one that wraps within them stays one-press', () => {
-    const wraps = `echo ${'x'.repeat(1_995)}`
-    const fits = `echo ${'x'.repeat(115)}`
-    expect(displayCommand(wraps).split('\n')).toHaveLength(1)
-    expect(mergeCommands([], [run(wraps), run(fits)])).toEqual([confirm(wraps), run(fits)])
-  })
-
-  test('a command the band draws over MAX_SHOWN_LINES lines enters as two-press', () => {
-    const steps = (n: number) => Array.from({ length: n }, (_, i) => `s${i}`).join('; ')
-    const tall = steps(MAX_SHOWN_LINES + 1)
-    const fits = steps(MAX_SHOWN_LINES)
-    expect(displayCommand(tall).split('\n')).toHaveLength(MAX_SHOWN_LINES + 1)
-    expect(mergeCommands([], [run(tall), run(fits)])).toEqual([confirm(tall), run(fits)])
+  test('a command already listed keeps its arming', () => {
+    const armed = { ...confirm('a'), isArmed: true as const }
+    expect(mergeCommands([armed], [run('a')])).toEqual([armed])
   })
 
   test('drops commands with controls, bidi or zero-width characters', () => {
@@ -84,6 +74,21 @@ describe('mergeCommands', () => {
     const esc = String.fromCodePoint(0x1b)
     const cmds = [`ls ${rlo}fdp.exe`, `rm${zwsp} x`, `ls${nbsp}-la`, `echo ${esc}[31m`, 'ls\t-la'].map(run)
     expect(mergeCommands([], cmds)).toEqual([run('ls\t-la')])
+  })
+})
+
+describe('drawnRows', () => {
+  test('counts one row per drawn step, plus the rows a step wraps over at the given width', () => {
+    const steps = (n: number) => Array.from({ length: n }, (_, i) => `s${i}`).join('; ')
+    expect(drawnRows(steps(9), 50)).toBe(9)
+    expect(drawnRows(`echo ${'x'.repeat(115)}`, 50)).toBe(3)
+    expect(drawnRows(`echo ${'x'.repeat(115)}`, 120)).toBe(1)
+    expect(drawnRows(`a; echo ${'x'.repeat(115)}`, 50)).toBe(4)
+  })
+
+  test('a band with no room left for code counts one cell per row, never zero rows', () => {
+    expect(drawnRows('echo x', 0)).toBe(6)
+    expect(drawnRows('echo x', -20)).toBe(6)
   })
 })
 
