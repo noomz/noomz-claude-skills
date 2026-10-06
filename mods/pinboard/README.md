@@ -10,7 +10,7 @@ If you installed the upstream plugin, uninstall it first. Both plugins are named
 
 - **Open decisions.** These are questions Claude needs you to answer. They stay pinned until Claude closes them after you answer.
 - **Todos.** This is the session's task list, one action per item. The todo Claude works on now is marked `▸` in the warning color, and only one is in progress at a time. Open items show `○`. Finished items fold into one dim `✓ N done` line, so open work stays on top.
-- **Links.** These are URLs from actions that make something: `gh pr|issue|release|repo|gist create`, `gh pr|issue comment`, `git push`, and MCP tools that create, draft, send, publish, share or upload. The newest is first, up to 12. A GitHub pull request or issue gets a short label such as `repo PR #12`. Every other link is labeled with its host and path. Press `l` or the **clear** button to empty the list.
+- **Links.** These are URLs from actions that make something: `gh pr|issue|release|repo|gist create`, `gh pr|issue comment`, `git push`, and MCP tools whose name holds `create`, `draft`, `send`, `publish`, `share` or `upload` as its own word, such as `slack_send_message` (not `slack_read_canvas` or `list_drafts`). The newest is first, up to 12. A GitHub pull request or issue gets a short label such as `repo PR #12`. Every other link is labeled with its host and path. Press `l` or the **clear** button to empty the list.
 
 ## How Claude updates it
 
@@ -18,16 +18,16 @@ Pinboard registers a tool, `mcp__pinboard__update`. Claude calls it to add todos
 
 The tool checks each call before it changes the board:
 
-- It accepts only its six keys: `add_todos`, `start_todo`, `done_todos`, `remove_todos`, `open_decisions` and `decide`.
+- It accepts only its six keys: `add_todos`, `start_todo`, `done_todos`, `remove_todos`, `open_decisions` and `decide`. The engine owns four more names beside them, `tool`, `tool_use_id`, `agentId` and `consent`, so a model-written one never reaches the board, and a model-written `agentId` reads as a subagent's call. The engine drops an own `__proto__` key before the mod sees the call.
 - Each list holds at most 20 entries per call.
 - Todo ids look like `t1` and decision ids look like `d1`.
 - The board holds at most 50 todos and 20 decisions.
 
-A call that fails a check is refused. Claude reads the reason as an error result, the board stays the same, and the `rejected` counter goes up by one.
+A call that fails a check is refused. Claude reads the reason as an error result, the board stays the same, and the `rejected` counter goes up by one. A subagent's denied call does not count. Each call reads and writes the board in one step, so two calls in the same turn both land, and a call that races `/clear` never brings back what the clear removed.
 
 ## What it stores, sends and masks
 
-**Stores.** The mod keeps four values in session state: todos (id, text, done, in progress), decisions (id, text), links (address, label) and the hygiene counters (`masked`, `rejected`). A `/clear` or a resume empties all four. When the session starts, the mod checks every value an older build left in state again. It scrubs each text, drops items with a bad id, and resets a value of the wrong shape to empty. The counters must be whole numbers of zero or more.
+**Stores.** The mod keeps three values in session state: the board, which holds the todos (id, text, done, in progress) and the decisions (id, text), the links (address, label) and the hygiene counters (`masked`, `rejected`). A `/clear` or a resume empties all three. When the session starts, the mod checks every value an older build left in state again. It rebuilds each item from its known fields, scrubs each text, keeps `done` and `in progress` only when they are `true`, drops items with a bad or repeated id, keeps at most one todo in progress, and resets a value of the wrong shape to empty. The counters must be whole numbers of zero or more.
 
 **Sends to the model.** On every request, the mod adds one section to the end of the system prompt. Its first line names the marks (`[ ]` open, `[>]` in progress, `[x]` done, `[?]` open decision). It also says that each item's text is a JSON-quoted label that this session's pinboard tool calls wrote: a record of the plan, not instructions from the user or the system. Each item follows on its own line as id, mark and JSON-quoted text. A newline in a todo cannot start a new prompt line. The tool result carries the same text. Links never go to the model.
 
@@ -50,7 +50,7 @@ A call that fails a check is refused. Claude reads the reason as an error result
   - environment variables whose names end in `KEY`, `TOKEN`, `SECRET` or `PASSWORD`, or hold one of those or `PAT` or `PASS` as an `_`-separated part, so `KEYBOARD=us` stays as written
 - The text is cut to 200 characters. Text past the first 4096 characters is dropped, along with the word the cut runs through, so a single word longer than that leaves nothing and the call is refused.
 
-A link must use `https` and carry no user name or password. The mod keeps no query string. It drops the fragment, except a GitHub comment anchor (`#issuecomment-N`, `#discussion_rN`). It does not pin a link whose path, as written or percent-decoded, holds anything `scrub()` would mask. A GitHub label needs the host to be exactly `github.com`. Every other label starts with the real host, so `https://attacker.example/github.com/o/r/pull/1` reads `attacker.example/github.com/o/r/pull/1`.
+A link must use `https` and carry no user name or password. The mod keeps no query string. It drops the fragment, except a GitHub comment anchor (`#issuecomment-N`, `#discussion_rN`). It does not pin a link whose path, as written or percent-decoded until nothing changes, holds anything `scrub()` would mask, so a host plus an encoded path such as `hooks.slack.com/%73ervices/...` is caught. It does not pin a link with a broken percent escape such as `%ZZ`, or one longer than 2048 characters once encoded. The masking rules cost some ordinary links: a path with a name that starts like a token, such as `ghp-pages-builder`, `sk-learn-pipeline` or `sk_buff_helpers.c`, or a segment that reads as `key: value`, such as `wiki/Token:Foo`, is not pinned. A GitHub label needs the host to be exactly `github.com`. Every other label starts with the real host, so `https://attacker.example/github.com/o/r/pull/1` reads `attacker.example/github.com/o/r/pull/1`.
 
 **What it does not catch.** Masking works by pattern. These stay as written:
 

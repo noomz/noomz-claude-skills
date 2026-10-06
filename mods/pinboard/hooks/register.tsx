@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Decision, Pin, Todo } from '../types'
+import type { Board, Decision, Pin, Todo } from '../types'
 import { type Hygiene, type SafeText, scrub } from './hygiene'
 
 const PANE = 'pinboard'
@@ -12,8 +12,8 @@ const MAX_TODOS = 50
 const MAX_DECISIONS = 20
 const TEXT_CAP = 200
 
-const decisions = atom({ plugin: 'pinboard', key: 'decisions' } as const, [] as Decision[])
-const todos = atom({ plugin: 'pinboard', key: 'todos' } as const, [] as Todo[])
+const EMPTY_BOARD: Board = { todos: [], decisions: [] }
+const board = atom({ plugin: 'pinboard', key: 'board' } as const, EMPTY_BOARD)
 const links = atom({ plugin: 'pinboard', key: 'links' } as const, [] as Pin[])
 const hygiene = atom({ plugin: 'pinboard', key: 'hygiene' } as const, { masked: 0, rejected: 0 } as Hygiene)
 
@@ -118,7 +118,7 @@ export function parseUpdate(raw: unknown): Parsed {
   }
 }
 
-export type Board = { todos: Todo[]; decisions: Decision[] }
+export type { Board }
 
 export type Applied = { ok: true; board: Board } | { ok: false; error: string }
 
@@ -165,7 +165,7 @@ export function describeBoard(board: Board): string {
 }
 
 const MAKES_COMMAND = /\bgh\s+(?:(?:pr|issue|release|repo|gist)\s+create|(?:pr|issue)\s+comment)\b|\bgit\s+push\b/
-const MAKES_MCP = /^mcp__.*(?:create|draft|send|publish|share|canvas|upload)/i
+const MAKES_MCP = /^mcp__.+__(?:[A-Za-z0-9]+[_-])*(?:create|draft|send|publish|share|upload)(?![a-z0-9])/
 
 const URL_IN_TEXT = /https:\/\/[^\s<>"'`]+/g
 const GITHUB_ITEM = /^\/[\w.-]+\/([\w.-]+)\/(pull|issues)\/([1-9]\d{0,9})\/?$/
@@ -180,16 +180,25 @@ const fitLabel = (host: string, path: string): string => {
   return host + (path.length <= room ? path : path.slice(0, room - 1) + '…')
 }
 
-const decoded = (path: string): string => {
-  try {
-    return decodeURIComponent(path)
-  } catch {
-    return path
+const HREF_CAP = 2048
+const DECODE_ROUNDS = 8
+
+const decoded = (path: string): string | null => {
+  for (let round = 0; round < DECODE_ROUNDS; round++) {
+    let next: string
+    try {
+      next = decodeURIComponent(path)
+    } catch {
+      return null
+    }
+    if (next === path) return path
+    path = next
   }
+  return null
 }
 
 export function parsePin(href: string): Pin | null {
-  if (href.length > 2048) return null
+  if (href.length > HREF_CAP) return null
   let url: URL
   try {
     url = new URL(href)
@@ -199,8 +208,10 @@ export function parsePin(href: string): Pin | null {
   if (url.protocol !== 'https:' || url.username || url.password) return null
   const isGithub = url.host === 'github.com'
   const anchor = isGithub && GITHUB_ANCHOR.test(url.hash) ? url.hash : ''
-  const stored = scrub(url.origin + url.pathname + anchor, 2048)
-  if (stored.masked > 0 || scrub(decoded(url.pathname), 2048).masked > 0) return null
+  const kept = url.origin + url.pathname + anchor
+  const stored = scrub(kept, HREF_CAP)
+  const path = decoded(url.pathname)
+  if (stored.masked > 0 || stored.text !== kept || path === null || scrub(url.origin + path, HREF_CAP).masked > 0) return null
   const gh = isGithub ? GITHUB_ITEM.exec(url.pathname) : null
   const named = gh && scrub(`${gh[1]} ${gh[2] === 'pull' ? 'PR' : 'issue'} #${gh[3]}${anchor ? ' comment' : ''}`, LABEL_CAP)
   const label = named && named.masked === 0 ? named : scrub(fitLabel(url.host, url.pathname), LABEL_CAP)
@@ -214,11 +225,27 @@ const pinsIn = (text: string): Pin[] => {
 
 const storedList = (raw: unknown): Record<string, unknown>[] => (Array.isArray(raw) ? raw.filter(isRecord) : [])
 
-const recheckStored = <T extends { id: string; text: SafeText }>(raw: unknown, pattern: RegExp): T[] =>
-  storedList(raw).flatMap(item => {
+const recheckItems = <T,>(raw: unknown, pattern: RegExp, rebuild: (id: string, text: SafeText, item: Record<string, unknown>) => T): T[] => {
+  const seen = new Set<string>()
+  return storedList(raw).flatMap(item => {
     const { text } = scrub(item.text, TEXT_CAP)
-    return typeof item.id === 'string' && pattern.test(item.id) && text.length > 0 ? [{ ...item, id: item.id, text } as T] : []
+    if (typeof item.id !== 'string' || !pattern.test(item.id) || seen.has(item.id) || text.length === 0) return []
+    seen.add(item.id)
+    return [rebuild(item.id, text, item)]
   })
+}
+
+const recheckBoard = (raw: unknown): Board => {
+  const stored = isRecord(raw) ? raw : {}
+  let hasActive = false
+  const todos = recheckItems<Todo>(stored.todos, TODO_ID, (id, text, item) => {
+    const isDone = item.isDone === true
+    const isActive = item.isActive === true && !isDone && !hasActive
+    hasActive ||= isActive
+    return isActive ? { id, text, isDone, isActive } : { id, text, isDone }
+  })
+  return { todos, decisions: recheckItems<Decision>(stored.decisions, DECISION_ID, (id, text) => ({ id, text })) }
+}
 
 const count = (raw: unknown): number => (Number.isSafeInteger(raw) && (raw as number) >= 0 ? (raw as number) : 0)
 
@@ -227,31 +254,33 @@ const counts = (raw: unknown): Hygiene => (isRecord(raw) ? { masked: count(raw.m
 const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`
 
 async function audit($: EngineInterface): Promise<string[]> {
-  const board = { todos: await read($, todos), decisions: await read($, decisions) }
+  const stored = await read($, board)
   const { masked, rejected } = await read($, hygiene)
   return [
     'Pinboard audit. The pinboard:board section, exactly as the model reads it:',
-    describeBoard(board),
-    `Stored: ${plural(board.todos.length, 'todo')}, ${plural(board.decisions.length, 'decision')}, ${plural((await read($, links)).length, 'link')}.`,
+    describeBoard(stored),
+    `Stored: ${plural(stored.todos.length, 'todo')}, ${plural(stored.decisions.length, 'decision')}, ${plural((await read($, links)).length, 'link')}.`,
     `Hygiene: ${masked} masked, ${rejected} rejected.`,
   ].flatMap(text => text.split('\n'))
 }
 
-const isEmpty = async ($: EngineInterface) =>
-  (await read($, decisions)).length + (await read($, todos)).length + (await read($, links)).length === 0
+const isEmpty = async ($: EngineInterface) => {
+  const { todos, decisions } = await read($, board)
+  return todos.length + decisions.length + (await read($, links)).length === 0
+}
 
 // Runs a capture; opens the pane when it puts the first thing on an empty board
-async function capture($: EngineInterface, change: () => Promise<unknown>): Promise<void> {
+async function capture<T>($: EngineInterface, change: () => Promise<T>): Promise<T> {
   const wasEmpty = await isEmpty($)
-  await change()
+  const changed = await change()
   if (wasEmpty && !(await isEmpty($))) await $.ui.open({ id: PANE, title: TITLE })
+  return changed
 }
 
 const ENDS_TRANSCRIPT = new Set(['clear', 'resume'])
 
 const resetBoard = async ($: EngineInterface) => {
-  await update($, todos, () => [])
-  await update($, decisions, () => [])
+  await update($, board, () => EMPTY_BOARD)
   await update($, links, () => [])
   await update($, hygiene, () => ({ masked: 0, rejected: 0 }))
 }
@@ -265,8 +294,7 @@ export const register: Register = on => {
       immediate: true,
     })
     await $.tool.register({ name: 'update', description: DESCRIPTION, inputSchema: SCHEMA })
-    await update($, todos, old => recheckStored<Todo>(old, TODO_ID))
-    await update($, decisions, old => recheckStored<Decision>(old, DECISION_ID))
+    await update($, board, recheckBoard)
     await update($, links, old => storedList(old).flatMap(pin => (typeof pin.href === 'string' && parsePin(pin.href)) || []))
     await update($, hygiene, counts)
     return next(e)
@@ -289,8 +317,7 @@ export const register: Register = on => {
   // The board rides at the end of the system prompt, so it never has to be repeated in replies
   on('prompt.compose', async ($, e, next) => {
     const { sections } = await next(e)
-    const board = describeBoard({ todos: await read($, todos), decisions: await read($, decisions) })
-    return { sections: [...sections, { id: 'pinboard:board', text: board, scope: 'session' }] }
+    return { sections: [...sections, { id: 'pinboard:board', text: describeBoard(await read($, board)), scope: 'session' }] }
   })
 
   on('tool.call', { tool: TOOL }, async ($, e) => {
@@ -302,14 +329,17 @@ export const register: Register = on => {
     const { tool, tool_use_id, agentId, consent, ...input } = e
     const parsed = parseUpdate(input)
     if (!parsed.ok) return refuse(parsed.error)
-    const applied = applyUpdate({ todos: await read($, todos), decisions: await read($, decisions) }, parsed.update)
-    if (!applied.ok) return refuse(applied.error)
-    await capture($, async () => {
-      await update($, todos, () => applied.board.todos)
-      await update($, decisions, () => applied.board.decisions)
-    })
+    const outcome: { error?: string } = {}
+    const written = await capture($, () =>
+      update($, board, old => {
+        const applied = applyUpdate(old, parsed.update)
+        outcome.error = applied.ok ? undefined : applied.error
+        return applied.ok ? applied.board : old
+      }),
+    )
+    if (outcome.error !== undefined) return refuse(outcome.error)
     if (parsed.masked > 0) await update($, hygiene, old => ({ ...old, masked: old.masked + parsed.masked }))
-    return { result: describeBoard(applied.board) }
+    return { result: describeBoard(written) }
   })
 
   // Links only from actions that make something; reads, fetches and test output just mention URLs
@@ -349,8 +379,7 @@ export const register: Register = on => {
     const { Box, Text, Button, Link } = $.ui.resolve(e)
     // One cell of padding on every side
     const inner = Math.max(10, e.props.bodyColumns - 2)
-    const allDecisions = await read($, decisions)
-    const allTodos = await read($, todos)
+    const { todos: allTodos, decisions: allDecisions } = await read($, board)
     const allLinks = await read($, links)
     const { masked, rejected } = await read($, hygiene)
     const doneCount = allTodos.filter(t => t.isDone).length

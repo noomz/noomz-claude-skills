@@ -8,11 +8,12 @@ export type Decision = { id: string; text: SafeText }
 
 export type Pin = { href: SafeText; label: SafeText }
 
+export type Board = { todos: Todo[]; decisions: Decision[] }
+
 declare module 'claude-code' {
   interface PluginState {
     pinboard: {
-      decisions: Decision[]
-      todos: Todo[]
+      board: Board
       links: Pin[]
       hygiene: Hygiene
     }
