@@ -500,3 +500,22 @@ export const adviceLine = (report: string): Scrubbed => {
 }
 
 export const elapsedOf = (c: AgentCard, now: number) => (c.endedAt ?? now) - c.spawnedAt
+
+type Held = { log: LogLine[]; agents: AgentCard[]; gate: Gate; architect: Architect; roster: Roster }
+
+/** Every stored field that holds session text, by state path and length: what `/flightdeck audit` reports. */
+export const textFields = (h: Held): { path: string; length: number }[] =>
+  [
+    ...h.log.flatMap((l, i) => [[`log.${i}.who`, l.who], [`log.${i}.text`, l.text]] as const),
+    ...h.agents.flatMap((c, i) => [
+      [`agents.${i}.type`, c.type] as const,
+      [`agents.${i}.description`, c.description] as const,
+      ...c.tools.map((n, j) => [`agents.${i}.tools.${j}.text`, n.text] as const),
+    ]),
+    ...h.gate.recent.map((c, i) => [`gate.recent.${i}.detail`, c.detail] as const),
+    ['architect.lastAdvice', h.architect.lastAdvice] as const,
+    ...h.architect.consults.map((c, i) => [`architect.consults.${i}.via`, c.via] as const),
+    ...h.roster.architectTypes.map((t, i) => [`roster.architectTypes.${i}`, t] as const),
+  ]
+    .filter(([, text]) => text.length > 0)
+    .map(([path, text]) => ({ path, length: text.length }))

@@ -522,3 +522,50 @@ for (const [how, end] of [
     expect(JSON.stringify(flightdeck(values))).toBe(once)
   })
 }
+
+const auditSession = async ($: Engine, on: On) => {
+  const values = stateStore(on)
+  const logged: string[] = []
+  engine(on)
+  on('ui.log', (_$, e) => {
+    logged.push(e.text)
+    return { value: undefined }
+  })
+  on('ui.open', () => ({ value: { isPlaced: true } }) as never)
+  on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: 'q1' }))
+  await $.turn.start({ text: 'password=hunter2 deploy', turnId: 'Q1' })
+  await $.agent.spawn(spawn('general-purpose', 'ship with token=abc123 now'))
+  await $.turn.complete({ answer: 'ok', durationMs: 10, isAborted: false, turnId: 'Q1', reason: 'answer' })
+  return { values, logged }
+}
+
+test('/flightdeck audit lists each stored text field by path and length, never a value, to the person alone', async ($, on) => {
+  const { values, logged } = await auditSession($, on)
+  const answer = await $.command.run({ command: 'flightdeck', args: 'audit' } as never)
+  expect(answer.text).toBeUndefined()
+  expect(logged).toHaveLength(1)
+  const report = logged[0] ?? ''
+  const masked = (flightdeck(values).hygiene as { masked: number }).masked
+  expect(masked).toBe(1)
+  expect(report).toStartWith(`flightdeck audit · 6 stored text fields · ${masked} masked`)
+  expect(report).toContain('  agents.0.description · 28 chars')
+  expect(report).toContain('  log.0.text · 19 chars')
+  for (const value of ['ship with', 'token=', '[masked]', 'new turn', 'general-purpose']) expect(report).not.toContain(value)
+})
+
+test('/flightdeck audit after /flightdeck reset reports 0 stored text fields', async ($, on) => {
+  const { logged } = await auditSession($, on)
+  await $.command.run({ command: 'flightdeck', args: 'reset' } as never)
+  await $.command.run({ command: 'flightdeck', args: 'audit' } as never)
+  expect(logged).toEqual(['flightdeck audit · 0 stored text fields · 0 masked'])
+})
+
+for (const placement of ['dock', 'inline'] as const) {
+  test(`the ${placement} pane shows the masked count the audit reports`, async ($, on) => {
+    const { values } = await auditSession($, on)
+    const ui = await $.ui.mount({ ...pane(80), props: { ...pane(80).props, placement }, surface: 'terminal' })
+    const masked = (flightdeck(values).hygiene as { masked: number }).masked
+    expect(await ui.find({ text: `hygiene · ${masked} masked` })).toBeDefined()
+    await ui.unmount()
+  })
+}

@@ -3,7 +3,7 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { AgentCard, Architect, Bucket, Check, Gate, Layout, LogLine, Loop, Main, Roster, Turn, Usage, View } from '../types'
 import { scrub } from './hygiene'
-import type { SafeText, Scrubbed } from './hygiene'
+import type { Hygiene, SafeText, Scrubbed } from './hygiene'
 import {
   CAP,
   DEFAULT_ARCHITECT,
@@ -57,6 +57,7 @@ import {
   shorten,
   startConsult,
   stepLoop,
+  textFields,
   toolDetail,
 } from './core'
 import type { Config, Panel } from './core'
@@ -116,6 +117,16 @@ async function getView($: EngineInterface): Promise<View> {
 async function getRoster($: EngineInterface): Promise<Roster> {
   const r = normalize(DEFAULT_ROSTER, await read($, roster))
   return { architectTypes: listOf(r.architectTypes) }
+}
+async function getHygiene($: EngineInterface): Promise<Hygiene> {
+  return normalize(DEFAULT_HYGIENE, await read($, hygiene))
+}
+
+/** Each stored text field by path and length, and the masked count; never a value. Drawn for the person, not sent to the model. */
+async function audit($: EngineInterface) {
+  const [l, a, g, ar, r, h] = await Promise.all([getLog($), getCards($), getGate($), getArchitect($), getRoster($), getHygiene($)])
+  const fields = textFields({ log: l, agents: a, gate: g, architect: ar, roster: r })
+  $.ui.log([`flightdeck audit · ${plural(fields.length, 'stored text field')} · ${h.masked} masked`, ...fields.map(f => `  ${f.path} · ${f.length} chars`)].join('\n'))
 }
 
 /** A stored shape older than this build's held text that never went through scrub(): start over. */
@@ -244,8 +255,8 @@ export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'flightdeck',
-      description: 'Flightdeck, the live agent dashboard: open, close, reset, or set the layout',
-      argumentHint: '[open|close|reset|layout auto|compact|wide|mini]',
+      description: 'Flightdeck, the live agent dashboard: open, close, reset, audit what it holds, or set the layout',
+      argumentHint: '[open|close|reset|audit|layout auto|compact|wide|mini]',
     })
     await migrate($)
     // A host without usage (headless, an SDK host, a session not yet bound) just starts without it.
@@ -283,6 +294,10 @@ export const register: Register = (on, options) => {
       await resetAll($)
       await refreshStatus($, cfg)
       return { text: 'Flightdeck reset.' }
+    }
+    if (verb === 'audit') {
+      await audit($)
+      return {}
     }
     if (verb === 'layout') {
       const layout: Layout | null = arg === 'compact' || arg === 'wide' || arg === 'auto' || arg === 'mini' ? arg : null
@@ -552,7 +567,7 @@ export const register: Register = (on, options) => {
     const els = $.ui.resolve(e)
     const { Box, Text, Button } = els
     const hasClient = 'Client' in els
-    const [m, u, a, g, cards, lp, lines, t, r, v, now] = await Promise.all([
+    const [m, u, a, g, cards, lp, lines, t, r, v, hy, now] = await Promise.all([
       getMain($),
       getUsage($),
       getArchitect($),
@@ -563,6 +578,7 @@ export const register: Register = (on, options) => {
       getTurn($),
       read($, receipt),
       getView($),
+      getHygiene($),
       $.clock.now(),
     ])
     const W = Math.max(40, e.props.bodyColumns)
@@ -903,6 +919,8 @@ export const register: Register = (on, options) => {
       )
     }
 
+    const hygieneCell = <Text dimColor>{`hygiene · ${hy.masked} masked`}</Text>
+
     // ---- receipt: the turn now, or the last one
     const receiptPanel = (w: number) => {
       const isReview = t.isReviewing
@@ -924,6 +942,7 @@ export const register: Register = (on, options) => {
             <Text color={C.faint}>no turn finished yet</Text>
           )}
           {isReview ? <Text color={C.arch}>{`${cfg.architectLabel.toLowerCase()} reviewing before done (inferred)`}</Text> : null}
+          {hygieneCell}
         </Box>
       )
     }
@@ -1072,11 +1091,14 @@ export const register: Register = (on, options) => {
             <Text color={C.faint} wrap="truncate">{`+${cards.length - live.length} more agents · /flightdeck layout compact for all`}</Text>
           ) : null}
           {lp.length > 0 ? <Text dimColor>{`other loops ${lp.length} · ${lp.filter(l => isLoopActive(l, now)).length} active`}</Text> : null}
-          {!m.isRunning && r ? (
-            <Text dimColor wrap="truncate">
-              {`last turn ${fmtDuration(r.durationMs)} · ${plural(r.agents, 'agent')} · ${plural(r.edits, 'edit')} · ${plural(r.errors, 'error')}${r.costDelta !== null ? ` · +${fmtUsd(r.costDelta)}` : ''}`}
-            </Text>
-          ) : null}
+          <Box>
+            {!m.isRunning && r ? (
+              <Text dimColor wrap="truncate">
+                {`last turn ${fmtDuration(r.durationMs)} · ${plural(r.agents, 'agent')} · ${plural(r.edits, 'edit')} · ${plural(r.errors, 'error')}${r.costDelta !== null ? ` · +${fmtUsd(r.costDelta)}` : ''} · `}
+              </Text>
+            ) : null}
+            <Box flexShrink={0}>{hygieneCell}</Box>
+          </Box>
         </Box>
       )
     }
