@@ -28,8 +28,10 @@ const DESCRIPTION = [
   'The current board, with ids, is at the end of your system prompt.',
 ].join(' ')
 
-const TODO_ID = /^t\d{1,4}$/
-const DECISION_ID = /^d\d{1,4}$/
+const ID_DIGITS = 4
+const MAX_ID = 10 ** ID_DIGITS - 1
+const TODO_ID = new RegExp(`^t\\d{1,${ID_DIGITS}}$`)
+const DECISION_ID = new RegExp(`^d\\d{1,${ID_DIGITS}}$`)
 const strings = { type: 'array', maxItems: MAX_ITEMS, items: { type: 'string', maxLength: TEXT_CAP } }
 const todoIds = { type: 'array', maxItems: MAX_ITEMS, items: { type: 'string', pattern: TODO_ID.source } }
 const SCHEMA = {
@@ -76,7 +78,7 @@ export function parseUpdate(raw: unknown): Parsed {
   const text = (value: unknown, where: string): SafeText => {
     if (typeof value !== 'string') return reject(`${where} must be a string.`)
     const safe = scrub(value, TEXT_CAP)
-    if (safe.text.length === 0) return reject(`${where} is empty.`)
+    if (safe.text.length === 0) return reject(`${where} has no text left once invisible characters and any word cut at 4096 characters are removed.`)
     masked += safe.masked
     return safe.text
   }
@@ -120,9 +122,14 @@ export type Board = { todos: Todo[]; decisions: Decision[] }
 
 export type Applied = { ok: true; board: Board } | { ok: false; error: string }
 
-// The next id for a prefix: one past the highest in use
-const nextId = (prefix: string, ids: string[]) =>
-  prefix + (Math.max(0, ...ids.map(id => Number(id.slice(prefix.length)) || 0)) + 1)
+const nextId = (prefix: string, ids: string[]) => {
+  const used = new Set(ids.map(id => Number(id.slice(prefix.length))))
+  const next = Math.max(0, ...used) + 1
+  if (next <= MAX_ID) return prefix + next
+  let free = 1
+  while (used.has(free)) free += 1
+  return prefix + free
+}
 
 export function applyUpdate(board: Board, change: Update): Applied {
   let { todos: t, decisions: d } = board
@@ -193,13 +200,19 @@ const pinsIn = (text: string): Pin[] => {
   return pins.filter((pin, i) => pins.findIndex(p => p.href === pin.href) === i)
 }
 
-type Stored = { id?: unknown; text?: unknown }
+const storedList = (raw: unknown): Record<string, unknown>[] => (Array.isArray(raw) ? raw.filter(isRecord) : [])
 
-const recheckStored = <T extends Stored>(items: readonly T[], pattern: RegExp): (T & { id: string; text: SafeText })[] =>
-  items.flatMap(item => {
+const recheckStored = <T extends { id: string; text: SafeText }>(raw: unknown, pattern: RegExp): T[] =>
+  storedList(raw).flatMap(item => {
     const { text } = scrub(item.text, TEXT_CAP)
-    return typeof item.id === 'string' && pattern.test(item.id) && text.length > 0 ? [{ ...item, id: item.id, text }] : []
+    return typeof item.id === 'string' && pattern.test(item.id) && text.length > 0 ? [{ ...item, id: item.id, text } as T] : []
   })
+
+const count = (raw: unknown): number => (Number.isSafeInteger(raw) && (raw as number) >= 0 ? (raw as number) : 0)
+
+const counts = (raw: unknown): Hygiene => (isRecord(raw) ? { masked: count(raw.masked), rejected: count(raw.rejected) } : { masked: 0, rejected: 0 })
+
+const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`
 
 async function audit($: EngineInterface): Promise<string[]> {
   const board = { todos: await read($, todos), decisions: await read($, decisions) }
@@ -207,7 +220,7 @@ async function audit($: EngineInterface): Promise<string[]> {
   return [
     'Pinboard audit. The pinboard:board section, exactly as the model reads it:',
     describeBoard(board),
-    `Stored: ${board.todos.length} todos, ${board.decisions.length} decisions, ${(await read($, links)).length} links.`,
+    `Stored: ${plural(board.todos.length, 'todo')}, ${plural(board.decisions.length, 'decision')}, ${plural((await read($, links)).length, 'link')}.`,
     `Hygiene: ${masked} masked, ${rejected} rejected.`,
   ].flatMap(text => text.split('\n'))
 }
@@ -240,9 +253,10 @@ export const register: Register = on => {
       immediate: true,
     })
     await $.tool.register({ name: 'update', description: DESCRIPTION, inputSchema: SCHEMA })
-    await update($, todos, old => recheckStored(old, TODO_ID))
-    await update($, decisions, old => recheckStored(old, DECISION_ID))
-    await update($, links, old => old.flatMap(pin => parsePin(pin.href) ?? []))
+    await update($, todos, old => recheckStored<Todo>(old, TODO_ID))
+    await update($, decisions, old => recheckStored<Decision>(old, DECISION_ID))
+    await update($, links, old => storedList(old).flatMap(pin => (typeof pin.href === 'string' && parsePin(pin.href)) || []))
+    await update($, hygiene, counts)
     return next(e)
   })
 
@@ -271,7 +285,7 @@ export const register: Register = on => {
     if (e.agentId) return { deny: 'Only the main conversation updates the Pinboard.' }
     const refuse = async (error: string) => {
       await update($, hygiene, old => ({ ...old, rejected: old.rejected + 1 }))
-      return { result: error, isError: true as const }
+      return { deny: error }
     }
     const { tool, tool_use_id, agentId, consent, ...input } = e
     const parsed = parseUpdate(input)
