@@ -2,7 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import {
   buttonLabel, commandKey, displayCommand, extractBangCommands, formatRunMessage, MAX_COMMANDS, MAX_SHOWN_CHARS,
-  mergeCommands, outputTail, parseRunMessage,
+  MAX_SHOWN_LINES, mergeCommands, outputTail, parseRunMessage,
 } from '../hooks/parse'
 
 const run = (cmd: string) => ({ cmd, gate: 'run' as const })
@@ -51,15 +51,23 @@ describe('mergeCommands', () => {
     expect(mergeCommands([run('a')], [run('a'), run(' b ')])).toEqual([run('a'), run('b')])
   })
 
-  test('a command already listed keeps its place and takes the incoming gate', () => {
+  test('a command already listed keeps its place and the stricter of its gate and the incoming one', () => {
     expect(mergeCommands([run('a'), run('b')], [confirm('a')])).toEqual([confirm('a'), run('b')])
-    expect(mergeCommands([confirm('a')], [run('a')])).toEqual([run('a')])
+    expect(mergeCommands([confirm('a')], [run('a')])).toEqual([confirm('a')])
   })
 
   test('never lists a command too long to show in full', () => {
     const fits = `echo ${'x'.repeat(MAX_SHOWN_CHARS - 5)}`
     const tooLong = `echo ${'x'.repeat(MAX_SHOWN_CHARS - 4)}`
     expect(mergeCommands([], [run(tooLong), run(fits)])).toEqual([run(fits)])
+  })
+
+  test('a command the band draws over MAX_SHOWN_LINES lines enters as two-press', () => {
+    const steps = (n: number) => Array.from({ length: n }, (_, i) => `s${i}`).join('; ')
+    const tall = steps(MAX_SHOWN_LINES + 1)
+    const fits = steps(MAX_SHOWN_LINES)
+    expect(displayCommand(tall).split('\n')).toHaveLength(MAX_SHOWN_LINES + 1)
+    expect(mergeCommands([], [run(tall), run(fits)])).toEqual([confirm(tall), run(fits)])
   })
 
   test('drops commands with controls, bidi or zero-width characters', () => {
