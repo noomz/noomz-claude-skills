@@ -579,6 +579,20 @@ describe('updates that race', () => {
 })
 
 describe('links', () => {
+  test('a making verb counts in any case, as its own word in snake, kebab or camel case', async ($, on) => {
+    const { value } = stateStore(on)
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    on('tool.call', (_$, e, next) => {
+      if (!e.tool.startsWith('mcp__')) return next(e)
+      const text = `https://example.com/${e.tool}\n`
+      return { result: { stdout: text, stderr: '', interrupted: false }, text }
+    })
+    const makes = ['mcp__linear__CreateIssue', 'mcp__x__SendMessage', 'mcp__x__UPLOAD_FILE']
+    const reads = ['mcp__x__sender_info', 'mcp__x__list_drafts', 'mcp__x__createdAt']
+    for (const tool of [...makes, ...reads]) await $.tool.call({ tool } as Parameters<typeof $.tool.call>[0])
+    expect((value('links') as { href: string }[]).map(pin => pin.href)).toEqual(makes.map(tool => `https://example.com/${tool}`).reverse())
+  })
+
   test('MCP tools pin links only when the tool name holds a making verb as its own word', async ($, on) => {
     const { value } = stateStore(on)
     on('ui.open', () => ({ value: { isPlaced: true } }))

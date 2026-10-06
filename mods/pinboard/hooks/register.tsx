@@ -170,7 +170,12 @@ export function describeBoard(board: Board): string {
 }
 
 const MAKES_COMMAND = /\bgh\s+(?:(?:pr|issue|release|repo|gist)\s+create|(?:pr|issue)\s+comment)\b|\bgit\s+push\b/
-const MAKES_MCP = /^mcp__.+__(?:[A-Za-z0-9]+[_-])*(?:create|draft|send|publish|share|upload)(?![a-z0-9])/
+const MCP_TOOL = /^mcp__.+__(.+)$/
+const WORD_BREAK = /[_-]|(?<=[a-z])(?=[A-Z])/
+const MAKING_VERBS = new Set(['create', 'draft', 'send', 'publish', 'share', 'upload'])
+
+const makesMcp = (tool: string): boolean =>
+  (MCP_TOOL.exec(tool)?.[1] ?? '').split(WORD_BREAK).some(word => MAKING_VERBS.has(word.toLowerCase()))
 
 const URL_IN_TEXT = /https:\/\/[^\s<>"'`]+/g
 const GITHUB_ITEM = /^\/[\w.-]+\/([\w.-]+)\/(pull|issues)\/([1-9]\d{0,9})\/?$/
@@ -373,7 +378,7 @@ export const register: Register = on => {
   // Links only from actions that make something; reads, fetches and test output just mention URLs
   on('tool.call', async ($, e, next) => {
     const ran = await next(e)
-    const makes = e.tool === 'Bash' ? MAKES_COMMAND.test(e.command) : MAKES_MCP.test(e.tool)
+    const makes = e.tool === 'Bash' ? MAKES_COMMAND.test(e.command) : makesMcp(e.tool)
     if (e.agentId || !makes || !('text' in ran) || ran.isError) return ran
     const found = pinsIn(ran.text ?? '')
     if (found.length > 0 && found.length <= 3) {

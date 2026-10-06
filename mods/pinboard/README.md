@@ -10,7 +10,7 @@ If you installed the upstream plugin, uninstall it first. Both plugins are named
 
 - **Open decisions.** These are questions Claude needs you to answer. They stay pinned until Claude closes them after you answer.
 - **Todos.** This is the session's task list, one action per item. The todo Claude works on now is marked `▸` in the warning color, and only one is in progress at a time. Open items show `○`. Finished items fold into one dim `✓ N done` line, so open work stays on top.
-- **Links.** These are URLs from actions that make something: `gh pr|issue|release|repo|gist create`, `gh pr|issue comment`, `git push`, and MCP tools whose name holds `create`, `draft`, `send`, `publish`, `share` or `upload` as its own word, such as `slack_send_message` (not `slack_read_canvas` or `list_drafts`). The newest is first, up to 12. A GitHub pull request or issue gets a short label such as `repo PR #12`. Every other link is labeled with its host and path. Press `l` or the **clear** button to empty the list.
+- **Links.** These are URLs from actions that make something: `gh pr|issue|release|repo|gist create`, `gh pr|issue comment`, `git push`, and MCP tools whose name holds `create`, `draft`, `send`, `publish`, `share` or `upload` as its own word in any case, with words split at `_`, `-` and a lower-to-upper case change, such as `slack_send_message`, `CreateIssue` or `UPLOAD_FILE` (not `slack_read_canvas`, `list_drafts` or `createdAt`). The newest is first, up to 12. A GitHub pull request or issue gets a short label such as `repo PR #12`. Every other link is labeled with its host and path. Press `l` or the **clear** button to empty the list.
 
 ## How Claude updates it
 
