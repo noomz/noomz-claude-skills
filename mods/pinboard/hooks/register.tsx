@@ -201,7 +201,7 @@ const recheckStored = <T extends Stored>(items: readonly T[], pattern: RegExp): 
     return typeof item.id === 'string' && pattern.test(item.id) && text.length > 0 ? [{ ...item, id: item.id, text }] : []
   })
 
-async function audit($: EngineInterface): Promise<string> {
+async function audit($: EngineInterface): Promise<string[]> {
   const board = { todos: await read($, todos), decisions: await read($, decisions) }
   const { masked, rejected } = await read($, hygiene)
   return [
@@ -209,7 +209,7 @@ async function audit($: EngineInterface): Promise<string> {
     describeBoard(board),
     `Stored: ${board.todos.length} todos, ${board.decisions.length} decisions, ${(await read($, links)).length} links.`,
     `Hygiene: ${masked} masked, ${rejected} rejected.`,
-  ].join('\n')
+  ].flatMap(text => text.split('\n'))
 }
 
 const isEmpty = async ($: EngineInterface) =>
@@ -253,7 +253,7 @@ export const register: Register = on => {
 
   on('command.run', { command: 'pinboard' }, async ($, e) => {
     if (e.args.trim() === 'audit') {
-      await $.ui.log(await audit($))
+      for (const line of await audit($)) await $.ui.log(line)
       return {}
     }
     await $.ui.open({ id: PANE, title: TITLE })
