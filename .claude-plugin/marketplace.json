@@ -54,6 +54,11 @@
       "name": "pinboard",
       "source": "./mods/pinboard",
       "description": "Claude Code mod: a sidebar pane of open decisions, todos and the links Claude creates, updated through its own tool. Hardened port of sirkitree/pinboard: texts are scrubbed of secrets and control characters, the board reaches the system prompt as JSON-quoted labels, links keep no query or credentials, and /pinboard audit shows what the model reads."
+    },
+    {
+      "name": "flightdeck",
+      "source": "./mods/flightdeck",
+      "description": "Claude Code mod: a live agent dashboard pane (model vitals, architect timeline, permission gate, subagent cards and swimlanes, turn receipt, session log). Hardened port of scasella/claude-flightdeck: prompts and answers are never kept, tool details are derived and masked, and /flightdeck audit shows what is held."
     }
   ]
 }

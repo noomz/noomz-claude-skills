@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.0
+
+Hardened port of scasella/claude-flightdeck 0.3.2, published in noomz/noomz-claude-skills.
+
+- Session text reaches state or the pane only through `scrub()` in `hooks/hygiene.ts`, which masks secrets, removes ESC, control, bidi and zero-width characters, and cuts each field to a fixed cap. `redact()` is gone.
+- The log no longer keeps your prompts: a typed turn reads `you · new turn · <n> chars`.
+- Agent cards no longer keep a subagent's answer. The expanded card shows its status and duration in place of the answer.
+- The tool detail on cards, in the log and in the gate drill-down is derived: the program a command runs, a file's last two path segments, or a URL's host. Patterns, queries and descriptions are dropped.
+- Architect advice, agent descriptions, names and types, and the architect roster are masked and cut before they are kept.
+- New `/flightdeck audit` lists each stored text field by state path with its length, and the masked count, without printing a value. The receipt panel and the mini layout show a `hygiene · <n> masked` cell.
+- `/flightdeck reset`, `/clear` and a resume also empty the architect roster and the masked count. State saved by an older version is reset when a session starts.
+- An agent description holding an escape sequence no longer blanks the pane.
+
 ## 0.3.2
 
 - A background architect's advice is read from its `SubagentHandback` tool call, where the report actually arrives, with the hand-back text as a fallback. Bold markers no longer leak into the advice line.
