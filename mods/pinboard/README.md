@@ -37,13 +37,14 @@ A call that fails a check is refused. Claude reads the reason as an error result
 - Control characters, `ESC`, bidi overrides, zero-width characters and other invisible characters are removed.
 - Whitespace collapses to one space, so the text is one line.
 - Secrets are replaced with `[masked]`, and the key name stays. Each secret is masked once and counted once, and scrubbing a scrubbed text changes nothing. The rules cover:
-  - passwords written with `=`, `:`, `->`, `=>` or `is`, such as `password = hunter2` and `my password is hunter2`
-  - `password hunter2` when the value holds a digit or a symbol, so `add password validation` stays as written
+  - any value after `password`, `passwd`, `pwd`, `passphrase`, `token` or `secret` and a separator that starts with `=` or `:`, such as `password = hunter2`, `token: abc` and `password=>abc`
+  - any value after a key name such as `api_key`, `access_token` or `client_secret`, after the `--token`, `--password`, `--api-key` and `--secret` flags, and after `Authorization:` or `Authorization=`
+  - a value after another separator (`->`, `-`, `–`, `→`, `is`) or a space, such as `password -> hunter2` and `my password is hunter2`, when the value holds a digit or a symbol or runs to 20 characters, so `add password validation` and `password -> strength meter` stay as written
   - quoted values of any length, closed or not, such as JSON `"password":"..."`
   - AWS secret keys and `AKIA` key ids
   - JWTs, and PEM and PGP private key blocks, encrypted ones included
   - GitHub, Slack and `sk-`/`pk-`/`rk-` style tokens
-  - bearer tokens and `Authorization` headers
+  - bearer tokens: any 8 token characters after `Bearer`, or a shorter value with a digit or a symbol
   - passwords in URLs and secret query values (`key`, `sig`, `signature`, `token`, `X-Amz-Signature`, `code`, session ids)
   - Slack and Discord webhook URLs, and `-u user:pass` (not a numeric `-u 1000:1000`)
   - environment variables whose names end in `KEY`, `TOKEN`, `SECRET` or `PASSWORD`, or hold one of those or `PAT` or `PASS` as an `_`-separated part, so `KEYBOARD=us` stays as written
@@ -55,9 +56,10 @@ A link must use `https` and carry no user name or password. The mod keeps no que
 
 - a secret with no key name or known shape, such as `the creds are hunter2`
 - short or tool-specific forms such as `pw=hunter2` and `mysql -phunter2`
+- a short letters-only password after a space or `is`, such as `my password is sunshine`
 - a key name spelled with look-alike letters from another script, such as a Cyrillic `р` in `password`
 
-Some text is masked that holds no secret, such as `secret: none here`, `?code=python`, a variable whose name only ends in `KEY` such as `MONKEY=banana`, and a long name that starts like a token such as `pk_live_handler_name`. The quoting and the header keep a todo from posing as a prompt line, but whether a model acts on text inside a quoted label depends on the model.
+Some text is masked that holds no secret. The mod masks at least every value the flightdeck mod's `redact()` masked, so a word after `token:`, `secret:`, `Authorization:`, `Bearer` or a secret flag is masked, as in `Add --token flag`, `Add Bearer authentication`, `Return 401 when Authorization: header is missing`, `Document the token: field` and `secret: none here`. Other over-masks are `?code=python`, `PASSWORD_MIN_LENGTH=12`, `docker run -u $(id -u):$(id -g)`, a variable whose name only ends in `KEY` such as `MONKEY=banana`, and a name that starts like a token such as `sk-learn-pipeline` or `pk_live_handler_name`. The quoting and the header keep a todo from posing as a prompt line, but whether a model acts on text inside a quoted label depends on the model.
 
 ## See what it holds
 

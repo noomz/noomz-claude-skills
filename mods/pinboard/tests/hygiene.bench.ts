@@ -62,6 +62,7 @@ const CORPUS: Record<string, string> = {
   'password: " unclosed': 'password: "' + 'x '.repeat(2100),
   'password= then masks': fill('password=[masked]x '),
   'NFKC fullwidth =': fill('password\uFF1D'),
+  'secret flags repeated': fill('--token x '),
 }
 
 const SHORT = ['git', 'src/app.ts', 'h.example', 'packages/web/src/components/Board.tsx:42', 'npm test', 'Bash']
