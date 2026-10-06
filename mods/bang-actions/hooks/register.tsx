@@ -51,10 +51,7 @@ const disarm = ($: EngineInterface) => update($, armed, () => null)
 // listed command: one that leaves the list and comes back is not born armed.
 async function setList($: EngineInterface, f: (prev: Suggestion[]) => Suggestion[]): Promise<Suggestion[]> {
   const next = await update($, commands, f)
-  const armedCmd = await read($, armed)
-  if (armedCmd !== null && !next.some(c => c.cmd === armedCmd)) {
-    await disarm($)
-  }
+  await update($, armed, a => (a !== null && !next.some(c => c.cmd === a) ? null : a))
 
   return next
 }
@@ -132,7 +129,9 @@ async function decide($: EngineInterface, cmd: string): Promise<boolean> {
     return false
   }
 
-  return (await read($, commands)).some(c => c.cmd === cmd && c.gate === 'run')
+  // Through `update`: a plain `read` in this dispatch answers from before the
+  // check, so a row Dismiss cleared meanwhile would still run.
+  return (await update($, commands, prev => prev)).some(c => c.cmd === cmd && c.gate === 'run')
 }
 
 async function press($: EngineInterface, cmd: string) {
