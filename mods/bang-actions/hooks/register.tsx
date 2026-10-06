@@ -48,10 +48,9 @@ const BUTTON_COLUMNS = Math.max(...Object.values(BUTTON).map(b => b.label.length
 // so the value a reload starts from only has to err toward two-press.
 let band = { columns: 50, rows: MAX_SHOWN_LINES }
 
-// The gate a press honours: the entry's own, or two-press when the band as
-// drawn cannot show the whole command.
-const effectiveGate = (s: Suggestion): Gate => (s.gate === 'confirm' || drawnRows(s.cmd, band.columns) > band.rows ? 'confirm' : 'run')
-const buttonFor = (s: Suggestion) => BUTTON[s.isArmed ? 'armed' : effectiveGate(s)]
+// The entry's own gate, or two-press when the band as last measured cannot
+// show the whole command.
+const bandGate = (s: Suggestion): Gate => (s.gate === 'confirm' || drawnRows(s.cmd, band.columns) > band.rows ? 'confirm' : 'run')
 
 const running = new Set<string>()
 let lastPressAt = Number.NEGATIVE_INFINITY
@@ -115,7 +114,10 @@ async function run($: EngineInterface, cmd: string) {
 // band listed it, and runs only if its row is still listed as one-press after
 // that. Every read of the list goes through `update`: a plain `read` in this
 // dispatch answers from before the clock, so a row cleared since would count.
-async function decide($: EngineInterface, cmd: string): Promise<boolean> {
+async function decide($: EngineInterface, cmd: string, drawn: Gate): Promise<boolean> {
+  // Never looser than the button the person pressed: the band may be measured
+  // anew between that draw and this press.
+  const effectiveGate = (s: Suggestion): Gate => (drawn === 'confirm' ? 'confirm' : bandGate(s))
   const now = await $.clock.now()
   const isRepeat = now - lastPressAt < DEBOUNCE_MS
   lastPressAt = now
@@ -157,8 +159,8 @@ async function decide($: EngineInterface, cmd: string): Promise<boolean> {
   }
 }
 
-async function press($: EngineInterface, cmd: string) {
-  const decision = deciding.then(() => decide($, cmd))
+async function press($: EngineInterface, cmd: string, drawn: Gate) {
+  const decision = deciding.then(() => decide($, cmd, drawn))
   deciding = decision.catch(() => undefined)
   if (await decision) {
     await run($, cmd)
@@ -229,14 +231,17 @@ export const register: Register = on => {
 
     return (
       <Box flexDirection="column">
-        {list.map(s => (
-          <Box key={`row-${commandKey(s.cmd)}`} flexDirection="row" columnGap={1}>
-            <Button key={`run-${commandKey(s.cmd)}`} {...buttonFor(s)} onPress={() => press($, s.cmd)} />
-            <Box flexGrow={1} flexShrink={1}>
-              <Code source={displayCommand(s.cmd)} language="bash" />
+        {list.map(s => {
+          const drawn = bandGate(s)
+          return (
+            <Box key={`row-${commandKey(s.cmd)}`} flexDirection="row" columnGap={1}>
+              <Button key={`run-${commandKey(s.cmd)}`} {...BUTTON[s.isArmed ? 'armed' : drawn]} onPress={() => press($, s.cmd, drawn)} />
+              <Box flexGrow={1} flexShrink={1}>
+                <Code source={displayCommand(s.cmd)} language="bash" />
+              </Box>
             </Box>
-          </Box>
-        ))}
+          )
+        })}
         <Box flexDirection="row" justifyContent="flex-end">
           <Button
             key="dismiss"
