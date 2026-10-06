@@ -201,6 +201,17 @@ const recheckStored = <T extends Stored>(items: readonly T[], pattern: RegExp): 
     return typeof item.id === 'string' && pattern.test(item.id) && text.length > 0 ? [{ ...item, id: item.id, text }] : []
   })
 
+async function audit($: EngineInterface): Promise<string> {
+  const board = { todos: await read($, todos), decisions: await read($, decisions) }
+  const { masked, rejected } = await read($, hygiene)
+  return [
+    'Pinboard audit. The pinboard:board section, exactly as the model reads it:',
+    describeBoard(board),
+    `Stored: ${board.todos.length} todos, ${board.decisions.length} decisions, ${(await read($, links)).length} links.`,
+    `Hygiene: ${masked} masked, ${rejected} rejected.`,
+  ].join('\n')
+}
+
 const isEmpty = async ($: EngineInterface) =>
   (await read($, decisions)).length + (await read($, todos)).length + (await read($, links)).length === 0
 
@@ -222,7 +233,12 @@ const resetBoard = async ($: EngineInterface) => {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    await $.command.register({ name: 'pinboard', description: 'Open the pane of open decisions, todos and links', immediate: true })
+    await $.command.register({
+      name: 'pinboard',
+      description: 'Open the pane of open decisions, todos and links; audit shows what the model reads',
+      argumentHint: '[audit]',
+      immediate: true,
+    })
     await $.tool.register({ name: 'update', description: DESCRIPTION, inputSchema: SCHEMA })
     await update($, todos, old => recheckStored(old, TODO_ID))
     await update($, decisions, old => recheckStored(old, DECISION_ID))
@@ -235,7 +251,11 @@ export const register: Register = on => {
     return next(e)
   })
 
-  on('command.run', { command: 'pinboard' }, async $ => {
+  on('command.run', { command: 'pinboard' }, async ($, e) => {
+    if (e.args.trim() === 'audit') {
+      await $.ui.log(await audit($))
+      return {}
+    }
     await $.ui.open({ id: PANE, title: TITLE })
     return {}
   })
@@ -306,6 +326,7 @@ export const register: Register = on => {
     const allDecisions = await read($, decisions)
     const allTodos = await read($, todos)
     const allLinks = await read($, links)
+    const { masked, rejected } = await read($, hygiene)
     const doneCount = allTodos.filter(t => t.isDone).length
 
     const header = (title: string, count: string) => (
@@ -351,6 +372,8 @@ export const register: Register = on => {
             <Link href={p.href} label={p.label} />
           </Text>
         ))}
+        <Text> </Text>
+        <Text dimColor>{`hygiene · ${masked} masked · ${rejected} rejected`}</Text>
       </Box>
     )
   })
