@@ -394,11 +394,11 @@ export const register: Register = on => {
     if (!parsed.ok) return <Text dimColor>Pinboard: update rejected</Text>
     const change = parsed.update
     const parts = [
-      change.add_todos?.length && `+${change.add_todos.length} todo`,
+      change.add_todos?.length && `+${plural(change.add_todos.length, 'todo')}`,
       change.start_todo && `started ${change.start_todo}`,
       change.done_todos?.length && `${change.done_todos.length} done`,
-      change.remove_todos?.length && `-${change.remove_todos.length} todo`,
-      change.open_decisions?.length && `+${change.open_decisions.length} decision`,
+      change.remove_todos?.length && `-${plural(change.remove_todos.length, 'todo')}`,
+      change.open_decisions?.length && `+${plural(change.open_decisions.length, 'decision')}`,
       change.decide?.length && `${change.decide.length} decided`,
     ].filter(Boolean)
     return <Text dimColor>{'Pinboard: ' + (parts.join(', ') || 'no change')}</Text>

@@ -14,7 +14,7 @@ If you installed the upstream plugin, uninstall it first. Both plugins are named
 
 ## How Claude updates it
 
-Pinboard registers a tool, `mcp__pinboard__update`. Claude calls it to add todos, start one, check todos off or remove them by id, open decisions, and close them. Each call shows as one dim line in the transcript, such as `Pinboard: +2 todo, 1 decided`. Only the main conversation can update the board. A subagent's call is denied.
+Pinboard registers a tool, `mcp__pinboard__update`. Claude calls it to add todos, start one, check todos off or remove them by id, open decisions, and close them. Each call shows as one dim line in the transcript, such as `Pinboard: +2 todos, 1 decided`. That line is all the mod draws for a call; the call's raw input, secrets included, stays in Claude Code's own transcript, which the mod does not control. Only the main conversation can update the board. A subagent's call is denied.
 
 The tool checks each call before it changes the board:
 

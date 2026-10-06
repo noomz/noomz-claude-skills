@@ -107,7 +107,7 @@ for (const surface of SURFACES) {
     const { inputs, results } = await seed($, on)
     const drawn = await transcript($, surface, inputs, results)
     for (const secret of SECRETS) expect(drawn).not.toContain(secret)
-    expect(drawn).toContain('Pinboard: +2 todo, +2 decision')
+    expect(drawn).toContain('Pinboard: +2 todos, +2 decisions')
   })
 
   test(`${surface}: no canary secret reaches /pinboard audit`, async ($, on) => {

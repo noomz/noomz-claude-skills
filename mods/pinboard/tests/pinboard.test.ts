@@ -259,8 +259,9 @@ describe('session', () => {
       })
     const row = await mount({ add_todos: ['a', 'b'], decide: [{ id: 'd1', answer: 'x' }] })
     const drawn = await row.findAll({ type: 'Text' })
-    expect(drawn.map(t => t.text)).toEqual(['Pinboard: +2 todo, 1 decided'])
+    expect(drawn.map(t => t.text)).toEqual(['Pinboard: +2 todos, 1 decided'])
     expect(drawn[0]?.props.dimColor).toBe(true)
+    expect(await texts(await mount({ add_todos: ['a'], remove_todos: ['t1'], open_decisions: ['q'] }))).toBe('Pinboard: +1 todo, -1 todo, +1 decision')
     expect(await texts(await mount({ start_todo: 'password=hunter2' }))).toBe('Pinboard: update rejected')
   })
 
