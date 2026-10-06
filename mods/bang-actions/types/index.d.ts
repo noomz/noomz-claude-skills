@@ -12,6 +12,8 @@ declare module 'claude-code' {
     // `armed`: the `confirm` command whose next press runs it, or null.
     // `succeeded`: commands a press ran with exit 0 since the last answer,
     // which the next answer's suggestions leave out.
-    'bang-actions': { commands: Suggestion[]; armed: string | null; succeeded: string[] }
+    // `denied`: commands a hook denied on the model's own call this session,
+    // newest last, at most MAX_DENIED; each is `confirm` whenever listed.
+    'bang-actions': { commands: Suggestion[]; armed: string | null; succeeded: string[]; denied: string[] }
   }
 }

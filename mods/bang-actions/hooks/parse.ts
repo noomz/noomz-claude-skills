@@ -8,10 +8,14 @@ export const MAX_COMMANDS = 5
 // button that runs on press must show everything it will run.
 export const MAX_SHOWN_CHARS = 9_000
 
-// Tallest command the band shows in full. A taller one can scroll out of the
-// band, so it enters as two-press: one press would run steps the person never
-// saw.
+// Tallest command the band shows in full, in drawn rows, wrapping counted. A
+// taller one can scroll out of the band, so it enters as two-press: one press
+// would run steps the person never saw.
 export const MAX_SHOWN_LINES = 8
+
+// Columns the code beside a button is assumed to get: deliberately narrow for
+// an 80-column terminal, so the row estimate errs toward two-press.
+const CODE_COLUMNS = 50
 
 const MODEL_OUTPUT_CHARS = 20_000
 
@@ -31,6 +35,11 @@ const DECEPTIVE = /[\u0000-\u0008\u000A-\u001F\u007F-\u009F\p{Cf}\u00A0\u1680\u2
 // `confirm` outranks `run`: a gate only ever tightens.
 function stricter(a: Gate, b: Gate): Gate {
   return a === 'confirm' ? a : b
+}
+
+// Rows the band draws a command over, at CODE_COLUMNS per line.
+function drawnRows(cmd: string): number {
+  return displayCommand(cmd).split('\n').reduce((rows, line) => rows + Math.max(1, Math.ceil(line.length / CODE_COLUMNS)), 0)
 }
 
 // Commands the reply asks the person to run with the `!` prefix, in order of
@@ -69,7 +78,7 @@ export function mergeCommands(current: Suggestion[], incoming: Suggestion[]): Su
   let added = 0
   for (const raw of incoming) {
     const cmd = raw.cmd.trim()
-    const gate = stricter(raw.gate, displayCommand(cmd).split('\n').length > MAX_SHOWN_LINES ? 'confirm' : 'run')
+    const gate = stricter(raw.gate, drawnRows(cmd) > MAX_SHOWN_LINES ? 'confirm' : 'run')
     const at = merged.findIndex(s => s.cmd === cmd)
     const listed = merged[at]
     if (listed !== undefined) {

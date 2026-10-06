@@ -7,14 +7,22 @@ import { buttonLabel, commandKey, displayCommand, extractBangCommands, formatRun
 
 const TIMEOUT_MS = 5 * 60 * 1000
 
-// A command button ignores a press this soon after the previous one. After a
-// press the focus ring stays in the band, so a double Enter, a key repeat or a
-// double click would run the next command, or an armed one.
+// A command button ignores a press this soon after the previous one, accepted
+// or ignored. After a press the focus ring stays in the band, so a double
+// Enter, a key repeat or a double click would run the next command, or an
+// armed one; a held key repeats faster than this, so none of its presses get
+// through.
 const DEBOUNCE_MS = 500
+
+// Commands a hook denied on the model's own call, kept for the session: a
+// query, which this plugin's checks are, runs no PreToolUse hook, so it
+// cannot find that denial again.
+const MAX_DENIED = 50
 
 const commands = atom({ plugin: 'bang-actions', key: 'commands' } as const, [])
 const armed = atom({ plugin: 'bang-actions', key: 'armed' } as const, null as string | null)
 const succeeded = atom({ plugin: 'bang-actions', key: 'succeeded' } as const, [] as string[])
+const denied = atom({ plugin: 'bang-actions', key: 'denied' } as const, [] as string[])
 
 // The button beside a command: by its gate, and for the one `confirm`
 // command the person armed. No hotkeys: while the band holds the focus every
@@ -39,10 +47,28 @@ const add = (found: Suggestion[]) => (prev: Suggestion[]) => mergeCommands(prev,
 const tighten = (cmd: string) => (prev: Suggestion[]) => (prev.some(c => c.cmd === cmd) ? mergeCommands(prev, [{ cmd, gate: 'confirm' }]) : prev)
 const disarm = ($: EngineInterface) => update($, armed, () => null)
 
-// The gate the session's Bash permission rules give a suggestion: two-press
-// when they deny it, or when the check itself fails.
-const gateOf = ($: EngineInterface, cmd: string): Promise<Gate> =>
-  $.tool.check({ tool: 'Bash', input: { command: cmd } }).then(r => (r.decision === 'deny' ? 'confirm' : 'run'), () => 'confirm')
+// Every write to the list goes through here, so `armed` only ever names a
+// listed command: one that leaves the list and comes back is not born armed.
+async function setList($: EngineInterface, f: (prev: Suggestion[]) => Suggestion[]): Promise<Suggestion[]> {
+  const next = await update($, commands, f)
+  const armedCmd = await read($, armed)
+  if (armedCmd !== null && !next.some(c => c.cmd === armedCmd)) {
+    await disarm($)
+  }
+
+  return next
+}
+
+// The gate a suggestion gets: two-press when a hook denied the command on the
+// model's call this session, when the session's Bash permission rules deny
+// it, or when the check itself fails.
+async function gateOf($: EngineInterface, cmd: string): Promise<Gate> {
+  if ((await read($, denied)).includes(cmd)) {
+    return 'confirm'
+  }
+
+  return $.tool.check({ tool: 'Bash', input: { command: cmd } }).then(r => (r.decision === 'deny' ? 'confirm' : 'run'), () => 'confirm')
+}
 
 // Runs a command as the person's own `! cmd` would, in the session's cwd,
 // then submits the output as this plugin's prompt: Claude's next turn starts
@@ -55,7 +81,7 @@ async function run($: EngineInterface, cmd: string) {
   try {
     $.ui.status(`running: ${buttonLabel(cmd)}`)
     const r = await $.process.run(['/bin/bash', '-c', cmd], { stdin: '', timeoutMs: TIMEOUT_MS })
-    await update($, commands, forget(cmd))
+    await setList($, forget(cmd))
     if (r.exitCode === 0) {
       await update($, succeeded, prev => [...prev, cmd])
     }
@@ -73,16 +99,17 @@ async function run($: EngineInterface, cmd: string) {
 }
 
 // Whether a press on a command's button runs it now. A press within
-// DEBOUNCE_MS of the previous one does nothing. A `run` command is checked
-// against the session's Bash permission rules again first, since they may
-// have changed since the band listed it; a `confirm` one runs on its second
-// press in a row.
+// DEBOUNCE_MS of the previous one does nothing. A `run` command is gated
+// again first, since the rules may have changed since the band listed it,
+// and runs only if its row is still listed as `run` after that; a `confirm`
+// one runs on its second press in a row.
 async function decide($: EngineInterface, cmd: string): Promise<boolean> {
   const now = await $.clock.now()
-  if (now - lastPressAt < DEBOUNCE_MS) {
+  const isRepeat = now - lastPressAt < DEBOUNCE_MS
+  lastPressAt = now
+  if (isRepeat) {
     return false
   }
-  lastPressAt = now
 
   const entry = (await read($, commands)).find(c => c.cmd === cmd)
   const wasArmed = (await read($, armed)) === cmd
@@ -97,16 +124,15 @@ async function decide($: EngineInterface, cmd: string): Promise<boolean> {
     return wasArmed
   }
 
-  const verdict = await $.tool.check({ tool: 'Bash', input: { command: cmd } })
-  if (verdict.decision === 'deny') {
-    const listed = (await update($, commands, tighten(cmd))).some(c => c.cmd === cmd)
+  if ((await gateOf($, cmd)) === 'confirm') {
+    const listed = (await setList($, tighten(cmd))).some(c => c.cmd === cmd)
     if (listed) {
-      $.ui.toast('Your permission rules deny this command: press twice to run it')
+      $.ui.toast('Your permission rules did not allow this command: press twice to run it')
     }
     return false
   }
 
-  return true
+  return (await read($, commands)).some(c => c.cmd === cmd && c.gate === 'run')
 }
 
 async function press($: EngineInterface, cmd: string) {
@@ -124,13 +150,16 @@ export const register: Register = on => {
   // quotes the command again.
   on('turn.complete', async ($, e, next) => {
     if (e.agentId === undefined && e.reason === 'answer') {
-      const ran = await read($, succeeded)
-      await update($, succeeded, () => [])
       const found = await Promise.all(extractBangCommands(e.answer)
-        .filter(cmd => !ran.includes(cmd))
         .map(async (cmd): Promise<Suggestion> => ({ cmd, gate: await gateOf($, cmd) })))
-      if (found.length > 0) {
-        await update($, commands, add(found))
+      // Taken after the checks, through `update`: a plain `read` in this
+      // dispatch answers from before them, so a run that exited 0 while they
+      // were pending would be lost.
+      let ran: string[] = []
+      await update($, succeeded, prev => { ran = prev; return [] })
+      const fresh = found.filter(s => !ran.includes(s.cmd))
+      if (fresh.length > 0) {
+        await setList($, add(fresh))
       }
       await disarm($)
     }
@@ -138,13 +167,16 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // The model's Bash calls the permission check denied: listed as two-press.
-  // A query (no tool_use_id), such as this plugin's own checks, is not a call.
+  // The model's Bash calls the permission check denied: listed as two-press,
+  // and two-press whenever an answer suggests them later. A query (no
+  // tool_use_id), such as this plugin's own checks, is not a call.
   on('tool.check', { tool: 'Bash' }, async ($, e, next) => {
     const r = await next(e)
     const input = e.input as { command?: unknown }
     if (r.decision === 'deny' && e.tool_use_id && typeof input.command === 'string') {
-      await update($, commands, add([{ cmd: input.command, gate: 'confirm' }]))
+      const cmd = input.command.trim()
+      await update($, denied, prev => (prev.includes(cmd) ? prev : [...prev, cmd].slice(-MAX_DENIED)))
+      await setList($, add([{ cmd, gate: 'confirm' }]))
     }
 
     return r
@@ -157,7 +189,7 @@ export const register: Register = on => {
     if (e.origin.kind === 'composer') {
       const sent = e.text.trim().replace(/^!\s*/, '')
       const isListed = (await read($, commands)).some(c => c.cmd === sent)
-      await update($, commands, prev => (isListed ? forget(sent)(prev) : []))
+      await setList($, prev => (isListed ? forget(sent)(prev) : []))
       await disarm($)
     }
 
@@ -190,10 +222,7 @@ export const register: Register = on => {
             hotkey="x"
             role="dismiss"
             dimColor
-            onPress={async () => {
-              await update($, commands, () => [])
-              await disarm($)
-            }}
+            onPress={() => setList($, () => [])}
           />
         </Box>
       </Box>
