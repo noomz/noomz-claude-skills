@@ -1,4 +1,4 @@
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
 
 import { buttonLabel, commandKey } from '../hooks/parse'
 
@@ -7,145 +7,549 @@ const BAND = { plugin: 'bang-actions', component: 'AbovePrompt', props: {
   hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 80,
   scroll: { offset: 0, bodyRows: 10 }, view: {},
 } } as const
+const PLUGIN_ORIGIN = { kind: 'plugin', name: 'bang-actions' } as const
 
 const ANSWER = 'I cannot log in for you. Run `! gcloud auth login` and tell me when done.'
 const RUN_LOGIN = `run-${commandKey('gcloud auth login')}`
+const RUN = '▶ Run'
+const TWICE = '⚠ Run (press twice)'
+const AGAIN = '▶ Press again to run'
+
+// A command button ignores a press this soon after the previous one.
+const DEBOUNCE_MS = 500
+// Hook denials the plugin remembers for the session, newest last.
+const MAX_DENIED = 200
 
 const turnDone = (answer: string, agentId?: string) => ({
   answer, durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' as const, ...(agentId ? { agentId } : {}),
 })
 const typed = (text: string) => ({ text, wait: false, origin: { kind: 'composer' as const } })
 
-type On = Parameters<Extract<Parameters<typeof test>[1], (...args: never[]) => unknown>>[1]
+type TestBody = Extract<Parameters<typeof test>[1], (...args: never[]) => unknown>
+type On = Parameters<TestBody>[1]
 
-// Stands in for the engine beneath the plugin: answers, draws its own band,
-// decides Bash permissions from `deny`, and records runs and prompt fills.
-function engine(on: On, { exitCode = 0, draft = '', deny = [] as string[], stdout = 'hello\n' } = {}) {
+type EngineOptions = {
+  exitCode?: number
+  stdout?: string
+  drop?: string
+  // Bash commands the permission rules deny, on a call and on a query alike.
+  deny?: string[]
+  // Bash commands a PreToolUse hook denies: a call (with `tool_use_id`) is
+  // denied, a query on the same command is allowed, as the engine answers.
+  denyCalls?: string[]
+  // Bash commands whose permission check fails outright.
+  rejects?: string[]
+  // How long every permission check takes, on the mocked clock.
+  checkDelayMs?: number
+}
+
+// Stands in for the engine beneath the plugin: the clock, answers, its own
+// rows, Bash permissions, and a record of runs, submitted prompts, prompt
+// fills and toasts. `press` presses a command button once the debounce window
+// since the previous press has passed.
+function engine(on: On, {
+  exitCode = 0, stdout = 'hello\n', drop, deny = [], denyCalls = [], rejects = [], checkDelayMs = 0,
+}: EngineOptions = {}) {
+  const clock = mock.clock(on)
   const runs: (readonly string[])[] = []
+  const submitted: { text: string; origin: unknown }[] = []
   const filled: string[] = []
-  on('ui.toast', () => ({ value: undefined }))
+  const toasts: string[] = []
+  on('ui.toast', (_$, e) => { toasts.push(e.text); return { value: undefined } })
   on('ui.status', () => ({ value: undefined }))
   on('turn.complete', (_$, e) => ({ text: e.answer }))
-  on('prompt.submit', (_$, e) => ({ text: e.text }))
+  on('prompt.submit', (_$, e) => {
+    if (e.origin.kind !== 'plugin') return { text: e.text }
+    submitted.push({ text: e.text, origin: e.origin })
+    return drop === undefined ? { text: e.text } : { drop }
+  })
   on('ui.render', ($, e) => { const { Box } = $.ui.resolve(e); return <Box key="engine" /> })
-  on('tool.check', (_$, e) => {
+  on('tool.check', async (_$, e) => {
     const { command } = e.input as { command: string }
-    return { decision: deny.includes(command) ? 'deny' : 'allow' }
+    if (checkDelayMs > 0) await clock.sleep(checkDelayMs)
+    if (rejects.includes(command)) throw new Error(`check failed: ${command}`)
+    const denied = deny.includes(command) || (e.tool_use_id !== undefined && denyCalls.includes(command))
+    return { decision: denied ? 'deny' : 'allow' }
   })
   on('process.run', (_$, e) => {
     runs.push(e.argv)
     return { value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
-  on('session.append', (_$, e) => ({ message: e.message, uuid: e.uuid }))
-  on('prompt.read', () => ({ value: { text: draft, cursor: draft.length } }))
   on('prompt.fill', (_$, e) => { filled.push(e.text); return { isFilled: true } })
-  return { runs, filled }
+  const press = async (ui: Pressable, key: string) => {
+    await clock.advance(DEBOUNCE_MS)
+    await ui.press({ key })
+  }
+  return { runs, submitted, filled, toasts, deny, rejects, clock, press }
 }
 
 type Found = { text?: string }
 type Drawing = { findAll: (q: { type: 'Button' | 'Code' }) => Promise<Found[]> }
+type Pressable = { press: (target: { key: string }) => Promise<unknown> }
 
-// The band as the person reads it, one entry per row: `▶ cmd` for a Run row,
-// `✎ cmd` for a Review row (the command as its Code shows it, on one line),
-// then `Dismiss`.
-const labels = async (ui: Drawing) => {
+// The band as the person reads it, one entry per row: the button's label, two
+// spaces, the command as its Code shows it on one line; then `Dismiss`.
+const rows = async (ui: Drawing) => {
   const codes = (await ui.findAll({ type: 'Code' })).map(c => buttonLabel(c.text ?? ''))
-  return (await ui.findAll({ type: 'Button' })).map(b =>
-    b.text === '▶ Run' ? `▶ ${codes.shift()}` : b.text === '✎ Fill' ? `✎ ${codes.shift()}` : b.text)
+  return (await ui.findAll({ type: 'Button' })).map(b => (b.text === 'Dismiss' ? 'Dismiss' : `${b.text}  ${codes.shift()}`))
 }
 
 for (const surface of SURFACES) {
-  test(`${surface}: a suggested \`! cmd\` runs on press and shows its result in the band`, async ($, on) => {
-    const { runs, filled } = engine(on)
+  test(`${surface}: a suggested \`! cmd\` runs on press and its output starts Claude's next turn as the plugin's prompt`, async ($, on) => {
+    const { runs, submitted, filled, toasts } = engine(on)
 
     await $.turn.complete(turnDone(ANSWER))
     const ui = await $.ui.mount({ ...BAND, surface })
-    expect(await labels(ui)).toEqual(['▶ gcloud auth login', 'Dismiss'])
+    expect(await rows(ui)).toEqual([`${RUN}  gcloud auth login`, 'Dismiss'])
     expect(runs).toHaveLength(0)
 
     await ui.press({ key: RUN_LOGIN })
     expect(runs).toEqual([['/bin/bash', '-c', 'gcloud auth login']])
     expect(filled).toEqual([])
-    expect(await ui.find({ type: 'Text', text: '✓ ! gcloud auth login  (exit 0)' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: 'hello' })).toBeDefined()
-    expect(await labels(ui)).toEqual(['Dismiss'])
-
-    await ui.press({ key: 'dismiss' })
-    expect(await labels(ui)).toEqual([])
+    expect(submitted).toEqual([{ origin: PLUGIN_ORIGIN, text: expect.stringContaining('\n! gcloud auth login\n') }])
+    expect(submitted[0]?.text).toContain('(exit 0)')
+    expect(submitted[0]?.text).toContain('hello')
+    expect(toasts).toEqual([])
+    expect(await rows(ui)).toEqual([])
   })
 
-  test(`${surface}: a permission-denied Bash call only fills the prompt, never runs`, async ($, on) => {
-    const { runs, filled } = engine(on, { deny: ['sudo make install', 'ls'] })
+  test(`${surface}: a Bash call the rules deny draws a two-press button; the first press arms it, the second runs it`, async ($, on) => {
+    const { runs, submitted, filled, press } = engine(on, { deny: ['sudo make install', 'ls'] })
+    const key = `run-${commandKey('sudo make install')}`
 
     await $.tool.check({ tool: 'Bash', input: { command: 'sudo make install' }, tool_use_id: 'tu1' })
     await $.tool.check({ tool: 'Bash', input: { command: 'ls' } })
     const ui = await $.ui.mount({ ...BAND, surface })
-    expect(await labels(ui)).toEqual(['✎ sudo make install', 'Dismiss'])
+    expect(await rows(ui)).toEqual([`${TWICE}  sudo make install`, 'Dismiss'])
 
-    await ui.press({ key: `fill-${commandKey('sudo make install')}` })
-    expect(filled).toEqual(['! sudo make install'])
+    await press(ui, key)
     expect(runs).toHaveLength(0)
+    expect(await rows(ui)).toEqual([`${AGAIN}  sudo make install`, 'Dismiss'])
+
+    await press(ui, key)
+    expect(runs).toEqual([['/bin/bash', '-c', 'sudo make install']])
+    expect(filled).toEqual([])
+    expect(submitted.map(s => s.origin)).toEqual([PLUGIN_ORIGIN])
+    expect(await rows(ui)).toEqual([])
   })
 }
 
-test('Run buttons carry no hotkey, so typing into a focused band never runs a command', async ($, on) => {
+test('a suggestion the rules deny draws the two-press button from the start', async ($, on) => {
+  const { runs } = engine(on, { deny: ['gcloud auth login'] })
+
+  await $.turn.complete(turnDone(ANSWER))
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await rows(ui)).toEqual([`${TWICE}  gcloud auth login`, 'Dismiss'])
+
+  await ui.press({ key: RUN_LOGIN })
+  expect(runs).toHaveLength(0)
+})
+
+test('a suggestion the rules come to deny by press time switches to the two-press button instead of running or filling', async ($, on) => {
+  const { runs, submitted, filled, toasts, deny, press } = engine(on)
+
+  await $.turn.complete(turnDone(ANSWER))
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await rows(ui)).toEqual([`${RUN}  gcloud auth login`, 'Dismiss'])
+
+  deny.push('gcloud auth login')
+  await press(ui, RUN_LOGIN)
+  expect(runs).toHaveLength(0)
+  expect(filled).toEqual([])
+  expect(submitted).toEqual([])
+  expect(toasts).toEqual([expect.stringContaining('press twice')])
+  expect(await rows(ui)).toEqual([`${TWICE}  gcloud auth login`, 'Dismiss'])
+
+  await press(ui, RUN_LOGIN)
+  await press(ui, RUN_LOGIN)
+  expect(runs).toEqual([['/bin/bash', '-c', 'gcloud auth login']])
+})
+
+test('a press-time denial never re-lists a command Dismiss cleared while the check was pending', async ($, on) => {
+  const { runs, toasts, deny, clock, press } = engine(on, { checkDelayMs: 10 })
+
+  const answered = $.turn.complete(turnDone(ANSWER))
+  await clock.advance(10)
+  await answered
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await rows(ui)).toEqual([`${RUN}  gcloud auth login`, 'Dismiss'])
+
+  deny.push('gcloud auth login')
+  const pressed = press(ui, RUN_LOGIN)
+  await clock.settle()
+  await ui.press({ key: 'dismiss' })
+  await clock.advance(10)
+  await pressed
+  expect(runs).toHaveLength(0)
+  expect(toasts).toEqual([])
+  await ui.redraw()
+  expect(await rows(ui)).toEqual([])
+})
+
+test('a two-press button never drops to one press when a later check allows the command: a query runs no PreToolUse hook', async ($, on) => {
+  const { runs, press } = engine(on, { denyCalls: ['sudo make install'] })
+  const key = `run-${commandKey('sudo make install')}`
+
+  await $.tool.check({ tool: 'Bash', input: { command: 'sudo make install' }, tool_use_id: 'tu1' })
+  await $.turn.complete(turnDone('Run `! sudo make install` yourself.'))
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await rows(ui)).toEqual([`${TWICE}  sudo make install`, 'Dismiss'])
+
+  await press(ui, key)
+  expect(runs).toHaveLength(0)
+  expect(await rows(ui)).toEqual([`${AGAIN}  sudo make install`, 'Dismiss'])
+})
+
+test('a suggestion whose permission check fails lists as two-press, and the rest of the batch survives', async ($, on) => {
+  engine(on, { rejects: ['b'] })
+
+  await $.turn.complete(turnDone('Run `! a`, `! b` and `! c`.'))
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await rows(ui)).toEqual([`${RUN}  a`, `${TWICE}  b`, `${RUN}  c`, 'Dismiss'])
+})
+
+test('a second press within the debounce window is ignored, for every gate, so a key repeat never runs the next command or an armed one', async ($, on) => {
+  const { runs, clock } = engine(on, { deny: ['a'] })
+  const RUN_A = `run-${commandKey('a')}`
+  const RUN_B = `run-${commandKey('b')}`
+
+  await $.turn.complete(turnDone('Run `! a` and `! b`.'))
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+
+  await ui.press({ key: RUN_B })
+  await ui.press({ key: RUN_A })
+  expect(runs).toEqual([['/bin/bash', '-c', 'b']])
+  expect(await rows(ui)).toEqual([`${TWICE}  a`, 'Dismiss'])
+
+  await clock.advance(DEBOUNCE_MS - 1)
+  await ui.press({ key: RUN_A })
+  expect(await rows(ui)).toEqual([`${TWICE}  a`, 'Dismiss'])
+
+  await clock.advance(DEBOUNCE_MS)
+  await ui.press({ key: RUN_A })
+  expect(await rows(ui)).toEqual([`${AGAIN}  a`, 'Dismiss'])
+  await ui.press({ key: RUN_A })
+  expect(runs).toHaveLength(1)
+  expect(await rows(ui)).toEqual([`${AGAIN}  a`, 'Dismiss'])
+
+  await clock.advance(DEBOUNCE_MS)
+  await ui.press({ key: RUN_A })
+  expect(runs).toEqual([['/bin/bash', '-c', 'b'], ['/bin/bash', '-c', 'a']])
+})
+
+test('a held key never gets past a two-press button, and runs a one-press command exactly once: every press restarts the debounce window', async ($, on) => {
+  const { runs, clock } = engine(on, { deny: ['a'] })
+  const RUN_A = `run-${commandKey('a')}`
+  const RUN_B = `run-${commandKey('b')}`
+  const REPEAT_MS = 30
+  const repeats = Math.ceil((DEBOUNCE_MS + 100) / REPEAT_MS) + 1
+  const hold = async (ui: Pressable, key: string) => {
+    await ui.press({ key })
+    for (let i = 0; i < repeats; i++) {
+      await clock.advance(REPEAT_MS)
+      await ui.press({ key })
+    }
+  }
+
+  await $.turn.complete(turnDone('Run `! a` and `! b`.'))
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+
+  await hold(ui, RUN_A)
+  expect(runs).toHaveLength(0)
+  expect(await rows(ui)).toEqual([`${AGAIN}  a`, `${RUN}  b`, 'Dismiss'])
+
+  await clock.advance(DEBOUNCE_MS)
+  await ui.press({ key: RUN_B })
+  expect(runs).toEqual([['/bin/bash', '-c', 'b']])
+  for (let i = 0; i < repeats; i++) {
+    await clock.advance(REPEAT_MS)
+    await ui.press({ key: RUN_A })
+  }
+  expect(runs).toHaveLength(1)
+  expect(await rows(ui)).toEqual([`${TWICE}  a`, 'Dismiss'])
+})
+
+test('a press queued behind a permission check slower than the debounce window is ignored: the window restarts when the check ends', async ($, on) => {
+  const { runs, clock } = engine(on, { checkDelayMs: DEBOUNCE_MS + 100 })
+  const RUN_A = `run-${commandKey('a')}`
+  const RUN_B = `run-${commandKey('b')}`
+
+  const answered = $.turn.complete(turnDone('Run `! a` and `! b`.'))
+  await clock.advance(DEBOUNCE_MS + 100)
+  await answered
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+
+  const first = ui.press({ key: RUN_A })
+  await clock.settle()
+  const second = ui.press({ key: RUN_B })
+  await clock.advance(DEBOUNCE_MS + 100)
+  await first
+  await clock.advance(DEBOUNCE_MS + 100)
+  await second
+  expect(runs).toEqual([['/bin/bash', '-c', 'a']])
+  expect(await rows(ui)).toEqual([`${RUN}  b`, 'Dismiss'])
+})
+
+test('a press whose row Dismiss or a typed prompt cleared during the check never runs, even when the check allows it', async ($, on) => {
+  const { runs, toasts, clock, press } = engine(on, { checkDelayMs: 10 })
+
+  const answered = $.turn.complete(turnDone('Run `! a` and `! b`.'))
+  await clock.advance(10)
+  await answered
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+
+  const dismissed = press(ui, `run-${commandKey('a')}`)
+  await clock.settle()
+  await ui.press({ key: 'dismiss' })
+  await clock.advance(10)
+  await dismissed
+  expect(runs).toHaveLength(0)
+
+  const relisted = $.turn.complete(turnDone('Run `! a` and `! b`.'))
+  await clock.advance(10)
+  await relisted
+  await ui.redraw()
+  const typedOver = press(ui, `run-${commandKey('b')}`)
+  await clock.settle()
+  await $.prompt.submit(typed('never mind'))
+  await clock.advance(10)
+  await typedOver
+  expect(runs).toHaveLength(0)
+  expect(toasts).toEqual([])
+  await ui.redraw()
+  expect(await rows(ui)).toEqual([])
+})
+
+test('a command armed, pushed out of the list, then listed again is born two-press: one press does not run it', async ($, on) => {
+  const { runs, press } = engine(on, { deny: ['a', 'c1', 'c2', 'c3', 'c4', 'c5'] })
+  const RUN_A = `run-${commandKey('a')}`
+
+  await $.turn.complete(turnDone('Run `! a`.'))
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  await press(ui, RUN_A)
+  expect(await rows(ui)).toEqual([`${AGAIN}  a`, 'Dismiss'])
+
+  for (const cmd of ['c1', 'c2', 'c3', 'c4', 'c5']) {
+    await $.tool.check({ tool: 'Bash', input: { command: cmd }, tool_use_id: `tu-${cmd}` })
+  }
+  await ui.redraw()
+  expect((await rows(ui)).some(r => r.endsWith('  a'))).toBe(false)
+
+  await $.tool.check({ tool: 'Bash', input: { command: 'a' }, tool_use_id: 'tu-a' })
+  await ui.redraw()
+  expect(await rows(ui)).toContain(`${TWICE}  a`)
+  await press(ui, RUN_A)
+  expect(runs).toHaveLength(0)
+  expect(await rows(ui)).toContain(`${AGAIN}  a`)
+})
+
+test('a command a hook denied on the model\'s call stays two-press for the session: a typed prompt and a later allowing query do not lift it', async ($, on) => {
+  const { runs, press } = engine(on, { denyCalls: ['sudo make install'] })
+  const key = `run-${commandKey('sudo make install')}`
+
+  await $.tool.check({ tool: 'Bash', input: { command: 'sudo make install' }, tool_use_id: 'tu1' })
+  await $.prompt.submit(typed('try something else'))
+  await $.turn.complete(turnDone('Run `! sudo make install` yourself.'))
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await rows(ui)).toEqual([`${TWICE}  sudo make install`, 'Dismiss'])
+
+  await press(ui, key)
+  expect(runs).toHaveLength(0)
+  expect(await rows(ui)).toEqual([`${AGAIN}  sudo make install`, 'Dismiss'])
+})
+
+test('a hook denial the session keeps repeating is never evicted by newer ones: a repeat deny counts as the newest', async ($, on) => {
+  const others = (batch: number) => Array.from({ length: MAX_DENIED - 1 }, (_, i) => `other${batch}-${i}`)
+  const { runs, press } = engine(on, { denyCalls: ['x', ...others(1), ...others(2)] })
+  const denyCall = (cmd: string) => $.tool.check({ tool: 'Bash', input: { command: cmd }, tool_use_id: `tu-${cmd}` })
+
+  await denyCall('x')
+  for (const cmd of others(1)) await denyCall(cmd)
+  await denyCall('x')
+  for (const cmd of others(2)) await denyCall(cmd)
+
+  await $.turn.complete(turnDone('Run `! x` yourself.'))
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await rows(ui)).toContain(`${TWICE}  x`)
+  await press(ui, `run-${commandKey('x')}`)
+  expect(runs).toHaveLength(0)
+  expect(await rows(ui)).toContain(`${AGAIN}  x`)
+})
+
+test('a run that exits 0 while the next answer\'s checks are pending is still left out of that answer\'s suggestions', async ($, on) => {
+  const { runs, clock } = engine(on, { deny: ['gcloud auth login'], checkDelayMs: 10 })
+
+  const first = $.turn.complete(turnDone(ANSWER))
+  await clock.advance(10)
+  await first
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  await ui.press({ key: RUN_LOGIN })
+  expect(await rows(ui)).toEqual([`${AGAIN}  gcloud auth login`, 'Dismiss'])
+
+  await clock.advance(DEBOUNCE_MS)
+  const second = $.turn.complete(turnDone('`! gcloud auth login` is next, then `! gh auth status`.'))
+  await clock.settle()
+  await ui.press({ key: RUN_LOGIN })
+  expect(runs).toEqual([['/bin/bash', '-c', 'gcloud auth login']])
+  await clock.advance(10)
+  await second
+  await ui.redraw()
+  expect(await rows(ui)).toEqual([`${RUN}  gh auth status`, 'Dismiss'])
+})
+
+test('a press-time check that fails tightens the command to two-press with the toast, as a denial does', async ($, on) => {
+  const { runs, toasts, rejects, press } = engine(on)
+
+  await $.turn.complete(turnDone(ANSWER))
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await rows(ui)).toEqual([`${RUN}  gcloud auth login`, 'Dismiss'])
+
+  rejects.push('gcloud auth login')
+  await press(ui, RUN_LOGIN)
+  expect(runs).toHaveLength(0)
+  expect(toasts).toEqual([expect.stringContaining('press twice')])
+  expect(await rows(ui)).toEqual([`${TWICE}  gcloud auth login`, 'Dismiss'])
+})
+
+test('a command taller than the band can show enters as two-press, since one press would run steps the person never saw', async ($, on) => {
+  const { runs, press } = engine(on)
+  const steps = (n: number) => Array.from({ length: n }, (_, i) => `step${i}`).join(' && ')
+  const tall = steps(9)
+  const fits = steps(8)
+
+  await $.turn.complete(turnDone(`Run \`! ${tall}\` or \`! ${fits}\`.`))
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await rows(ui)).toEqual([`${TWICE}  ${tall}`, `${RUN}  ${fits}`, 'Dismiss'])
+
+  await press(ui, `run-${commandKey(tall)}`)
+  expect(runs).toHaveLength(0)
+  await press(ui, `run-${commandKey(tall)}`)
+  expect(runs).toEqual([['/bin/bash', '-c', tall]])
+})
+
+test('tallness is measured against the band as drawn: a command that fits beside its button at 80 columns but wraps past the band at 40 is one-press at 80 and two-press at 40', async ($, on) => {
+  const { runs, press } = engine(on)
+  const wide = `echo ${'x'.repeat(195)}`
+  const narrow = `echo ${'y'.repeat(195)}`
+
+  await $.turn.complete(turnDone(`Run \`! ${wide}\` then \`! ${narrow}\`.`))
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await rows(ui)).toEqual([`${RUN}  ${wide}`, `${RUN}  ${narrow}`, 'Dismiss'])
+  await press(ui, `run-${commandKey(wide)}`)
+  expect(runs).toEqual([['/bin/bash', '-c', wide]])
+
+  await ui.redraw({ ...BAND.props, bodyColumns: 40 })
+  expect(await rows(ui)).toEqual([`${TWICE}  ${narrow}`, 'Dismiss'])
+  await press(ui, `run-${commandKey(narrow)}`)
+  expect(runs).toHaveLength(1)
+  expect(await rows(ui)).toEqual([`${AGAIN}  ${narrow}`, 'Dismiss'])
+  await press(ui, `run-${commandKey(narrow)}`)
+  expect(runs).toEqual([['/bin/bash', '-c', wide], ['/bin/bash', '-c', narrow]])
+})
+
+test('a press is never looser than the button it was drawn as: a two-press button drawn narrow still only arms after the band is measured wide', async ($, on) => {
+  const { runs, press } = engine(on)
+  const cmd = `echo ${'y'.repeat(195)}`
+
+  await $.turn.complete(turnDone(`Run \`! ${cmd}\`.`))
+  const narrow = await $.ui.mount({ ...BAND, surface: 'terminal', props: { ...BAND.props, bodyColumns: 40 } })
+  expect(await rows(narrow)).toEqual([`${TWICE}  ${cmd}`, 'Dismiss'])
+  await $.ui.mount({ ...BAND, surface: 'terminal' })
+
+  await press(narrow, `run-${commandKey(cmd)}`)
+  expect(runs).toHaveLength(0)
+})
+
+test('a command that just ran with exit 0 is not listed again when the next answer quotes it; the answer after that may', async ($, on) => {
+  const { runs, press } = engine(on)
+
+  await $.turn.complete(turnDone(ANSWER))
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  await press(ui, RUN_LOGIN)
+  expect(runs).toHaveLength(1)
+
+  await $.turn.complete(turnDone('`! gcloud auth login` succeeded. Now run `! gh auth status`.'))
+  await ui.redraw()
+  expect(await rows(ui)).toEqual([`${RUN}  gh auth status`, 'Dismiss'])
+
+  await $.turn.complete(turnDone(ANSWER))
+  await ui.redraw()
+  expect(await rows(ui)).toEqual([`${RUN}  gh auth status`, `${RUN}  gcloud auth login`, 'Dismiss'])
+})
+
+test('a command that failed is listed again when the next answer quotes it, since a retry after a fix is legitimate', async ($, on) => {
+  const { runs, press } = engine(on, { exitCode: 1 })
+
+  await $.turn.complete(turnDone(ANSWER))
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  await press(ui, RUN_LOGIN)
+  expect(runs).toHaveLength(1)
+
+  await $.turn.complete(turnDone('That failed. Fix the config, then run `! gcloud auth login` again.'))
+  await ui.redraw()
+  expect(await rows(ui)).toEqual([`${RUN}  gcloud auth login`, 'Dismiss'])
+})
+
+test('arming clears on any other press, a typed prompt, a new answer and Dismiss', async ($, on) => {
+  const { runs, press } = engine(on, { deny: ['a'] })
+  const RUN_A = `run-${commandKey('a')}`
+  const RUN_B = `run-${commandKey('b')}`
+
+  await $.turn.complete(turnDone('Run `! a`, `! b` and `! c`.'))
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+
+  await press(ui, RUN_A)
+  expect(await rows(ui)).toEqual([`${AGAIN}  a`, `${RUN}  b`, `${RUN}  c`, 'Dismiss'])
+  await press(ui, RUN_B)
+  expect(runs).toEqual([['/bin/bash', '-c', 'b']])
+  expect(await rows(ui)).toEqual([`${TWICE}  a`, `${RUN}  c`, 'Dismiss'])
+
+  await press(ui, RUN_A)
+  await $.prompt.submit(typed('! c'))
+  await ui.redraw()
+  expect(await rows(ui)).toEqual([`${TWICE}  a`, 'Dismiss'])
+
+  await press(ui, RUN_A)
+  await $.turn.complete(turnDone('Run `! d`.'))
+  await ui.redraw()
+  expect(await rows(ui)).toEqual([`${TWICE}  a`, `${RUN}  d`, 'Dismiss'])
+
+  await press(ui, RUN_A)
+  await ui.press({ key: 'dismiss' })
+  await $.turn.complete(turnDone('Run `! a`.'))
+  await ui.redraw()
+  expect(await rows(ui)).toEqual([`${TWICE}  a`, 'Dismiss'])
+  expect(runs).toHaveLength(1)
+})
+
+test('command buttons carry no hotkey, so typing into a focused band never runs a command; Dismiss keeps x', async ($, on) => {
   engine(on, { deny: ['rm -rf build'] })
 
   await $.turn.complete(turnDone(ANSWER))
   await $.tool.check({ tool: 'Bash', input: { command: 'rm -rf build' }, tool_use_id: 'tu1' })
   const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
-  const drawn = JSON.stringify(await ui.drawn())
-  expect(drawn).toContain('"label":"▶ Run"}')
-  expect(drawn).toContain('"label":"✎ Fill","hotkey":"a"')
+  await ui.press({ key: `run-${commandKey('rm -rf build')}` })
+  const buttons = await ui.findAll({ type: 'Button' })
+  expect(buttons.map(b => [b.text, b.props.hotkey])).toEqual([[RUN, undefined], [AGAIN, undefined], ['Dismiss', 'x']])
 })
 
-test('a suggestion the permission rules deny at press time moves to Review and only fills', async ($, on) => {
-  const { runs, filled } = engine(on, { deny: ['gcloud auth login'] })
+test('a run whose prompt a hook drops tells the person the output did not reach Claude', async ($, on) => {
+  const { runs, toasts } = engine(on, { drop: 'blocked by policy' })
 
   await $.turn.complete(turnDone(ANSWER))
   const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
   await ui.press({ key: RUN_LOGIN })
-  expect(runs).toHaveLength(0)
-  expect(filled).toEqual(['! gcloud auth login'])
-  expect(await labels(ui)).toEqual(['✎ gcloud auth login', 'Dismiss'])
+  expect(runs).toHaveLength(1)
+  expect(toasts).toEqual([expect.stringContaining('did not reach Claude')])
 })
 
-test('a suggestion already denied this session never becomes a Run button', async ($, on) => {
-  engine(on, { deny: ['gcloud auth login'] })
-
-  await $.tool.check({ tool: 'Bash', input: { command: 'gcloud auth login' }, tool_use_id: 'tu1' })
-  await $.turn.complete(turnDone(ANSWER))
-  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
-  expect(await labels(ui)).toEqual(['✎ gcloud auth login', 'Dismiss'])
-})
-
-test('a suggestion too long to show in full goes to Review', async ($, on) => {
+test('a command too long to show in full is never listed, so a button never runs text it did not show', async ($, on) => {
   engine(on)
-  const long = `echo ${'x'.repeat(250)}`
+  const long = `echo ${'x'.repeat(9_000)}`
 
-  await $.turn.complete(turnDone(`Run \`! ${long}\`.`))
+  await $.turn.complete(turnDone(`Run \`! ${long}\` or \`! ls\`.`))
   const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
-  expect(await labels(ui)).toEqual([`✎ ${long}`, 'Dismiss'])
-})
-
-test('a failing command shows its exit code; ANSI output is cleaned for the band', async ($, on) => {
-  const esc = String.fromCodePoint(0x1b)
-  engine(on, { exitCode: 2, stdout: `${esc}[31mboom${esc}[0m\n` })
-
-  await $.turn.complete(turnDone(ANSWER))
-  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
-  await ui.press({ key: RUN_LOGIN })
-  expect(await ui.find({ type: 'Text', text: '✗ ! gcloud auth login  (exit 2)' })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: 'boom' })).toBeDefined()
-})
-
-test('filling a blocked command never overwrites a draft the person is typing', async ($, on) => {
-  const { filled } = engine(on, { draft: 'half-written question', deny: ['rm -rf build'] })
-
-  await $.tool.check({ tool: 'Bash', input: { command: 'rm -rf build' }, tool_use_id: 'tu1' })
-  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
-  await ui.press({ key: `fill-${commandKey('rm -rf build')}` })
-  expect(filled).toEqual([])
+  expect(await rows(ui)).toEqual([`${RUN}  ls`, 'Dismiss'])
 })
 
 test('a typed prompt clears the band; dismiss clears it too', async ($, on) => {
@@ -153,16 +557,16 @@ test('a typed prompt clears the band; dismiss clears it too', async ($, on) => {
 
   await $.turn.complete(turnDone(ANSWER))
   const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
-  expect(await labels(ui)).toHaveLength(2)
+  expect(await rows(ui)).toHaveLength(2)
 
   await $.prompt.submit(typed('done, continue'))
   await ui.redraw()
-  expect(await labels(ui)).toEqual([])
+  expect(await rows(ui)).toEqual([])
 
   await $.turn.complete(turnDone(ANSWER))
   await ui.redraw()
   await ui.press({ key: 'dismiss' })
-  expect(await labels(ui)).toEqual([])
+  expect(await rows(ui)).toEqual([])
 })
 
 test('sending one listed command drops only it; non-typed prompts keep the list', async ($, on) => {
@@ -173,11 +577,11 @@ test('sending one listed command drops only it; non-typed prompts keep the list'
 
   await $.prompt.submit({ text: 'background task done', wait: false, origin: { kind: 'task-notification' } })
   await ui.redraw()
-  expect(await labels(ui)).toEqual(['▶ a', '▶ b', 'Dismiss'])
+  expect(await rows(ui)).toEqual([`${RUN}  a`, `${RUN}  b`, 'Dismiss'])
 
   await $.prompt.submit(typed('! a'))
   await ui.redraw()
-  expect(await labels(ui)).toEqual(['▶ b', 'Dismiss'])
+  expect(await rows(ui)).toEqual([`${RUN}  b`, 'Dismiss'])
 })
 
 test('subagent answers and interrupted turns add nothing', async ($, on) => {
@@ -186,7 +590,7 @@ test('subagent answers and interrupted turns add nothing', async ($, on) => {
   await $.turn.complete(turnDone(ANSWER, 'agent-1'))
   await $.turn.complete({ ...turnDone(ANSWER), reason: 'aborted', isAborted: true })
   const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
-  expect(await labels(ui)).toEqual([])
+  expect(await rows(ui)).toEqual([])
 })
 
 test('a long chained command shows one step per line beside a short Run button', async ($, on) => {
@@ -198,5 +602,5 @@ test('a long chained command shows one step per line beside a short Run button',
   expect((await ui.findAll({ type: 'Code' })).map(c => c.text)).toEqual([
     'export T=$(gh auth token --user a);\n  gh pr ready 1 -R o/r &&\n  gh pr merge 1 -R o/r --merge',
   ])
-  expect(await labels(ui)).toEqual([`▶ ${cmd}`, 'Dismiss'])
+  expect(await rows(ui)).toEqual([`${RUN}  ${cmd}`, 'Dismiss'])
 })
