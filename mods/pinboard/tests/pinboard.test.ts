@@ -623,7 +623,6 @@ describe('parsePin drops the link classes the README lists', () => {
     'https://github.com/o/r/blob/main/sk_buff_helpers.c',
     'https://pypi.org/project/sk-learn-utilities/',
     'https://en.wikipedia.org/wiki/Token:Foo',
-    'https://h.example/a%20bad%20escape%ZZ',
   ]) {
     test(href, () => expect(parsePin(href)).toBeNull())
   }
@@ -636,6 +635,10 @@ describe('parsePin never stores a cut link', () => {
   test('a link whose encoded form passes 2048 characters is refused', () => {
     expect(parsePin(`https://example.com/${'é'.repeat(700)}`)).toBeNull()
     expect(parsePin(`https://example.com/a${'<'.repeat(700)}`)).toBeNull()
+  })
+  test('a link past 2048 characters as written is refused, even when only its dropped query is long', () => {
+    expect(parsePin(`https://example.com/x?q=${'a'.repeat(2100)}`)).toBeNull()
+    expect(parsePin(`https://example.com/x?q=${'a'.repeat(2000)}`)?.href).toBe('https://example.com/x')
   })
   test('a link at the cap is kept whole', () => {
     const href = `https://example.com/${'a'.repeat(2048 - 20)}`
@@ -760,5 +763,50 @@ describe('session start holds a stored board to the caps', () => {
     const ids = (value('board') as Pinboard).todos.map(t => t.id)
     expect(ids).toEqual(todos.map(t => t.id).filter(id => id !== 't10' && id !== 't60').slice(0, 50))
     expect(await $.tool.call({ tool: 'mcp__pinboard__update', done_todos: ['t1'] })).toEqual({ result: expect.stringContaining('t1 [x] "todo 1"') })
+  })
+})
+
+describe('parsePin decodes only valid escapes, and stops when a round leaves none', () => {
+  for (const href of [
+    'https://en.wikipedia.org/wiki/100%25_renewable_energy',
+    'https://shop.example/sale/100%25-off',
+    'https://example.com/a%25b',
+    'https://example.com/100%25-done',
+    'https://h.example/a%20bad%20escape%ZZ',
+    `https://example.com/a%${'25'.repeat(7)}41`,
+  ]) {
+    test(`${href} pins as written`, () => expect(parsePin(href)?.href).toBe(href))
+  }
+
+  test('a query secret behind a %25 chain of any depth from 0 to 30 is refused', () => {
+    const pinned = Array.from({ length: 31 }, (_, depth) => `%${'25'.repeat(depth)}`).flatMap(p => {
+      const href = `https://h.example/x${p}3Ftoken${p}3Dabc123`
+      return parsePin(href) ? [href] : []
+    })
+    expect(pinned).toEqual([])
+  })
+
+  test('a chain that needs more than 8 rounds to decode is refused, even when it hides nothing', () => {
+    expect(parsePin(`https://example.com/a%${'25'.repeat(8)}41`)).toBeNull()
+  })
+
+  test('a run of escapes that is not UTF-8 is refused', () => {
+    expect(parsePin('https://example.com/caf%C3')).toBeNull()
+    expect(parsePin('https://example.com/caf%C3%A9')?.href).toBe('https://example.com/caf%C3%A9')
+    expect(parsePin('https://example.com/a%2541%C3')).toBeNull()
+  })
+})
+
+describe('parsePin keeps a port beside a later @ in the path', () => {
+  test('the port stays in the stored link and its label', () => {
+    expect(parsePin('https://example.com:8443/package/@scope/pkg')).toEqual({
+      href: 'https://example.com:8443/package/@scope/pkg',
+      label: 'example.com:8443/package/@scope/pkg',
+    })
+  })
+
+  test('a secret in a link with a port is still refused, as written or encoded', () => {
+    expect(parsePin('https://example.com:8443/cart;jsessionid=ABC123')).toBeNull()
+    expect(parsePin('https://example.com:8443/@scope/x%3Ftoken%3Dabc123')).toBeNull()
   })
 })

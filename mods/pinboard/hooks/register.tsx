@@ -185,18 +185,24 @@ const fitLabel = (host: string, path: string): string => {
 const HREF_CAP = 2048
 const DECODE_ROUNDS = 8
 
+const ESCAPE = /%[0-9A-Fa-f]{2}/
+const ESCAPE_RUNS = /(?:%[0-9A-Fa-f]{2})+/g
+
 const decoded = (path: string): string | null => {
-  for (let round = 0; round < DECODE_ROUNDS; round++) {
-    let next: string
+  for (let round = 0; ESCAPE.test(path); round++) {
+    if (round === DECODE_ROUNDS) return null
     try {
-      next = decodeURIComponent(path)
+      path = path.replace(ESCAPE_RUNS, run => decodeURIComponent(run))
     } catch {
       return null
     }
-    if (next === path) return path
-    path = next
   }
-  return null
+  return path
+}
+
+const isClean = (text: string): boolean => {
+  const scrubbed = scrub(text, HREF_CAP)
+  return scrubbed.masked === 0 && scrubbed.text === text
 }
 
 export function parsePin(href: string): Pin | null {
@@ -211,13 +217,14 @@ export function parsePin(href: string): Pin | null {
   const isGithub = url.host === 'github.com'
   const anchor = isGithub && GITHUB_ANCHOR.test(url.hash) ? url.hash : ''
   const kept = url.origin + url.pathname + anchor
-  const stored = scrub(kept, HREF_CAP)
   const path = decoded(url.pathname)
-  if (stored.masked > 0 || stored.text !== kept || path === null || scrub(url.origin + path, HREF_CAP).masked > 0) return null
+  if (kept.length > HREF_CAP || path === null) return null
+  const portless = (shown: string) => `https://${url.hostname}${shown}${anchor}`
+  if (!isClean(portless(url.pathname)) || scrub(portless(path), HREF_CAP).masked > 0) return null
   const gh = isGithub ? GITHUB_ITEM.exec(url.pathname) : null
   const named = gh && scrub(`${gh[1]} ${gh[2] === 'pull' ? 'PR' : 'issue'} #${gh[3]}${anchor ? ' comment' : ''}`, LABEL_CAP)
   const label = named && named.masked === 0 ? named : scrub(fitLabel(url.host, url.pathname), LABEL_CAP)
-  return { href: stored.text, label: label.text }
+  return { href: kept as SafeText, label: label.text }
 }
 
 const pinsIn = (text: string): Pin[] => {
