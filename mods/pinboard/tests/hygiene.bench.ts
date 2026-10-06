@@ -9,6 +9,8 @@ const CALLS = 1000
 const BOARD_P99_RATIO = 3
 const BOARD_P99_MS = 1
 const SCRUB_P99_MS = 2
+const SHORT_BATCH = 100
+const SHORT_P99_US = 2
 
 const flag = process.argv.indexOf('--upstream')
 const upstreamDir = flag > 0 ? process.argv[flag + 1] : undefined
@@ -53,21 +55,28 @@ const CORPUS: Record<string, string> = {
   'sk- repeated': fill('sk-'),
   'eyJ- repeated': fill('eyJ-'),
   'scheme://u: repeated': fill('a://b:'),
-  'long word cut at 4096': 'a'.repeat(4094) + ' b' + 'c'.repeat(10),
+  'long word cut at 4096': 'a'.repeat(4094) + ' b' + 'c'.repeat(100),
+  'X1 a-a://b: past 4096': ('a-'.repeat(15) + 'a://b:').repeat(140),
+  'X2 eyJ- no 2nd dot': 'eyJ-'.repeat(64) + '.' + 'eyJ-'.repeat(1100),
+  'X3 NAME="A.. past 4096': ('A'.repeat(63) + '="' + 'A'.repeat(255)).repeat(14),
   'password: " unclosed': 'password: "' + 'x '.repeat(2100),
   'password= then masks': fill('password=[masked]x '),
   'NFKC fullwidth =': fill('password\uFF1D'),
 }
+
+const SHORT = ['git', 'src/app.ts', 'h.example', 'packages/web/src/components/Board.tsx:42', 'npm test', 'Bash']
 
 const percentile = (sorted: number[], p: number) => sorted[Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length))] ?? 0
 const summary = (samples: number[]) => {
   const sorted = [...samples].sort((a, b) => a - b)
   return { p50: percentile(sorted, 50), p99: percentile(sorted, 99) }
 }
+let sink = 0
 const timed = (fn: () => unknown, into: number[]) => {
   const start = performance.now()
-  fn()
+  const out = fn()
   into.push(performance.now() - start)
+  sink += typeof out === 'string' ? out.length : 1
 }
 
 const sides = { upstream: [] as number[], head: [] as number[] }
@@ -82,6 +91,15 @@ const scrubbed: Record<string, number[]> = Object.fromEntries(Object.keys(CORPUS
 for (let round = 0; round < ROUNDS; round++) {
   for (let call = 0; call < CALLS; call++) {
     for (const [name, input] of Object.entries(CORPUS)) timed(() => scrub(input, 200), scrubbed[name]!)
+  }
+}
+
+const short: number[] = []
+for (let round = 0; round < ROUNDS; round++) {
+  for (let call = 0; call < CALLS / 10; call++) {
+    const start = performance.now()
+    for (let i = 0; i < SHORT_BATCH; i++) sink += scrub(SHORT[i % SHORT.length], 200).text.length
+    short.push(((performance.now() - start) / SHORT_BATCH) * 1000)
   }
 }
 
@@ -102,6 +120,16 @@ for (const [name, samples] of Object.entries(scrubbed)) {
   if (s.p99 > SCRUB_P99_MS) failures.push(`scrub p99 for "${name}" is over ${SCRUB_P99_MS} ms`)
 }
 
+const shortSummary = summary(short)
+console.log(`scrub(input, 200) on short tool details, ${SHORT_BATCH} calls per sample, per call`)
+console.log(`  p50 ${shortSummary.p50.toFixed(3)} us  p99 ${shortSummary.p99.toFixed(3)} us`)
+if (shortSummary.p99 > SHORT_P99_US) failures.push(`scrub p99 per call on short text is over ${SHORT_P99_US} us`)
+
+const lines = (text: string) => text.split('\n').length
+if (lines(head.describeBoard(board)) !== 71 || lines(upstream.describeBoard(board)) !== 71) failures.push('describeBoard did not write one line per item under a header')
+if (scrub('rotate creds password=hunter2 AKIAABCDEFGHIJKLMNOP', 200).text !== 'rotate creds password=[masked] [masked]') failures.push('scrub did not mask the canary')
+for (const [name, input] of Object.entries(CORPUS)) if (/hunter2|AKIA[A-Z0-9]{16}/.test(scrub(input, 200).text)) failures.push(`scrub leaked on "${name}"`)
+console.log(`work: ${sink} characters produced`)
 console.log(failures.length === 0 ? 'PASS' : `FAIL\n${failures.map(f => `  ${f}`).join('\n')}`)
 process.exit(failures.length === 0 ? 0 : 1)
 

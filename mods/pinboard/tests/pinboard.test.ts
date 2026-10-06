@@ -65,6 +65,12 @@ describe('board', () => {
     )
   })
 
+  test('each scrubbed item reads as its JSON string, whatever characters the raw text held', () => {
+    const texts = ['plain', 'say "hi"', 'C:\\path', 'tab\t', 'bell\u0007', 'emoji \uD83D\uDE00', 'lone\uD800', 'del\u007F', 'line\u2028']
+    const board = apply(EMPTY, { add_todos: texts })
+    expect(describeBoard(board).split('\n').slice(1)).toEqual(board.todos.map(t => `${t.id} [ ] ${JSON.stringify(t.text)}`))
+  })
+
   test('texts are scrubbed and capped at 200 characters', () => {
     const parsed = parseUpdate({ add_todos: ['rotate password=hunter2', 'x'.repeat(500)] })
     expect(parsed.ok && parsed.update.add_todos).toEqual(['rotate password=[masked]', `${'x'.repeat(199)}…`])
