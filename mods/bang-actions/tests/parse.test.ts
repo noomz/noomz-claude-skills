@@ -86,6 +86,11 @@ describe('drawnRows', () => {
     expect(drawnRows(`a; echo ${'x'.repeat(115)}`, 50)).toBe(4)
   })
 
+  test('a character outside ASCII counts two cells, so wide glyphs never under-count rows', () => {
+    const wide = String.fromCodePoint(0x65e5).repeat(30)
+    expect(drawnRows(`echo ${wide}`, 50)).toBe(2)
+  })
+
   test('a band with no room left for code counts one cell per row, never zero rows', () => {
     expect(drawnRows('echo x', 0)).toBe(6)
     expect(drawnRows('echo x', -20)).toBe(6)
