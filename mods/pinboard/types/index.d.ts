@@ -1,8 +1,12 @@
-export type Todo = { id: string; text: string; isDone: boolean; isActive?: boolean }
+export type SafeText = string & { readonly __safe: true }
 
-export type Decision = { id: string; text: string }
+export type Hygiene = { masked: number; rejected: number }
 
-export type Pin = { href: string; label: string }
+export type Todo = { id: string; text: SafeText; isDone: boolean; isActive?: boolean }
+
+export type Decision = { id: string; text: SafeText }
+
+export type Pin = { href: SafeText; label: SafeText }
 
 declare module 'claude-code' {
   interface PluginState {
@@ -10,6 +14,7 @@ declare module 'claude-code' {
       decisions: Decision[]
       todos: Todo[]
       links: Pin[]
+      hygiene: Hygiene
     }
   }
 }
