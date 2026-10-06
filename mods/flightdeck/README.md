@@ -99,7 +99,44 @@ Seeing is not keeping. Each row below is a claim a test in [`tests/`](tests) che
 
 The canary tests in [`tests/canary.test.tsx`](tests/canary.test.tsx) push secrets through every place flightdeck reads text. They read every stored value and every drawn string in each layout, on the terminal and desktop surfaces. No secret, prompt or answer text, ESC or bidi character survives, and no field passes its cap.
 
-`scrub()` masks key-value secrets (`password=`, `api_key:`, `aws_secret_access_key`, `token`), `Authorization` and `Bearer` values, URL credentials and secret query values, `-u user:pass` and `--token` flags, secret environment variables, PEM private keys, JWTs, AWS key ids, GitHub and Slack tokens, `sk-` style API keys and Slack webhooks. [`tests/hygiene.test.ts`](tests/hygiene.test.ts) holds a case for each. Masking is by pattern. A secret with no key name and no known token shape can survive in the two places that keep words: an architect's advice line and an agent's description. `/flightdeck audit` shows how much text that is.
+`scrub()` replaces each secret with `[masked]` and keeps the key name. Each secret is masked once and counted once, and scrubbing a scrubbed text changes nothing. Compatibility characters read as the plain characters they show, so a fullwidth `＝` is `=`. [`tests/hygiene.test.ts`](tests/hygiene.test.ts) holds a case for each rule:
+
+- every character upstream `redact()` hides. Its pattern table, from [scasella/claude-flightdeck](https://github.com/scasella/claude-flightdeck) at `f31daca`, runs inside `scrub()` in its own order, on the text as received and again on the cleaned line, so a compatibility reading or a removed invisible character never moves a secret out of it. Its URL pattern is rewritten to run in linear time with the same matches. An input `•` or `[masked]` that it would hide stays as the same glyph and is not counted.
+- any value after `password`, `passwd`, `pwd`, `passphrase`, `token` or `secret` and `=` or `:`, such as `password = hunter2` and `token: abc`. After `=` or `:` a value is the text up to the next space, whatever it holds. A run with no letter or digit, or the word `is`, carries on to the next run, so `password: => hunter2` masks `=> hunter2`.
+- any value after a key name such as `api_key`, `access_token` or `client_secret` and a separator, after the `--token`, `--password`, `--api-key` and `--secret` flags, and after `Authorization:` or `Authorization=`. With `Authorization: token`, the word `token` and the value are one mask.
+- any value after `=` or `:` and a name whose last `_` or `-` part is `PASS` or `PAT` in any case, such as `DB_PASS: hunter2`, `"DB_PASS": "hunter2"`, `db_pass=hunter2` and `GH_PAT: abc123`
+- a value after another separator (`->`, `-`, `–`, `→`), after `is`, `was` or `to`, after `for` and at most three words and then one of those, or after a space, such as `password -> hunter2`, `my password is hunter2`, `set the DB password to hunter2` and `password for admin is hunter2`, when the value holds a letter or digit and also a digit, a symbol or 20 characters. The same holds for a value after `api key`, `access key`, `secret key` or `private key` and any separator, such as `API key is abc123def456`, and after a bare `pass` and `=` or `:`. The signs `.`, `,`, `;`, `:`, `!`, `?`, `'`, `"`, `(`, `)`, `[` and `]` count as a symbol only between two letters, as in `Sun!shine`, and a final `!` after a letter counts too, as in `Sunshine!`. So `add password validation`, `password -> strength meter` and `Should we enforce password rotation?` stay as written.
+- quoted values of any length, closed or not: straight, doubled and tripled quotes and backticks, escaped quotes such as `\"`, and `“”`, `‘’`, `„“`, `‚‘`, `«»`, `‹›`, `「」` and `『』`. The text inside is masked and the quotes stay unless `redact()` hides them too, so JSON `"password":"hunter2"` reads `"password":"[masked]"` and `password="hunter2"` reads `password=[masked]`.
+- AWS secret keys and `AKIA` key ids
+- JWTs, and PEM and PGP private key blocks, encrypted ones included
+- GitHub, Slack and `sk-`/`pk-`/`rk-` style tokens
+- bearer tokens: any 8 token characters after `Bearer`, or a shorter value with a digit or a symbol
+- passwords in URLs, an empty user name included, such as `redis://:p4ssw0rd@cache:6379`, and secret query values (`key`, `sig`, `signature`, `token`, `X-Amz-Signature`, `code`, session ids)
+- Slack and Discord webhook URLs in any case, with `www.` or a trailing dot on the host, and `curl -u user:pass` in any quoting (not a numeric `-u 1000:1000`)
+- the password after `-p` in a `sshpass` or `login` command, such as `docker login -u admin -p Pa55w0rd!`, and glued to `-p` in a `mysql` or `mariadb` command, such as `mysql -u root -phunter2`
+- environment variables whose names end in `KEY`, `TOKEN`, `SECRET` or `PASSWORD`, or hold one of those or `PAT` or `PASS` as an `_`-separated part, so `KEYBOARD=us` stays as written
+
+A blank filler such as `ㅤ` (U+3164) is read both as a space and as nothing, and a value either reading shows is masked, so `passwordㅤhunter2` and `passㅤword=s3cret` are both caught. Each field is cut to its cap at the longest start that does not end inside a mask or show part of a secret, so a longer cap never shows less. A final `…` reads as a cut mark and stays outside any mask.
+
+Masking works by pattern. A secret it misses can survive in the two places that keep words, an architect's advice line and an agent's description. The tests pin these misses:
+
+- a secret with no key name or known shape, such as `the creds are hunter2`
+- short forms such as `pw=hunter2`, and a value after a doubled or unknown separator, such as `password--hunter2` and `password >> hunter2`
+- a letters-only password whose only sign is a final `.`, `,`, `;`, `:` or `?`, such as `password -> Hunter?` and `my password is Sunshine.`
+- a value after `Bearer:` with a colon, a Slack webhook path written without `https://`, such as `hooks.slack.com/services/...`, and a token with an unknown prefix after `token` and a space, such as `token ghx_abc123def456`
+- a `for` clause of more than three words before `is`, such as `the password for the old admin account is hunter2`
+- a short letters-only password after a space or `is`, such as `my password is sunshine`
+- a key name spelled with look-alike letters from another script, such as a Cyrillic `р` in `password`
+- a value after a symbol that is not a separator, such as `password ⇒ hunter2`
+- a control or format character between a key and its value, such as a NUL, U+0001, DEL, U+202E or U+FEFF in `password` NUL `hunter2xyz`. Removing it joins the two into `passwordhunter2xyz`, and nothing is masked. Upstream `redact()` does not mask these either.
+- a NEL (U+0085) or other line break inside a key name, which splits it, so `pass` NEL `word=hunter2x` reads `pass word=hunter2x`
+- the rest of a value glued to `-p` after a quoted part, so `mysql -p"hun"ter2` reads `mysql -p"[masked]"ter2` and shows `ter2`, and `sshpass -p "hun"ter2` shows `ter2` the same way
+- the rest of a value after a run of five or more dashes inside it, so `DB_PASS=x-----y` shows `-----y`. A value that starts with dashes, such as `DB_PASS=-----S3cure!`, is masked whole.
+- an input `•` or `[masked]` where `redact()` would hide a value, which stays as the same glyph and is not counted, so `https://u:•@h then password=x` reads `https://u:•@h then password=[masked]`
+- every word after the first of a value in brackets, such as `password: (correct horse9)`, which shows `horse9)`
+- a value after a symbol that reads as letters, such as `password: ⒜ hunter2`: compatibility reading turns `⒜` into `(a)`, which is masked as the value. The same reading catches key names spelled in such letters, such as `ⓟⓐⓢⓢⓦⓞⓡⓓ=hunter2`.
+
+Some text is masked that holds no secret. `scrub()` masks every character upstream `redact()` masked, so a word after `token:`, `secret:`, `Authorization:`, `Bearer` or a secret flag is masked, as in `Add --token flag`, `Add Bearer authentication`, `Return 401 when Authorization: header is missing`, `Document the token: field` and `secret: none here`. The same parity masks a separator typed after `=` or `:` together with its value (`password == hunter2` reads `password =[masked]`), a key word that follows `password:` along with its own value (`password: secret: hunter2` shows two masks), the rest of a query after `token=` (`?token=abc&state=xyz` reads `?token=[masked]`), the port and path before a later `@` in a URL (`https://example.com:8443/package/@scope/pkg` reads `https://example.com:[masked]@scope/pkg`), and an `-----END` armor glued to a token-shaped run. An empty quoted value carries on to the next word, so `password: "" (none)` masks `(none)`. A query key typed as prose masks the next word, so `Deprecate the ?api_key= query param` masks `query`, and `docs;key=value` masks `value`. A final `!` after a word reads as a password sign, so `Rotate the password now!` masks `now!`. Other over-masks are `?code=python`, `PASSWORD_MIN_LENGTH=12`, `docker run -u $(id -u):$(id -g)`, a variable whose name only ends in `KEY` such as `MONKEY=banana`, and a name that starts like a token such as `sk-learn-pipeline` or `pk_live_handler_name`. `/flightdeck audit` shows how much text flightdeck holds.
 
 State lives in `$.state` for the session. `/flightdeck reset`, `/clear` and a resume empty every text field and the masked count; `/flightdeck audit` then reports 0 stored text fields. State written by an older version of flightdeck is reset when a session starts, because none of it went through `scrub()`.
 
@@ -150,7 +187,7 @@ In `/config`, or under `pluginConfigs["flightdeck"].options` in `settings.json`:
 | [`hooks/hygiene.ts`](hooks/hygiene.ts) | `scrub()`, the one gate session text passes through; a byte-identical copy of the pinboard mod's |
 | [`hooks/rail.tsx`](hooks/rail.tsx), [`hooks/elapsed.tsx`](hooks/elapsed.tsx) | surface modules: animated connectors and live clocks that redraw only themselves, on the surface's own frame clock |
 | [`types/index.d.ts`](types/index.d.ts) | the state contract; every field that holds session text is typed `SafeText` |
-| [`tests/`](tests) | 78 tests: the canary, `scrub()`'s cases, pure behaviour, and drawings mounted on every surface at 40–120 columns |
+| [`tests/`](tests) | the canary, `scrub()`'s cases, pure behaviour, and drawings mounted on every surface at 40–120 columns |
 
 New to mods? Start with [Claude Code mods](https://claude.com/blog/claude-code-mods) and [Getting started with Claude Code mods](https://claude.dev/blog/getting-started-with-claude-code-mods/).
 
