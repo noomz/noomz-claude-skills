@@ -59,7 +59,14 @@ describe('mergeCommands', () => {
   test('never lists a command too long to show in full', () => {
     const fits = `echo ${'x'.repeat(MAX_SHOWN_CHARS - 5)}`
     const tooLong = `echo ${'x'.repeat(MAX_SHOWN_CHARS - 4)}`
-    expect(mergeCommands([], [run(tooLong), run(fits)])).toEqual([run(fits)])
+    expect(mergeCommands([], [run(tooLong), run(fits)]).map(s => s.cmd)).toEqual([fits])
+  })
+
+  test('a single step that wraps past MAX_SHOWN_LINES rows enters as two-press; one that wraps within them stays one-press', () => {
+    const wraps = `echo ${'x'.repeat(1_995)}`
+    const fits = `echo ${'x'.repeat(115)}`
+    expect(displayCommand(wraps).split('\n')).toHaveLength(1)
+    expect(mergeCommands([], [run(wraps), run(fits)])).toEqual([confirm(wraps), run(fits)])
   })
 
   test('a command the band draws over MAX_SHOWN_LINES lines enters as two-press', () => {

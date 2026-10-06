@@ -78,7 +78,7 @@ function engine(on: On, {
     await clock.advance(DEBOUNCE_MS)
     await ui.press({ key })
   }
-  return { runs, submitted, filled, toasts, deny, clock, press }
+  return { runs, submitted, filled, toasts, deny, rejects, clock, press }
 }
 
 type Found = { text?: string }
@@ -223,7 +223,7 @@ test('a second press within the debounce window is ignored, for every gate, so a
   await ui.press({ key: RUN_A })
   expect(await rows(ui)).toEqual([`${TWICE}  a`, 'Dismiss'])
 
-  await clock.advance(1)
+  await clock.advance(DEBOUNCE_MS)
   await ui.press({ key: RUN_A })
   expect(await rows(ui)).toEqual([`${AGAIN}  a`, 'Dismiss'])
   await ui.press({ key: RUN_A })
@@ -233,6 +233,141 @@ test('a second press within the debounce window is ignored, for every gate, so a
   await clock.advance(DEBOUNCE_MS)
   await ui.press({ key: RUN_A })
   expect(runs).toEqual([['/bin/bash', '-c', 'b'], ['/bin/bash', '-c', 'a']])
+})
+
+test('a held key never gets past a two-press button, and runs a one-press command exactly once: every press restarts the debounce window', async ($, on) => {
+  const { runs, clock } = engine(on, { deny: ['a'] })
+  const RUN_A = `run-${commandKey('a')}`
+  const RUN_B = `run-${commandKey('b')}`
+  const REPEAT_MS = 30
+  const repeats = Math.ceil((DEBOUNCE_MS + 100) / REPEAT_MS) + 1
+  const hold = async (ui: Pressable, key: string) => {
+    await ui.press({ key })
+    for (let i = 0; i < repeats; i++) {
+      await clock.advance(REPEAT_MS)
+      await ui.press({ key })
+    }
+  }
+
+  await $.turn.complete(turnDone('Run `! a` and `! b`.'))
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+
+  await hold(ui, RUN_A)
+  expect(runs).toHaveLength(0)
+  expect(await rows(ui)).toEqual([`${AGAIN}  a`, `${RUN}  b`, 'Dismiss'])
+
+  await clock.advance(DEBOUNCE_MS)
+  await ui.press({ key: RUN_B })
+  expect(runs).toEqual([['/bin/bash', '-c', 'b']])
+  for (let i = 0; i < repeats; i++) {
+    await clock.advance(REPEAT_MS)
+    await ui.press({ key: RUN_A })
+  }
+  expect(runs).toHaveLength(1)
+  expect(await rows(ui)).toEqual([`${TWICE}  a`, 'Dismiss'])
+})
+
+test('a press whose row Dismiss or a typed prompt cleared during the check never runs, even when the check allows it', async ($, on) => {
+  const { runs, toasts, clock, press } = engine(on, { checkDelayMs: 10 })
+
+  const answered = $.turn.complete(turnDone('Run `! a` and `! b`.'))
+  await clock.advance(10)
+  await answered
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+
+  const dismissed = press(ui, `run-${commandKey('a')}`)
+  await clock.settle()
+  await ui.press({ key: 'dismiss' })
+  await clock.advance(10)
+  await dismissed
+  expect(runs).toHaveLength(0)
+
+  const relisted = $.turn.complete(turnDone('Run `! a` and `! b`.'))
+  await clock.advance(10)
+  await relisted
+  await ui.redraw()
+  const typedOver = press(ui, `run-${commandKey('b')}`)
+  await clock.settle()
+  await $.prompt.submit(typed('never mind'))
+  await clock.advance(10)
+  await typedOver
+  expect(runs).toHaveLength(0)
+  expect(toasts).toEqual([])
+  await ui.redraw()
+  expect(await rows(ui)).toEqual([])
+})
+
+test('a command armed, pushed out of the list, then listed again is born two-press: one press does not run it', async ($, on) => {
+  const { runs, press } = engine(on, { deny: ['a', 'c1', 'c2', 'c3', 'c4', 'c5'] })
+  const RUN_A = `run-${commandKey('a')}`
+
+  await $.turn.complete(turnDone('Run `! a`.'))
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  await press(ui, RUN_A)
+  expect(await rows(ui)).toEqual([`${AGAIN}  a`, 'Dismiss'])
+
+  for (const cmd of ['c1', 'c2', 'c3', 'c4', 'c5']) {
+    await $.tool.check({ tool: 'Bash', input: { command: cmd }, tool_use_id: `tu-${cmd}` })
+  }
+  await ui.redraw()
+  expect((await rows(ui)).some(r => r.endsWith('  a'))).toBe(false)
+
+  await $.tool.check({ tool: 'Bash', input: { command: 'a' }, tool_use_id: 'tu-a' })
+  await ui.redraw()
+  expect(await rows(ui)).toContain(`${TWICE}  a`)
+  await press(ui, RUN_A)
+  expect(runs).toHaveLength(0)
+  expect(await rows(ui)).toContain(`${AGAIN}  a`)
+})
+
+test('a command a hook denied on the model\'s call stays two-press for the session: a typed prompt and a later allowing query do not lift it', async ($, on) => {
+  const { runs, press } = engine(on, { denyCalls: ['sudo make install'] })
+  const key = `run-${commandKey('sudo make install')}`
+
+  await $.tool.check({ tool: 'Bash', input: { command: 'sudo make install' }, tool_use_id: 'tu1' })
+  await $.prompt.submit(typed('try something else'))
+  await $.turn.complete(turnDone('Run `! sudo make install` yourself.'))
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await rows(ui)).toEqual([`${TWICE}  sudo make install`, 'Dismiss'])
+
+  await press(ui, key)
+  expect(runs).toHaveLength(0)
+  expect(await rows(ui)).toEqual([`${AGAIN}  sudo make install`, 'Dismiss'])
+})
+
+test('a run that exits 0 while the next answer\'s checks are pending is still left out of that answer\'s suggestions', async ($, on) => {
+  const { runs, clock } = engine(on, { deny: ['gcloud auth login'], checkDelayMs: 10 })
+
+  const first = $.turn.complete(turnDone(ANSWER))
+  await clock.advance(10)
+  await first
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  await ui.press({ key: RUN_LOGIN })
+  expect(await rows(ui)).toEqual([`${AGAIN}  gcloud auth login`, 'Dismiss'])
+
+  await clock.advance(DEBOUNCE_MS)
+  const second = $.turn.complete(turnDone('`! gcloud auth login` is next, then `! gh auth status`.'))
+  await clock.settle()
+  await ui.press({ key: RUN_LOGIN })
+  expect(runs).toEqual([['/bin/bash', '-c', 'gcloud auth login']])
+  await clock.advance(10)
+  await second
+  await ui.redraw()
+  expect(await rows(ui)).toEqual([`${RUN}  gh auth status`, 'Dismiss'])
+})
+
+test('a press-time check that fails tightens the command to two-press with the toast, as a denial does', async ($, on) => {
+  const { runs, toasts, rejects, press } = engine(on)
+
+  await $.turn.complete(turnDone(ANSWER))
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await rows(ui)).toEqual([`${RUN}  gcloud auth login`, 'Dismiss'])
+
+  rejects.push('gcloud auth login')
+  await press(ui, RUN_LOGIN)
+  expect(runs).toHaveLength(0)
+  expect(toasts).toEqual([expect.stringContaining('press twice')])
+  expect(await rows(ui)).toEqual([`${TWICE}  gcloud auth login`, 'Dismiss'])
 })
 
 test('a command taller than the band can show enters as two-press, since one press would run steps the person never saw', async ($, on) => {
