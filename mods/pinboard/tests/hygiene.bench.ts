@@ -1,6 +1,7 @@
 declare const process: { argv: string[]; exit(code: number): never }
 declare const console: { log(...items: unknown[]): void; error(...items: unknown[]): void }
 declare const Bun: {
+  nanoseconds(): number
   plugin(spec: { setup(build: { module(id: string, load: () => { exports: Record<string, unknown>; loader: 'object' }): void }): void }): void
 }
 
@@ -9,8 +10,7 @@ const CALLS = 1000
 const BOARD_P99_RATIO = 3
 const BOARD_P99_MS = 1
 const SCRUB_P99_MS = 2
-const SHORT_BATCH = 100
-const SHORT_P99_US = 2
+const SHORT_P99_US = 5
 
 const flag = process.argv.indexOf('--upstream')
 const upstreamDir = flag > 0 ? process.argv[flag + 1] : undefined
@@ -46,6 +46,7 @@ const board: Board = {
 }
 
 const fill = (unit: string) => unit.repeat(Math.ceil(4096 / unit.length)).slice(0, 4096)
+const ending = (text: string) => text.slice(0, 4090) + ' tail'
 const CORPUS: Record<string, string> = {
   'normal prose': fill('Plan four steps to add a health check route, track them on the pinboard, and start the first. '),
   'a x4096': 'a'.repeat(4096),
@@ -56,9 +57,20 @@ const CORPUS: Record<string, string> = {
   'eyJ- repeated': fill('eyJ-'),
   'scheme://u: repeated': fill('a://b:'),
   'long word cut at 4096': 'a'.repeat(4094) + ' b' + 'c'.repeat(100),
-  'X1 a-a://b: past 4096': ('a-'.repeat(15) + 'a://b:').repeat(140),
-  'X2 eyJ- no 2nd dot': 'eyJ-'.repeat(64) + '.' + 'eyJ-'.repeat(1100),
-  'X3 NAME="A.. past 4096': ('A'.repeat(63) + '="' + 'A'.repeat(255)).repeat(14),
+  'X1 a-a://b:': ending(('a-'.repeat(15) + 'a://b:').repeat(140)),
+  'X2 eyJ- no 2nd dot': ending('eyJ-'.repeat(64) + '.' + 'eyJ-'.repeat(1100)),
+  'X3 NAME="A..': ending(('A'.repeat(63) + '="' + 'A'.repeat(255)).repeat(14)),
+  'KEY_ x1024': 'KEY_'.repeat(1024),
+  'PASS_ x819': 'PASS_'.repeat(819),
+  'TOKEN_ x682': 'TOKEN_'.repeat(682),
+  'SECRET_ x585': 'SECRET_'.repeat(585),
+  'API_KEY=x x409': fill('API_KEY=x '),
+  '?token=a&sig=b& x273': fill('?token=a&sig=b&'),
+  'password=a&b x341': fill('password=a&b'),
+  'scheme x. then ://': ending('x.'.repeat(2000) + '://h:' + 'y'.repeat(80)),
+  'url creds x512': fill('a://b:c@'),
+  'filler mix': fill('password\u3164x9 pass\u3164word=a '),
+  'secrets mix': fill('rotate password=hunter2 AKIAABCDEFGHIJKLMNOP now '),
   'password: " unclosed': 'password: "' + 'x '.repeat(2100),
   'password= then masks': fill('password=[masked]x '),
   'NFKC fullwidth =': fill('password\uFF1D'),
@@ -73,11 +85,11 @@ const summary = (samples: number[]) => {
   return { p50: percentile(sorted, 50), p99: percentile(sorted, 99) }
 }
 let sink = 0
-const timed = (fn: () => unknown, into: number[]) => {
+const timed = (fn: () => string, into: number[]) => {
   const start = performance.now()
   const out = fn()
   into.push(performance.now() - start)
-  sink += typeof out === 'string' ? out.length : 1
+  sink += out.length
 }
 
 const sides = { upstream: [] as number[], head: [] as number[] }
@@ -91,16 +103,16 @@ for (let round = 0; round < ROUNDS; round++) {
 const scrubbed: Record<string, number[]> = Object.fromEntries(Object.keys(CORPUS).map(name => [name, []]))
 for (let round = 0; round < ROUNDS; round++) {
   for (let call = 0; call < CALLS; call++) {
-    for (const [name, input] of Object.entries(CORPUS)) timed(() => scrub(input, 200), scrubbed[name]!)
+    for (const [name, input] of Object.entries(CORPUS)) timed(() => scrub(input, 200).text, scrubbed[name]!)
   }
 }
 
 const short: number[] = []
 for (let round = 0; round < ROUNDS; round++) {
-  for (let call = 0; call < CALLS / 10; call++) {
-    const start = performance.now()
-    for (let i = 0; i < SHORT_BATCH; i++) sink += scrub(SHORT[i % SHORT.length], 200).text.length
-    short.push(((performance.now() - start) / SHORT_BATCH) * 1000)
+  for (let call = 0; call < CALLS; call++) {
+    const start = Bun.nanoseconds()
+    sink += scrub(SHORT[call % SHORT.length], 200).text.length
+    short.push((Bun.nanoseconds() - start) / 1000)
   }
 }
 
@@ -122,14 +134,19 @@ for (const [name, samples] of Object.entries(scrubbed)) {
 }
 
 const shortSummary = summary(short)
-console.log(`scrub(input, 200) on short tool details, ${SHORT_BATCH} calls per sample, per call`)
+console.log(`scrub(input, 200) on short tool details, timed per call`)
 console.log(`  p50 ${shortSummary.p50.toFixed(3)} us  p99 ${shortSummary.p99.toFixed(3)} us`)
 if (shortSummary.p99 > SHORT_P99_US) failures.push(`scrub p99 per call on short text is over ${SHORT_P99_US} us`)
 
-const lines = (text: string) => text.split('\n').length
-if (lines(head.describeBoard(board)) !== 71 || lines(upstream.describeBoard(board)) !== 71) failures.push('describeBoard did not write one line per item under a header')
+const [header, ...items] = head.describeBoard(board).split('\n')
+const QUOTED_ITEM = /^(?:t\d+ \[[ x>]\]|d\d+ \[\?\]) "[^"\\]*"$/
+if (!header?.startsWith('Pinboard (') || items.length !== 70 || !items.every(line => QUOTED_ITEM.test(line))) failures.push('describeBoard did not write one JSON-quoted line per item under the header')
+if (upstream.describeBoard(board).split('\n').length !== 71) failures.push('upstream describeBoard changed shape')
 if (scrub('rotate creds password=hunter2 AKIAABCDEFGHIJKLMNOP', 200).text !== 'rotate creds password=[masked] [masked]') failures.push('scrub did not mask the canary')
-for (const [name, input] of Object.entries(CORPUS)) if (/hunter2|AKIA[A-Z0-9]{16}/.test(scrub(input, 200).text)) failures.push(`scrub leaked on "${name}"`)
+for (const [name, input] of Object.entries(CORPUS)) {
+  for (const cap of [200, 4096]) if (/hunter2|AKIA[A-Z0-9]{16}/.test(scrub(input, cap).text)) failures.push(`scrub leaked on "${name}" at cap ${cap}`)
+}
+if (scrub(CORPUS['secrets mix']!, 4096).masked < 100) failures.push('the secrets row did not reach the masking rules')
 console.log(`work: ${sink} characters produced`)
 console.log(failures.length === 0 ? 'PASS' : `FAIL\n${failures.map(f => `  ${f}`).join('\n')}`)
 process.exit(failures.length === 0 ? 0 : 1)
