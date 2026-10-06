@@ -11,10 +11,10 @@ const RLO = String.fromCodePoint(0x202e)
 const JWT = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2ln'
 const PROMPT = 'password=hunter2 aws_secret_access_key ABCDEFGHIJKLMNOPQRST'
 const ANSWER = 'All set, the key is sk-ant-api03-AAAAAAAAAAAAAAAAAAAA and the ANSWERMARK'
-const ADVICE = 'Use ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA then ADVICEMARK'
+const ADVICE = 'Use ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA, sk-abcdefghijklmnop and pk_live_abcdefghijklmnop then ADVICEMARK'
 const COMMAND = 'curl -u admin:s3cr3t https://h.example/x?sig=abc'
 
-const SECRETS = ['hunter2', 'ABCDEFGHIJKLMNOPQRST', 'eyJhbGciOiJIUzI1NiJ9', 'eyJzdWIiOiIxIn0', 'sk-ant-', 'ghp_', 's3cr3t', 'sig=abc']
+const SECRETS = ['hunter2', 'ABCDEFGHIJKLMNOPQRST', 'eyJhbGciOiJIUzI1NiJ9', 'eyJzdWIiOiIxIn0', 'sk-ant-', 'ghp_', 's3cr3t', 'sig=abc', 'abcdefghijklmnop']
 const SESSION_TEXT = ['aws_secret_access_key', 'All set', 'ANSWERMARK', 'admin:', 'h.example/x']
 const HIDDEN = /[\u001b\u009b\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/
 
