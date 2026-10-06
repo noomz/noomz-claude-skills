@@ -89,15 +89,16 @@ When documenting a CLI, **always verify command syntax against live `<tool> help
 
 ## Versioning and releases
 
-Every substantive change to a skill bumps `skills/<name>/.claude-plugin/plugin.json`'s `version` field. Semver — patch for fixes/doc tweaks, minor for new commands/features, major for breaking changes to user-facing commands or frontmatter.
+Every substantive change to a skill or mod bumps its `.claude-plugin/plugin.json` `version` field. Semver — patch for fixes/doc tweaks, minor for new commands/features, major for breaking changes to user-facing commands or frontmatter.
 
-Users update their installed plugin with:
+Users update an installed plugin in three steps, from a terminal or as `! ` commands in Claude Code:
 ```
-/plugin marketplace update noomz-claude-skills
-/reload-plugins
+claude plugin marketplace update noomz-claude-skills
+claude plugin update <name>@noomz-claude-skills
 ```
+Then restart Claude Code.
 
-Note: `/plugin update <name>@<marketplace>` is **not** a real command — it fails silently. Always direct users through marketplace update → reload.
+A marketplace update only refreshes the catalog: the installed copy stays on its old version, and `/reload-plugins` reloads that old version. bang-actions stayed on 0.1.0 after a marketplace update and `/reload-plugins`, and moved to 0.2.0 only after `claude plugin update` and a restart. The slash form `/plugin update <name>@<marketplace>` is not a real command and fails silently; use the `claude plugin update` CLI.
 
 ## Git account context
 
