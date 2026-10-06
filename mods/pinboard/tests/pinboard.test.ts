@@ -680,6 +680,7 @@ describe('parsePin drops the link classes the README lists', () => {
     'https://github.com/o/r/blob/main/sk_buff_helpers.c',
     'https://pypi.org/project/sk-learn-utilities/',
     'https://en.wikipedia.org/wiki/Token:Foo',
+    'https://h.example/the%20password%20v2',
   ]) {
     test(href, () => expect(parsePin(href)).toBeNull())
   }
