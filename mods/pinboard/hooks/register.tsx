@@ -1,8 +1,8 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Board, Decision, Pin, Todo } from '../types'
-import { type Hygiene, type SafeText, scrub } from './hygiene'
+import type { Board, Decision, Hygiene, Pin, Pinboard, Todo } from '../types'
+import { type SafeText, scrub } from './hygiene'
 
 const PANE = 'pinboard'
 const TITLE = 'Pinboard'
@@ -12,10 +12,9 @@ const MAX_TODOS = 50
 const MAX_DECISIONS = 20
 const TEXT_CAP = 200
 
-const EMPTY_BOARD: Board = { todos: [], decisions: [] }
+const EMPTY_BOARD: Pinboard = { todos: [], decisions: [], hygiene: { masked: 0, rejected: 0 } }
 const board = atom({ plugin: 'pinboard', key: 'board' } as const, EMPTY_BOARD)
 const links = atom({ plugin: 'pinboard', key: 'links' } as const, [] as Pin[])
-const hygiene = atom({ plugin: 'pinboard', key: 'hygiene' } as const, { masked: 0, rejected: 0 } as Hygiene)
 
 const DESCRIPTION = [
   "Keep the session's task list and open decisions on the user's Pinboard, a sidebar that stays in view while the transcript scrolls.",
@@ -225,6 +224,12 @@ const pinsIn = (text: string): Pin[] => {
 
 const storedList = (raw: unknown): Record<string, unknown>[] => (Array.isArray(raw) ? raw.filter(isRecord) : [])
 
+const count = (raw: unknown): number => (Number.isSafeInteger(raw) && (raw as number) >= 0 ? (raw as number) : 0)
+
+const counts = (raw: unknown): Hygiene => (isRecord(raw) ? { masked: count(raw.masked), rejected: count(raw.rejected) } : { masked: 0, rejected: 0 })
+
+const tally = (stored: Pinboard, key: keyof Hygiene, n: number): Pinboard => ({ ...stored, hygiene: { ...stored.hygiene, [key]: stored.hygiene[key] + n } })
+
 const recheckItems = <T,>(raw: unknown, pattern: RegExp, rebuild: (id: string, text: SafeText, item: Record<string, unknown>) => T): T[] => {
   const seen = new Set<string>()
   return storedList(raw).flatMap(item => {
@@ -235,7 +240,7 @@ const recheckItems = <T,>(raw: unknown, pattern: RegExp, rebuild: (id: string, t
   })
 }
 
-const recheckBoard = (raw: unknown): Board => {
+const recheckBoard = (raw: unknown): Pinboard => {
   const stored = isRecord(raw) ? raw : {}
   let hasActive = false
   const todos = recheckItems<Todo>(stored.todos, TODO_ID, (id, text, item) => {
@@ -244,18 +249,14 @@ const recheckBoard = (raw: unknown): Board => {
     hasActive ||= isActive
     return isActive ? { id, text, isDone, isActive } : { id, text, isDone }
   })
-  return { todos, decisions: recheckItems<Decision>(stored.decisions, DECISION_ID, (id, text) => ({ id, text })) }
+  return { todos, decisions: recheckItems<Decision>(stored.decisions, DECISION_ID, (id, text) => ({ id, text })), hygiene: counts(stored.hygiene) }
 }
-
-const count = (raw: unknown): number => (Number.isSafeInteger(raw) && (raw as number) >= 0 ? (raw as number) : 0)
-
-const counts = (raw: unknown): Hygiene => (isRecord(raw) ? { masked: count(raw.masked), rejected: count(raw.rejected) } : { masked: 0, rejected: 0 })
 
 const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`
 
 async function audit($: EngineInterface): Promise<string[]> {
   const stored = await read($, board)
-  const { masked, rejected } = await read($, hygiene)
+  const { masked, rejected } = stored.hygiene
   return [
     'Pinboard audit. The pinboard:board section, exactly as the model reads it:',
     describeBoard(stored),
@@ -282,7 +283,6 @@ const ENDS_TRANSCRIPT = new Set(['clear', 'resume'])
 const resetBoard = async ($: EngineInterface) => {
   await update($, board, () => EMPTY_BOARD)
   await update($, links, () => [])
-  await update($, hygiene, () => ({ masked: 0, rejected: 0 }))
 }
 
 export const register: Register = on => {
@@ -296,7 +296,6 @@ export const register: Register = on => {
     await $.tool.register({ name: 'update', description: DESCRIPTION, inputSchema: SCHEMA })
     await update($, board, recheckBoard)
     await update($, links, old => storedList(old).flatMap(pin => (typeof pin.href === 'string' && parsePin(pin.href)) || []))
-    await update($, hygiene, counts)
     return next(e)
   })
 
@@ -322,24 +321,21 @@ export const register: Register = on => {
 
   on('tool.call', { tool: TOOL }, async ($, e) => {
     if (e.agentId) return { deny: 'Only the main conversation updates the Pinboard.' }
-    const refuse = async (error: string) => {
-      await update($, hygiene, old => ({ ...old, rejected: old.rejected + 1 }))
-      return { deny: error }
-    }
     const { tool, tool_use_id, agentId, consent, ...input } = e
     const parsed = parseUpdate(input)
-    if (!parsed.ok) return refuse(parsed.error)
+    if (!parsed.ok) {
+      await update($, board, old => tally(old, 'rejected', 1))
+      return { deny: parsed.error }
+    }
     const outcome: { error?: string } = {}
     const written = await capture($, () =>
       update($, board, old => {
         const applied = applyUpdate(old, parsed.update)
         outcome.error = applied.ok ? undefined : applied.error
-        return applied.ok ? applied.board : old
+        return applied.ok ? { ...tally(old, 'masked', parsed.masked), ...applied.board } : tally(old, 'rejected', 1)
       }),
     )
-    if (outcome.error !== undefined) return refuse(outcome.error)
-    if (parsed.masked > 0) await update($, hygiene, old => ({ ...old, masked: old.masked + parsed.masked }))
-    return { result: describeBoard(written) }
+    return outcome.error === undefined ? { result: describeBoard(written) } : { deny: outcome.error }
   })
 
   // Links only from actions that make something; reads, fetches and test output just mention URLs
@@ -379,9 +375,8 @@ export const register: Register = on => {
     const { Box, Text, Button, Link } = $.ui.resolve(e)
     // One cell of padding on every side
     const inner = Math.max(10, e.props.bodyColumns - 2)
-    const { todos: allTodos, decisions: allDecisions } = await read($, board)
+    const { todos: allTodos, decisions: allDecisions, hygiene } = await read($, board)
     const allLinks = await read($, links)
-    const { masked, rejected } = await read($, hygiene)
     const doneCount = allTodos.filter(t => t.isDone).length
 
     const header = (title: string, count: string) => (
@@ -428,7 +423,7 @@ export const register: Register = on => {
           </Text>
         ))}
         <Text> </Text>
-        <Text dimColor>{`hygiene · ${masked} masked · ${rejected} rejected`}</Text>
+        <Text dimColor>{`hygiene · ${hygiene.masked} masked · ${hygiene.rejected} rejected`}</Text>
       </Box>
     )
   })

@@ -10,12 +10,13 @@ export type Pin = { href: SafeText; label: SafeText }
 
 export type Board = { todos: Todo[]; decisions: Decision[] }
 
+export type Pinboard = Board & { hygiene: Hygiene }
+
 declare module 'claude-code' {
   interface PluginState {
     pinboard: {
-      board: Board
+      board: Pinboard
       links: Pin[]
-      hygiene: Hygiene
     }
   }
 }
