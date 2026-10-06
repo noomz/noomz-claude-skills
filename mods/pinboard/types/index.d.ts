@@ -12,11 +12,16 @@ export type Board = { todos: Todo[]; decisions: Decision[] }
 
 export type Pinboard = Board & { hygiene: Hygiene }
 
+export type Retired = unknown
+
 declare module 'claude-code' {
   interface PluginState {
     pinboard: {
       board: Pinboard
       links: Pin[]
+      todos: Retired
+      decisions: Retired
+      hygiene: Retired
     }
   }
 }

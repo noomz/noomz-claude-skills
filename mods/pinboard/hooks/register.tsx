@@ -15,6 +15,9 @@ const TEXT_CAP = 200
 const EMPTY_BOARD: Pinboard = { todos: [], decisions: [], hygiene: { masked: 0, rejected: 0 } }
 const board = atom({ plugin: 'pinboard', key: 'board' } as const, EMPTY_BOARD)
 const links = atom({ plugin: 'pinboard', key: 'links' } as const, [] as Pin[])
+const RETIRED_TODOS = { plugin: 'pinboard', key: 'todos' } as const
+const RETIRED_DECISIONS = { plugin: 'pinboard', key: 'decisions' } as const
+const RETIRED_HYGIENE = { plugin: 'pinboard', key: 'hygiene' } as const
 
 const DESCRIPTION = [
   "Keep the session's task list and open decisions on the user's Pinboard, a sidebar that stays in view while the transcript scrolls.",
@@ -240,6 +243,11 @@ const recheckItems = <T,>(raw: unknown, pattern: RegExp, rebuild: (id: string, t
   })
 }
 
+const capTodos = (todos: Todo[]): Todo[] => {
+  const dropped = new Set(todos.filter(t => t.isDone).slice(0, Math.max(0, todos.length - MAX_TODOS)))
+  return todos.filter(t => !dropped.has(t)).slice(0, MAX_TODOS)
+}
+
 const recheckBoard = (raw: unknown): Pinboard => {
   const stored = isRecord(raw) ? raw : {}
   let hasActive = false
@@ -249,7 +257,14 @@ const recheckBoard = (raw: unknown): Pinboard => {
     hasActive ||= isActive
     return isActive ? { id, text, isDone, isActive } : { id, text, isDone }
   })
-  return { todos, decisions: recheckItems<Decision>(stored.decisions, DECISION_ID, (id, text) => ({ id, text })), hygiene: counts(stored.hygiene) }
+  const decisions = recheckItems<Decision>(stored.decisions, DECISION_ID, (id, text) => ({ id, text }))
+  return { todos: capTodos(todos), decisions: decisions.slice(0, MAX_DECISIONS), hygiene: counts(stored.hygiene) }
+}
+
+const clearRetired = async ($: EngineInterface) => {
+  await $.state.set(RETIRED_TODOS, null)
+  await $.state.set(RETIRED_DECISIONS, null)
+  await $.state.set(RETIRED_HYGIENE, null)
 }
 
 const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`
@@ -283,6 +298,7 @@ const ENDS_TRANSCRIPT = new Set(['clear', 'resume'])
 const resetBoard = async ($: EngineInterface) => {
   await update($, board, () => EMPTY_BOARD)
   await update($, links, () => [])
+  await clearRetired($)
 }
 
 export const register: Register = on => {
@@ -294,7 +310,13 @@ export const register: Register = on => {
       immediate: true,
     })
     await $.tool.register({ name: 'update', description: DESCRIPTION, inputSchema: SCHEMA })
-    await update($, board, recheckBoard)
+    const todos = (await $.state.get(RETIRED_TODOS)).value
+    const decisions = (await $.state.get(RETIRED_DECISIONS)).value
+    await update($, board, old => {
+      const kept = recheckBoard(old)
+      return kept.todos.length + kept.decisions.length > 0 ? kept : recheckBoard({ ...kept, todos, decisions })
+    })
+    await clearRetired($)
     await update($, links, old => storedList(old).flatMap(pin => (typeof pin.href === 'string' && parsePin(pin.href)) || []))
     return next(e)
   })
