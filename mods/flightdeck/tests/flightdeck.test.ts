@@ -60,7 +60,6 @@ test('a URL tool detail keeps the host alone', () => {
 
 const check = (id: string, verdict: Check['verdict'], bucket: Check['bucket'] = 'shell'): Check => ({
   id,
-  tool: 'Bash',
   bucket,
   verdict,
   inSubagent: false,

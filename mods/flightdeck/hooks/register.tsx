@@ -405,7 +405,6 @@ export const register: Register = (on, options) => {
       await tally($, detail)
       const check: Check = {
         id: e.tool_use_id,
-        tool: e.tool,
         bucket: bucketOf(e.tool),
         verdict: verdict.decision === 'allow' ? 'rule' : verdict.decision,
         inSubagent: Boolean(callLoop.get(e.tool_use_id)),
@@ -455,7 +454,7 @@ export const register: Register = (on, options) => {
       await update($, agents, list =>
         listOf<unknown>(list)
           .map(normalizeCard)
-          .map(c => (c.id === id ? noteTool(c, { tool: e.tool, text, isError: hasFailed || ran.deny !== undefined }) : c)),
+          .map(c => (c.id === id ? noteTool(c, { text, isError: hasFailed || ran.deny !== undefined }) : c)),
       )
     }
     // The log keeps what is worth a glance: refusals, errors and edits; the rest is on the cards.

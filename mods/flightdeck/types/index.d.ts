@@ -28,7 +28,6 @@ export type Architect = { consults: Consult[]; ids: string[]; seen: string[]; la
 
 export type Check = {
   id: string
-  tool: string
   bucket: Bucket
   verdict: Verdict
   inSubagent: boolean
@@ -40,7 +39,7 @@ export type Tally = { rule: number; ask: number; cleared: number; deny: number }
 
 export type Gate = { recent: Check[]; totals: Record<Bucket, Tally> }
 
-export type ToolNote = { tool: string; text: SafeText; isError: boolean }
+export type ToolNote = { text: SafeText; isError: boolean }
 
 export type AgentCard = {
   id: string

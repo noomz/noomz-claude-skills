@@ -61,6 +61,10 @@ async function seed($: Engine, on: On) {
   await $.agent.spawn(spawnArgs(1, 'general-purpose', `deploy ${JWT} ${ESC}[31mred${RLO}evil`, 'N'.repeat(300)) as never)
   await $.tool.check({ tool: 'Bash', input: { command: COMMAND }, tool_use_id: 'k1' })
   await $.tool.call({ tool: 'Bash', command: COMMAND, agentId: 'ag1', tool_use_id: 'c1' } as never)
+  await $.tool.check({ tool: 'mcp__vault__password=hunter2', input: { query: 'x' }, tool_use_id: 'k2' } as never)
+  await $.tool.call({ tool: 'mcp__vault__password=hunter2', query: 'x', agentId: 'ag1', tool_use_id: 'c3' } as never)
+  await $.tool.check({ tool: 'WebFetch', input: { url: 'https://bob:s3cr3t@h.example/x?sig=abc', prompt: 'hunter2' }, tool_use_id: 'k3' })
+  await $.tool.call({ tool: 'Grep', pattern: 'password=hunter2', path: '/repo/src', agentId: 'ag1', tool_use_id: 'c4' } as never)
   await $.turn.complete({ answer: ANSWER, durationMs: 1200, isAborted: false, turnId: 'T3', agentId: 'ag1', reason: 'answer' } as never)
   await $.agent.spawn(spawnArgs(2, 'architect', 'review the plan') as never)
   await $.tool.call({ tool: 'SubagentHandback', message: ADVICE, agentId: 'arch1', tool_use_id: 'c2' } as never)
@@ -84,7 +88,12 @@ const panes = async ($: Engine, surface: (typeof SURFACES)[number]) => {
         surface,
         props: { title: 'Flightdeck', isFocused: true, bodyColumns: 120, placement, scroll: { offset: 0, bodyRows: 70 }, view: {} },
       })
-      for (const card of ['card-ag1', 'gate-shell']) await ui.press({ key: card }).catch(() => undefined)
+      const hasButtons = layout !== 'mini' && !(layout === 'auto' && placement === 'inline')
+      for (const key of ['card-ag1', 'gate-shell', 'gate-other']) {
+        expect(Boolean(await ui.find({ key })), `${layout}.${placement} draws ${key}`).toBe(hasButtons)
+        if (hasButtons) await ui.press({ key })
+      }
+      if (hasButtons) expect(await ui.find({ text: /no tool calls yet/ }), `${layout}.${placement} expands the card`).toBeUndefined()
       leaves(await ui.drawn(), `${layout}.${placement}`, out)
       await ui.unmount()
     }
