@@ -1,14 +1,14 @@
-export type Commands = string[]
+// How a listed command runs on press: `run` on one press, `confirm` on two
+// in a row (the person's Bash permission rules deny it).
+export type Gate = 'run' | 'confirm'
 
-// The last command a Run button ran, as the band shows it.
-export type RunResult = { cmd: string; exitCode: number; tail: string }
+export type Suggestion = { cmd: string; gate: Gate }
 
 declare module 'claude-code' {
   interface PluginState {
-    // `suggested`: short `! cmd` suggestions from the model's answers, run on
-    // press once the Bash permission rules allow them.
-    // `review`: commands that only fill the prompt on press: Bash calls a
-    // permission check denied, and suggestions too long to show in full.
-    'bang-actions': { suggested: Commands; review: Commands; last: RunResult | null }
+    // `commands`: `! cmd` suggestions from the model's answers and Bash calls
+    // the permission check denied, newest batch last, at most MAX_COMMANDS.
+    // `armed`: the `confirm` command whose next press runs it, or null.
+    'bang-actions': { commands: Suggestion[]; armed: string | null }
   }
 }

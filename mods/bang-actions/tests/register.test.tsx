@@ -84,15 +84,12 @@ for (const surface of SURFACES) {
     expect(submitted[0]?.text).toContain('(exit 0)')
     expect(submitted[0]?.text).toContain('hello')
     expect(toasts).toEqual([])
-    expect(await rows(ui)).toEqual(['Dismiss'])
+    expect(await rows(ui)).toEqual([])
 
     const row = await transcriptRow($, submitted[0]?.text ?? '', surface)
     expect(await row.find({ type: 'Text', text: '✓ ! gcloud auth login  (exit 0)' })).toMatchObject({ props: { color: 'green' } })
     expect(await row.find({ type: 'Text', text: 'hello' })).toBeDefined()
     expect(await row.find({ key: 'engine' })).toBeUndefined()
-
-    await ui.press({ key: 'dismiss' })
-    expect(await rows(ui)).toEqual([])
   })
 
   test(`${surface}: a Bash call the rules deny draws a two-press button; the first press arms it, the second runs it`, async ($, on) => {
@@ -112,7 +109,7 @@ for (const surface of SURFACES) {
     expect(runs).toEqual([['/bin/bash', '-c', 'sudo make install']])
     expect(filled).toEqual([])
     expect(submitted.map(s => s.origin)).toEqual([PLUGIN_ORIGIN])
-    expect(await rows(ui)).toEqual(['Dismiss'])
+    expect(await rows(ui)).toEqual([])
   })
 }
 
