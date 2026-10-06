@@ -568,3 +568,28 @@ for (const placement of ['dock', 'inline'] as const) {
     await ui.unmount()
   })
 }
+
+test('a count of one reads singular: 1 check, 1 step, +1 more agent, 1 agent on the axis', async ($, on) => {
+  engine(on)
+  let n = 0
+  on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: `s${++n}` }))
+  on('tool.check', () => ({ decision: 'allow' }))
+  on('turn.step', async function* (_$, e) {
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: { input_tokens: 10, output_tokens: 5 } } as never
+  })
+  await $.turn.start({ text: 'go', turnId: 'S1' })
+  await $.agent.spawn(spawn('general-purpose', 'only one'))
+  await $.tool.check({ tool: 'Read', input: { file_path: '/a' }, tool_use_id: 's-k1' })
+  for await (const _ of $.turn.step({ turnId: 'S1', index: 0, messageCount: 1, agentId: 's1', model: 'claude-sonnet-5-5' }));
+  const dock = await $.ui.mount({ ...pane(64), surface: 'desktop' })
+  expect(await dock.find({ text: /^1 check$/ })).toBeDefined()
+  await dock.press({ key: 'card-s1' })
+  expect(await dock.find({ text: /· 1 step$/ })).toBeDefined()
+  const svg = await dock.find({ type: 'Svg' })
+  expect(svg?.props.alt).toBe('1 agent on a time axis')
+  await dock.unmount()
+  for (const d of ['two', 'three', 'four']) await $.agent.spawn(spawn('general-purpose', d))
+  const mini = await $.ui.mount({ ...pane(80), props: { ...pane(80).props, placement: 'inline' as const }, surface: 'terminal' })
+  expect(await mini.find({ text: /^\+1 more agent · / })).toBeDefined()
+  await mini.unmount()
+})

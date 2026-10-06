@@ -738,7 +738,7 @@ export const register: Register = (on, options) => {
             <Text color={C.gate} bold>
               {cfg.gateLabel} · permissions
             </Text>
-            <Text dimColor>{`${s.total} checks`}</Text>
+            <Text dimColor>{plural(s.total, 'check')}</Text>
           </Box>
           <Box>
             {strip.length === 0 ? <Text color={C.faint}>no checks yet</Text> : null}
@@ -892,7 +892,7 @@ export const register: Register = (on, options) => {
           <Text bold wrap="wrap">
             {expandedCard.description || expandedCard.type}
           </Text>
-          <Text dimColor wrap="truncate">{`${expandedCard.type} · ${prettyModel(expandedCard.model)} · ${expandedCard.status}${expandedCard.durationMs !== null ? ` · ${fmtDuration(expandedCard.durationMs)}` : ''} · ${expandedCard.steps} steps`}</Text>
+          <Text dimColor wrap="truncate">{`${expandedCard.type} · ${prettyModel(expandedCard.model)} · ${expandedCard.status}${expandedCard.durationMs !== null ? ` · ${fmtDuration(expandedCard.durationMs)}` : ''} · ${plural(expandedCard.steps, 'step')}`}</Text>
           {expandedCard.tools.length === 0 ? <Text color={C.faint}>no tool calls yet</Text> : null}
           {expandedCard.tools.map(n => (
             <Text color={n.isError ? C.warn : C.text} wrap="truncate">
@@ -1033,7 +1033,7 @@ export const register: Register = (on, options) => {
             return (
               <Svg
                 source={`<svg xmlns="http://www.w3.org/2000/svg" width="${pxW}" height="${svgH}" viewBox="0 0 ${pxW} ${svgH}">${rects}</svg>`}
-                alt={`${cards.length} agents on a time axis`}
+                alt={`${plural(cards.length, 'agent')} on a time axis`}
                 width={pxW}
                 height={svgH}
               />
@@ -1087,7 +1087,7 @@ export const register: Register = (on, options) => {
             </Box>
           ))}
           {cards.length > live.length ? (
-            <Text color={C.faint} wrap="truncate">{`+${cards.length - live.length} more agents · /flightdeck layout compact for all`}</Text>
+            <Text color={C.faint} wrap="truncate">{`+${plural(cards.length - live.length, 'more agent')} · /flightdeck layout compact for all`}</Text>
           ) : null}
           {lp.length > 0 ? <Text dimColor>{`other loops ${lp.length} · ${lp.filter(l => isLoopActive(l, now)).length} active`}</Text> : null}
           <Box>
