@@ -379,7 +379,7 @@ export const register: Register = on => {
   on('tool.call', async ($, e, next) => {
     const ran = await next(e)
     const makes = e.tool === 'Bash' ? MAKES_COMMAND.test(e.command) : makesMcp(e.tool)
-    if (e.agentId || !makes || !('text' in ran) || ran.isError) return ran
+    if (e.agentId !== undefined || !makes || !('text' in ran) || ran.isError) return ran
     const found = pinsIn(ran.text ?? '')
     if (found.length > 0 && found.length <= 3) {
       await capture($, () => update($, links, old => [...found, ...old.filter(p => !found.some(f => f.href === p.href))].slice(0, 12)))

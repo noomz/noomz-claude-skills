@@ -921,6 +921,14 @@ describe('a call that names agentId at all reads as a subagent call', () => {
       expect(result).toEqual({ deny: 'Only the main conversation updates the Pinboard.' })
       expect(value('board')).toBeUndefined()
     })
+
+    test(`agentId ${JSON.stringify(agentId)} on a making command pins no link`, async ($, on) => {
+      const { value } = stateStore(on)
+      on('ui.open', () => ({ value: { isPlaced: true } }))
+      on('tool.call', { tool: 'Bash' }, () => ({ result: { stdout: '', stderr: '', interrupted: false }, text: 'https://github.com/o/repo/pull/12\n' }))
+      await $.tool.call({ tool: 'Bash', command: 'gh pr create --fill', agentId } as unknown as Parameters<typeof $.tool.call>[0])
+      expect(value('links')).toBeUndefined()
+    })
   }
 })
 
