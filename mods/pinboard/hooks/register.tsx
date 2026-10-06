@@ -176,6 +176,14 @@ const fitLabel = (host: string, path: string): string => {
   return host + (path.length <= room ? path : path.slice(0, room - 1) + '…')
 }
 
+const decoded = (path: string): string => {
+  try {
+    return decodeURIComponent(path)
+  } catch {
+    return path
+  }
+}
+
 export function parsePin(href: string): Pin | null {
   if (href.length > 2048) return null
   let url: URL
@@ -188,7 +196,7 @@ export function parsePin(href: string): Pin | null {
   const isGithub = url.host === 'github.com'
   const anchor = isGithub && GITHUB_ANCHOR.test(url.hash) ? url.hash : ''
   const stored = scrub(url.origin + url.pathname + anchor, 2048)
-  if (stored.masked > 0) return null
+  if (stored.masked > 0 || scrub(decoded(url.pathname), 2048).masked > 0) return null
   const gh = isGithub ? GITHUB_ITEM.exec(url.pathname) : null
   const named = gh && scrub(`${gh[1]} ${gh[2] === 'pull' ? 'PR' : 'issue'} #${gh[3]}${anchor ? ' comment' : ''}`, LABEL_CAP)
   const label = named && named.masked === 0 ? named : scrub(fitLabel(url.host, url.pathname), LABEL_CAP)

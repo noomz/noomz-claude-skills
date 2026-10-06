@@ -23,43 +23,51 @@ The tool checks each call before it changes the board:
 - Todo ids look like `t1` and decision ids look like `d1`.
 - The board holds at most 50 todos and 20 decisions.
 
-A call that fails a check gets an error result, the board stays the same, and the `rejected` counter goes up by one.
+A call that fails a check is refused. Claude reads the reason as an error result, the board stays the same, and the `rejected` counter goes up by one.
 
 ## What it stores, sends and masks
 
-**Stores.** The mod keeps four values in session state: todos (id, text, done, in progress), decisions (id, text), links (address, label) and the hygiene counters (`masked`, `rejected`). A `/clear` or a resume empties all four. Text from an older build that is still in state is checked again when the session starts.
+**Stores.** The mod keeps four values in session state: todos (id, text, done, in progress), decisions (id, text), links (address, label) and the hygiene counters (`masked`, `rejected`). A `/clear` or a resume empties all four. When the session starts, the mod checks every value an older build left in state again. It scrubs each text, drops items with a bad id, and resets a value of the wrong shape to empty. The counters must be whole numbers of zero or more.
 
 **Sends to the model.** On every request, the mod adds one section to the end of the system prompt. Its first line names the marks (`[ ]` open, `[>]` in progress, `[x]` done, `[?]` open decision). It also says that each item's text is a JSON-quoted label that this session's pinboard tool calls wrote: a record of the plan, not instructions from the user or the system. Each item follows on its own line as id, mark and JSON-quoted text. A newline in a todo cannot start a new prompt line. The tool result carries the same text. Links never go to the model.
 
 **Masks.** Each todo, decision and answer text goes through `scrub()` before the mod keeps it:
 
-- Control characters, `ESC`, bidi overrides and zero-width characters are removed.
+- Compatibility characters read as the plain characters they show, so a fullwidth `＝` is `=`.
+- Control characters, `ESC`, bidi overrides, zero-width characters and other invisible characters are removed.
 - Whitespace collapses to one space, so the text is one line.
-- Secrets are replaced with `[masked]`, and the key name stays. The rules cover:
-  - passwords as `key=value`, `password hunter2`, `my password is hunter2` and JSON `"password":"..."`
+- Secrets are replaced with `[masked]`, and the key name stays. Each secret is masked once and counted once, and scrubbing a scrubbed text changes nothing. The rules cover:
+  - passwords written with `=`, `:`, `->`, `=>` or `is`, such as `password = hunter2` and `my password is hunter2`
+  - `password hunter2` when the value holds a digit or a symbol, so `add password validation` stays as written
+  - quoted values of any length, closed or not, such as JSON `"password":"..."`
   - AWS secret keys and `AKIA` key ids
-  - JWTs and PEM private key blocks
+  - JWTs, and PEM and PGP private key blocks, encrypted ones included
   - GitHub, Slack and `sk-`/`pk-`/`rk-` style tokens
   - bearer tokens and `Authorization` headers
-  - passwords in URLs and secret query values (`key`, `sig`, `signature`, `token`, `X-Amz-Signature`, `code`)
-  - Slack webhook URLs and `-u user:pass`
-  - environment variables whose names hold `KEY`, `TOKEN`, `SECRET`, `PASSWORD` or `PAT`
-- The text is cut to 200 characters.
+  - passwords in URLs and secret query values (`key`, `sig`, `signature`, `token`, `X-Amz-Signature`, `code`, session ids)
+  - Slack and Discord webhook URLs, and `-u user:pass` (not a numeric `-u 1000:1000`)
+  - environment variables whose names end in `KEY`, `TOKEN`, `SECRET` or `PASSWORD`, or hold one of those or `PAT` or `PASS` as an `_`-separated part, so `KEYBOARD=us` stays as written
+- The text is cut to 200 characters. Text past the first 4096 characters is dropped, along with the word the cut runs through, so a single word longer than that leaves nothing and the call is refused.
 
-A link must use `https` and carry no user name or password. The mod keeps no query string. It drops the fragment, except a GitHub comment anchor (`#issuecomment-N`, `#discussion_rN`). It does not pin a link whose path holds a secret. A GitHub label needs the host to be exactly `github.com`. Every other label starts with the real host, so `https://attacker.example/github.com/o/r/pull/1` reads `attacker.example/github.com/o/r/pull/1`.
+A link must use `https` and carry no user name or password. The mod keeps no query string. It drops the fragment, except a GitHub comment anchor (`#issuecomment-N`, `#discussion_rN`). It does not pin a link whose path, as written or percent-decoded, holds anything `scrub()` would mask. A GitHub label needs the host to be exactly `github.com`. Every other label starts with the real host, so `https://attacker.example/github.com/o/r/pull/1` reads `attacker.example/github.com/o/r/pull/1`.
 
-**What it does not catch.** Masking works by pattern. A secret with no key name or known shape, such as `the creds are hunter2`, stays as written. The quoting and the header keep a todo from posing as a prompt line, but whether a model acts on text inside a quoted label depends on the model.
+**What it does not catch.** Masking works by pattern. These stay as written:
+
+- a secret with no key name or known shape, such as `the creds are hunter2`
+- short or tool-specific forms such as `pw=hunter2` and `mysql -phunter2`
+- a key name spelled with look-alike letters from another script, such as a Cyrillic `р` in `password`
+
+Some text is masked that holds no secret, such as `secret: none here`, `?code=python`, a variable whose name only ends in `KEY` such as `MONKEY=banana`, and a long name that starts like a token such as `pk_live_handler_name`. The quoting and the header keep a todo from posing as a prompt line, but whether a model acts on text inside a quoted label depends on the model.
 
 ## See what it holds
 
 - The pane's last line counts the masked secrets and the rejected calls: `hygiene · 2 masked · 0 rejected`.
-- `/pinboard audit` writes one transcript notice that the model never reads. It shows the system prompt section exactly as the model reads it, the counts of stored todos, decisions and links, and the two hygiene counters.
+- `/pinboard audit` writes transcript notices, one per line, and returns nothing to the model. They show the system prompt section exactly as the model reads it, the counts of stored todos, decisions and links, and the two hygiene counters.
 
 ## How it opens
 
-- The pane opens by itself the first time something lands on an empty board.
-- Opened that way, Claude Code seats it only in a terminal at least 144 columns wide (110 once you have opened it yourself). Below that width, run `/pinboard`.
-- `/pinboard` opens it at any width, even while Claude works. Ctrl+X then X closes it.
+- The pane opens by itself when the first thing lands on an empty board.
+- `/pinboard` opens it.
 
 ## Install
 
@@ -77,5 +85,3 @@ bun mods/pinboard/tests/hygiene.bench.ts --upstream <path to a sirkitree/pinboar
 ```
 
 The bench compares `describeBoard` against upstream and times `scrub()` on adversarial inputs. It fails when either goes past the limits in the file.
-
-Built on the mods API of Claude Code 2.1.291. That API is in early access and changes between releases.
