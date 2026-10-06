@@ -447,6 +447,19 @@ test('tallness is measured against the band as drawn: a command that fits beside
   expect(runs).toEqual([['/bin/bash', '-c', wide], ['/bin/bash', '-c', narrow]])
 })
 
+test('a press is never looser than the button it was drawn as: a two-press button drawn narrow still only arms after the band is measured wide', async ($, on) => {
+  const { runs, press } = engine(on)
+  const cmd = `echo ${'y'.repeat(195)}`
+
+  await $.turn.complete(turnDone(`Run \`! ${cmd}\`.`))
+  const narrow = await $.ui.mount({ ...BAND, surface: 'terminal', props: { ...BAND.props, bodyColumns: 40 } })
+  expect(await rows(narrow)).toEqual([`${TWICE}  ${cmd}`, 'Dismiss'])
+  await $.ui.mount({ ...BAND, surface: 'terminal' })
+
+  await press(narrow, `run-${commandKey(cmd)}`)
+  expect(runs).toHaveLength(0)
+})
+
 test('a command that just ran with exit 0 is not listed again when the next answer quotes it; the answer after that may', async ($, on) => {
   const { runs, press } = engine(on)
 
