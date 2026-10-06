@@ -29,10 +29,12 @@ function stricter(a: Gate, b: Gate): Gate {
 }
 
 // Rows the band draws a command over with `columns` cells per line, each
-// step's wrapping counted.
+// step's wrapping counted. A character outside ASCII counts two cells: a wide
+// glyph takes two, and over-counting only ever asks for a second press.
 export function drawnRows(cmd: string, columns: number): number {
   const perLine = Math.max(1, columns)
-  return displayCommand(cmd).split('\n').reduce((rows, line) => rows + Math.max(1, Math.ceil(line.length / perLine)), 0)
+  const cells = (line: string) => [...line].reduce((n, ch) => n + (ch.codePointAt(0)! > 0x7f ? 2 : 1), 0)
+  return displayCommand(cmd).split('\n').reduce((rows, line) => rows + Math.max(1, Math.ceil(cells(line) / perLine)), 0)
 }
 
 // Commands the reply asks the person to run with the `!` prefix, in order of
