@@ -3,7 +3,6 @@ import type { test } from 'claude-code/testing'
 export type On = Parameters<Extract<Parameters<typeof test>[1], (...args: never[]) => unknown>>[1]
 export type Engine = Parameters<Extract<Parameters<typeof test>[1], (...args: never[]) => unknown>>[0]
 
-/** Stands in for the engine's state store, so a test can read every value the plugin wrote. */
 export function stateStore(on: On) {
   const values = new Map<string, { value: unknown; version: number }>()
   const name = (e: { plugin: string; key: string; id?: string }) => `${e.plugin}/${e.key}/${e.id ?? ''}`
@@ -17,7 +16,6 @@ export function stateStore(on: On) {
   return values
 }
 
-/** Every string inside `value`, each with its dotted path. */
 export const leaves = (value: unknown, path = '', out: [string, string][] = []) => {
   if (typeof value === 'string') out.push([path, value])
   else if (Array.isArray(value)) value.forEach((v, i) => leaves(v, `${path}.${i}`, out))
@@ -25,6 +23,5 @@ export const leaves = (value: unknown, path = '', out: [string, string][] = []) 
   return out
 }
 
-/** The flightdeck values the store holds, by key. */
 export const flightdeck = (values: Map<string, { value: unknown }>) =>
   Object.fromEntries([...values].filter(([name]) => name.startsWith('flightdeck/')).map(([name, { value }]) => [name.split('/')[1], value]))

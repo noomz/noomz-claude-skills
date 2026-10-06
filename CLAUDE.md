@@ -66,7 +66,7 @@ awk 'FNR>500{print FILENAME,"exceeds 500 lines:",FNR}' skills/*/SKILL.md
 # 4. Mods: manifest + module the way the engine reads them, and their tests
 for m in mods/*/; do claude plugin validate "$m" && claude plugin test "$m"; done
 
-# 5. Mods: every copy of the hygiene gate matches pinboard's byte for byte (keep this step last; its status is the block's)
+# 5. Mods: every copy of the hygiene gate matches pinboard's byte for byte
 cmp mods/pinboard/hooks/hygiene.ts mods/flightdeck/hooks/hygiene.ts && cmp mods/pinboard/tests/hygiene.test.ts mods/flightdeck/tests/hygiene.test.ts
 ```
 

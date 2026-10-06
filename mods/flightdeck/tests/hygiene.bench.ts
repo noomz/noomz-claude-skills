@@ -1,6 +1,3 @@
-// Run with bun from the repository root:
-//   bun mods/flightdeck/tests/hygiene.bench.ts --upstream <path to a claude-flightdeck checkout at f31daca>
-// Exits 1 when a perf rule fails.
 import { toolDetail } from '../hooks/core'
 import { scrub } from '../hooks/hygiene'
 
@@ -10,7 +7,7 @@ const CALLS = 1000
 const flag = process.argv.indexOf('--upstream')
 const upstreamDir = flag > 0 ? process.argv[flag + 1] : undefined
 if (!upstreamDir) {
-  console.error('usage: bun mods/flightdeck/tests/hygiene.bench.ts --upstream <path to claude-flightdeck>')
+  console.error('usage: bun mods/flightdeck/tests/hygiene.bench.ts --upstream <path to a claude-flightdeck checkout at f31daca>')
   process.exit(2)
 }
 const { describeInput } = (await import(`${upstreamDir}/hooks/core.ts`)) as { describeInput: (tool: string, input: unknown) => string }
@@ -39,7 +36,6 @@ const URLS = [
   'https://s3.amazonaws.com/bucket/key?X-Amz-Signature=deadbeef&X-Amz-Expires=300',
 ]
 
-/** 200 fixed tool inputs, 50 per tool, built from the shapes real sessions send. */
 const TOOL_CORPUS: { name: string; tool: string; input: Record<string, unknown> }[] = Array.from({ length: 200 }, (_, i) => {
   const n = Math.floor(i / 4)
   switch (i % 4) {
@@ -69,14 +65,23 @@ const stats = (samples: number[]) => {
 }
 const us = (ms: number) => `${(ms * 1000).toFixed(2)}µs`
 
-// Every result feeds a printed checksum, so no call can be optimised away.
-let checksum = 0
+let sink = 0
 const timed = (fn: () => string) => {
   const t0 = performance.now()
   const out = fn()
   const ms = performance.now() - t0
-  checksum += out.length
+  sink += out.length
   return ms
+}
+
+const timeBothInAlternatingOrder = (turn: number, [first, second]: [() => unknown, () => unknown]) => {
+  if (turn % 2 === 0) {
+    first()
+    second()
+  } else {
+    second()
+    first()
+  }
 }
 
 const floor: number[] = []
@@ -87,14 +92,10 @@ for (let round = 0; round < ROUNDS; round += 1) {
     const i = k % TOOL_CORPUS.length
     const entry = TOOL_CORPUS[i]!
     floor.push(timed(() => ''))
-    // Alternate which side runs first so warm caches favour neither.
-    if ((round + k) % 2 === 0) {
-      upstream[i]!.push(timed(() => describeInput(entry.tool, entry.input)))
-      head[i]!.push(timed(() => toolDetail(entry.tool, entry.input).text))
-    } else {
-      head[i]!.push(timed(() => toolDetail(entry.tool, entry.input).text))
-      upstream[i]!.push(timed(() => describeInput(entry.tool, entry.input)))
-    }
+    timeBothInAlternatingOrder(round + k, [
+      () => upstream[i]!.push(timed(() => describeInput(entry.tool, entry.input))),
+      () => head[i]!.push(timed(() => toolDetail(entry.tool, entry.input).text)),
+    ])
   }
 }
 
@@ -127,6 +128,6 @@ const failures = [
   ...(hd.p99 > 0.5 ? [`head toolDetail p99 ${us(hd.p99)} exceeds 0.5 ms`] : []),
   ...scrubStats.filter(s => s.p99 > 2).map(s => `scrub() ${s.name} p99 ${us(s.p99)} exceeds 2 ms`),
 ]
-console.log(`\nchecksum ${checksum}`)
+console.log(`\nsink ${sink}`)
 console.log(failures.length === 0 ? '\nPERF PASS' : `\nPERF FAIL\n${failures.map(f => `  ${f}`).join('\n')}`)
 process.exit(failures.length === 0 ? 0 : 1)

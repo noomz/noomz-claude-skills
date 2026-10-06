@@ -26,7 +26,6 @@ import type { Hygiene, SafeText, Scrubbed } from './hygiene'
 
 export const SCHEMA_VERSION = 3
 
-/** The most characters each kind of stored text keeps, after scrub() masks it. */
 export const CAP = { description: 80, name: 40, detail: 64, advice: 160, who: 40, line: 160 } as const
 
 export const NO_TEXT = '' as SafeText
@@ -264,9 +263,8 @@ export const bucketOf = (tool: string): Bucket =>
 
 const lastSegments = (path: string, n: number) => path.split(/[\\/]/).filter(Boolean).slice(-n).join('/')
 
-/** The program a command runs: its first word that is not a `NAME=value` assignment, as a basename. */
 const programOf = (command: string) =>
-  lastSegments((command.trim().split(/\s+/).find(w => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w)) ?? '').replace(/^["']|["']$/g, ''), 1)
+  lastSegments(/^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*["']?([^\s"']*)/.exec(command)?.[1] ?? '', 1)
 
 const hostOf = (url: string) => {
   try {
@@ -276,10 +274,6 @@ const hostOf = (url: string) => {
   }
 }
 
-/**
- * One line saying what a call was about, derived so it holds no argument text: a command's
- * program, a file's last two path segments, a URL's host. Patterns, queries and descriptions are dropped.
- */
 export const toolDetail = (tool: string, input: unknown): Scrubbed => {
   const i = isObject(input) ? input : {}
   const str = (k: string) => (typeof i[k] === 'string' ? (i[k] as string) : '')
@@ -464,11 +458,6 @@ export const titleLines = (title: string, first: number, rest: number): [string,
   return [t.slice(0, at).trim(), shorten(t.slice(at), rest)]
 }
 
-/**
- * The log row for a turn's opening text, which it never keeps: the person's turn as its length, or
- * for a turn the engine opened with a tagged message (a hand-back, a task notification), that
- * message's kind and the sender's id when it is an id.
- */
 export const promptLine = (text: string): { who: string; text: string } => {
   const tag = /^\s*<([a-z][a-z-]{0,31})[\s>]/.exec(text)?.[1]
   if (!tag) return { who: 'you', text: `new turn · ${plural([...text].length, 'char')}` }
@@ -493,7 +482,6 @@ export const handbackOf = (text: string): { from: string; body: string } | null 
   return body ? { from, body } : null
 }
 
-/** The advice line a pane shows for a report: its first real line, markdown markers stripped, masked and cut. */
 export const adviceLine = (report: string): Scrubbed => {
   const first = report.split('\n').map(l => l.trim()).find(l => l && !l.startsWith('[') && !l.startsWith('<')) ?? ''
   return scrub(first.replace(/\*\*|__/g, '').replace(/^[#>*\s-]+/, ''), CAP.advice)
@@ -503,7 +491,6 @@ export const elapsedOf = (c: AgentCard, now: number) => (c.endedAt ?? now) - c.s
 
 type Held = { log: LogLine[]; agents: AgentCard[]; gate: Gate; architect: Architect; roster: Roster }
 
-/** Every stored field that holds session text, by state path and length: what `/flightdeck audit` reports. */
 export const textFields = (h: Held): { path: string; length: number }[] =>
   [
     ...h.log.flatMap((l, i) => [[`log.${i}.who`, l.who], [`log.${i}.text`, l.text]] as const),

@@ -122,34 +122,30 @@ async function getHygiene($: EngineInterface): Promise<Hygiene> {
   return normalize(DEFAULT_HYGIENE, await read($, hygiene))
 }
 
-/** Each stored text field by path and length, and the masked count; never a value. Drawn for the person, not sent to the model. */
 async function audit($: EngineInterface) {
   const [l, a, g, ar, r, h] = await Promise.all([getLog($), getCards($), getGate($), getArchitect($), getRoster($), getHygiene($)])
   const fields = textFields({ log: l, agents: a, gate: g, architect: ar, roster: r })
   $.ui.log([`flightdeck audit · ${plural(fields.length, 'stored text field')} · ${h.masked} masked`, ...fields.map(f => `  ${f.path} · ${f.length} chars`)].join('\n'))
 }
 
-/** A stored shape older than this build's held text that never went through scrub(): start over. */
-async function migrate($: EngineInterface) {
+async function resetIfOlderSchema($: EngineInterface) {
   const m = await read($, meta)
   if ((m?.schemaVersion ?? 0) < SCHEMA_VERSION) await resetAll($)
 }
 
-/** Counts what scrub() masked, for the hygiene cell and `/flightdeck audit`. */
 async function tally($: EngineInterface, ...found: Scrubbed[]) {
   const masked = found.reduce((n, f) => n + f.masked, 0)
   if (masked > 0) await update($, hygiene, h => ({ ...normalize(DEFAULT_HYGIENE, h), masked: normalize(DEFAULT_HYGIENE, h).masked + masked }))
 }
 
-/** Session text as flightdeck may keep it: through scrub(), cut to `cap`, its masks counted. */
-async function clean($: EngineInterface, raw: unknown, cap: number): Promise<SafeText> {
+async function scrubAndTally($: EngineInterface, raw: unknown, cap: number): Promise<SafeText> {
   const s = scrub(raw, cap)
   await tally($, s)
   return s.text
 }
 
 async function say($: EngineInterface, who: string, text: string, kind: LogLine['kind'] = 'info', agentId: string | null = null) {
-  const [at, w, t] = await Promise.all([$.clock.now(), clean($, who, CAP.who), clean($, text, CAP.line)])
+  const [at, w, t] = await Promise.all([$.clock.now(), scrubAndTally($, who, CAP.who), scrubAndTally($, text, CAP.line)])
   const line: LogLine = { at, who: w, text: t, kind, agentId }
   await update($, log, list => [...normalizeLog(list), line].slice(-60))
 }
@@ -177,7 +173,7 @@ async function whoIs($: EngineInterface, agentId: string | undefined) {
 }
 
 async function consultStarted($: EngineInterface, cfg: Config, id: string, rawVia: string) {
-  const via = await clean($, rawVia, CAP.name)
+  const via = await scrubAndTally($, rawVia, CAP.name)
   const t = await getTurn($)
   const moment = momentOf(t)
   const at = await $.clock.now()
@@ -198,7 +194,6 @@ async function consultEnded($: EngineInterface, cfg: Config, advice: string | nu
   await refreshStatus($, cfg)
 }
 
-/** An architect's report seen again on another path: kept only when its masked first line is new. */
 async function noteAdvice($: EngineInterface, cfg: Config, report: string) {
   const advice = adviceLine(report)
   if (!advice.text || advice.text === (await getArchitect($)).lastAdvice) return
@@ -216,7 +211,6 @@ async function openPane($: EngineInterface) {
   return $.ui.open({ id: PANE, title: TITLE, columns: PANE_COLUMNS, rows: 8 })
 }
 
-/** Empties every value that holds session text or counts it; a second call changes nothing. */
 async function resetAll($: EngineInterface) {
   await update($, meta, () => ({ schemaVersion: SCHEMA_VERSION }))
   await update($, main, m => ({ ...DEFAULT_MAIN, model: normalize(DEFAULT_MAIN, m).model, mode: normalize(DEFAULT_MAIN, m).mode }))
@@ -258,7 +252,7 @@ export const register: Register = (on, options) => {
       description: 'Flightdeck, the live agent dashboard: open, close, reset, audit what it holds, or set the layout',
       argumentHint: '[open|close|reset|audit|layout auto|compact|wide|mini]',
     })
-    await migrate($)
+    await resetIfOlderSchema($)
     // A host without usage (headless, an SDK host, a session not yet bound) just starts without it.
     const u = await $.session.usage().catch(() => null)
     if (u) {
@@ -506,7 +500,7 @@ export const register: Register = (on, options) => {
       await consultStarted($, cfg, id, e.subagentType.split(':').pop() ?? 'agent')
       return started
     }
-    const [type, description] = await Promise.all([clean($, e.name ?? e.subagentType, CAP.name), clean($, e.description, CAP.description)])
+    const [type, description] = await Promise.all([scrubAndTally($, e.name ?? e.subagentType, CAP.name), scrubAndTally($, e.description, CAP.description)])
     const card: AgentCard = {
       ...normalizeCard({}),
       id,
