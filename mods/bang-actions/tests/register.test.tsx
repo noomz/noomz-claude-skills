@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { commandKey } from '../hooks/parse'
+import { buttonLabel, commandKey } from '../hooks/parse'
 
 const SURFACES = ['terminal', 'desktop'] as const
 const BAND = { plugin: 'bang-actions', component: 'AbovePrompt', props: {
@@ -42,9 +42,17 @@ function engine(on: On, { exitCode = 0, draft = '', deny = [] as string[], stdou
   return { runs, filled }
 }
 
-type Found = { text?: string; props?: Record<string, unknown> }
-const buttons = async (ui: { findAll: (q: { type: 'Button' }) => Promise<Found[]> }) => ui.findAll({ type: 'Button' })
-const labels = async (ui: { findAll: (q: { type: 'Button' }) => Promise<Found[]> }) => (await buttons(ui)).map(b => b.text)
+type Found = { text?: string }
+type Drawing = { findAll: (q: { type: 'Button' | 'Code' }) => Promise<Found[]> }
+
+// The band as the person reads it, one entry per row: `▶ cmd` for a Run row,
+// `✎ cmd` for a Review row (the command as its Code shows it, on one line),
+// then `Dismiss`.
+const labels = async (ui: Drawing) => {
+  const codes = (await ui.findAll({ type: 'Code' })).map(c => buttonLabel(c.text ?? ''))
+  return (await ui.findAll({ type: 'Button' })).map(b =>
+    b.text === '▶ Run' ? `▶ ${codes.shift()}` : b.text === '✎ Fill' ? `✎ ${codes.shift()}` : b.text)
+}
 
 for (const surface of SURFACES) {
   test(`${surface}: a suggested \`! cmd\` runs on press and shows its result in the band`, async ($, on) => {
@@ -72,7 +80,7 @@ for (const surface of SURFACES) {
     await $.tool.check({ tool: 'Bash', input: { command: 'sudo make install' }, tool_use_id: 'tu1' })
     await $.tool.check({ tool: 'Bash', input: { command: 'ls' } })
     const ui = await $.ui.mount({ ...BAND, surface })
-    expect(await labels(ui)).toEqual(['sudo make install', 'Dismiss'])
+    expect(await labels(ui)).toEqual(['✎ sudo make install', 'Dismiss'])
 
     await ui.press({ key: `fill-${commandKey('sudo make install')}` })
     expect(filled).toEqual(['! sudo make install'])
@@ -87,8 +95,8 @@ test('Run buttons carry no hotkey, so typing into a focused band never runs a co
   await $.tool.check({ tool: 'Bash', input: { command: 'rm -rf build' }, tool_use_id: 'tu1' })
   const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
   const drawn = JSON.stringify(await ui.drawn())
-  expect(drawn).toContain('"label":"▶ gcloud auth login"}')
-  expect(drawn).toContain('"label":"rm -rf build","hotkey":"a"')
+  expect(drawn).toContain('"label":"▶ Run"}')
+  expect(drawn).toContain('"label":"✎ Fill","hotkey":"a"')
 })
 
 test('a suggestion the permission rules deny at press time moves to Review and only fills', async ($, on) => {
@@ -99,7 +107,7 @@ test('a suggestion the permission rules deny at press time moves to Review and o
   await ui.press({ key: RUN_LOGIN })
   expect(runs).toHaveLength(0)
   expect(filled).toEqual(['! gcloud auth login'])
-  expect(await labels(ui)).toEqual(['gcloud auth login', 'Dismiss'])
+  expect(await labels(ui)).toEqual(['✎ gcloud auth login', 'Dismiss'])
 })
 
 test('a suggestion already denied this session never becomes a Run button', async ($, on) => {
@@ -108,7 +116,7 @@ test('a suggestion already denied this session never becomes a Run button', asyn
   await $.tool.check({ tool: 'Bash', input: { command: 'gcloud auth login' }, tool_use_id: 'tu1' })
   await $.turn.complete(turnDone(ANSWER))
   const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
-  expect(await labels(ui)).toEqual(['gcloud auth login', 'Dismiss'])
+  expect(await labels(ui)).toEqual(['✎ gcloud auth login', 'Dismiss'])
 })
 
 test('a suggestion too long to show in full goes to Review', async ($, on) => {
@@ -117,7 +125,7 @@ test('a suggestion too long to show in full goes to Review', async ($, on) => {
 
   await $.turn.complete(turnDone(`Run \`! ${long}\`.`))
   const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
-  expect(await labels(ui)).toEqual([long, 'Dismiss'])
+  expect(await labels(ui)).toEqual([`✎ ${long}`, 'Dismiss'])
 })
 
 test('a failing command shows its exit code; ANSI output is cleaned for the band', async ($, on) => {
@@ -179,4 +187,16 @@ test('subagent answers and interrupted turns add nothing', async ($, on) => {
   await $.turn.complete({ ...turnDone(ANSWER), reason: 'aborted', isAborted: true })
   const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
   expect(await labels(ui)).toEqual([])
+})
+
+test('a long chained command shows one step per line beside a short Run button', async ($, on) => {
+  engine(on)
+  const cmd = 'export T=$(gh auth token --user a); gh pr ready 1 -R o/r && gh pr merge 1 -R o/r --merge'
+
+  await $.turn.complete(turnDone(`Run \`! ${cmd}\`.`))
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect((await ui.findAll({ type: 'Code' })).map(c => c.text)).toEqual([
+    'export T=$(gh auth token --user a);\n  gh pr ready 1 -R o/r &&\n  gh pr merge 1 -R o/r --merge',
+  ])
+  expect(await labels(ui)).toEqual([`▶ ${cmd}`, 'Dismiss'])
 })

@@ -4,7 +4,7 @@ import type { EngineInterface, Register } from 'claude-code'
 import type { RunResult } from '../types'
 
 import {
-  buttonLabel, commandKey, extractBangCommands, MAX_RUN_CHARS, mergeCommands, outputTail,
+  buttonLabel, commandKey, displayCommand, extractBangCommands, MAX_RUN_CHARS, mergeCommands, outputTail,
 } from './parse'
 
 // Hotkeys only on Review buttons, which fill and never run. Run buttons take a
@@ -15,6 +15,9 @@ const HOTKEYS = ['a', 'b', 'c', 'd', 'e']
 
 const TIMEOUT_MS = 5 * 60 * 1000
 const MODEL_OUTPUT_CHARS = 20_000
+// Code draws at most 10,000 characters; a longer Review command shows its
+// head, and its fill still puts the whole command in the prompt.
+const MAX_SHOWN_CHARS = 9_000
 
 const suggested = atom({ plugin: 'bang-actions', key: 'suggested' } as const, [])
 const review = atom({ plugin: 'bang-actions', key: 'review' } as const, [])
@@ -154,7 +157,11 @@ export const register: Register = on => {
       return next(e)
     }
 
-    const { Box, Button, Text } = $.ui.resolve(e)
+    const { Box, Button, Code, Text } = $.ui.resolve(e)
+    const shown = (cmd: string) => {
+      const text = displayCommand(cmd)
+      return text.length > MAX_SHOWN_CHARS ? `${text.slice(0, MAX_SHOWN_CHARS - 1)}…` : text
+    }
 
     return (
       <Box flexDirection="column">
@@ -166,24 +173,24 @@ export const register: Register = on => {
             {result.tail !== '' && <Text dimColor>{result.tail}</Text>}
           </Box>
         )}
-        <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
-          {runs.length > 0 && <Text dimColor>Run:</Text>}
-          {runs.map(cmd => (
-            <Button
-              key={`run-${commandKey(cmd)}`}
-              label={`▶ ${buttonLabel(cmd)}`}
-              onPress={() => run($, cmd)}
-            />
-          ))}
-          {fills.length > 0 && <Text dimColor>Review:</Text>}
-          {fills.map((cmd, i) => (
-            <Button
-              key={`fill-${commandKey(cmd)}`}
-              label={buttonLabel(cmd)}
-              hotkey={HOTKEYS[i]}
-              onPress={() => fill($, cmd)}
-            />
-          ))}
+        {runs.map(cmd => (
+          <Box key={`run-row-${commandKey(cmd)}`} flexDirection="row" columnGap={1}>
+            <Button key={`run-${commandKey(cmd)}`} label="▶ Run" onPress={() => run($, cmd)} />
+            <Box flexGrow={1} flexShrink={1}>
+              <Code source={shown(cmd)} language="bash" />
+            </Box>
+          </Box>
+        ))}
+        {fills.length > 0 && <Text dimColor>Review (fills the prompt, you press Enter):</Text>}
+        {fills.map((cmd, i) => (
+          <Box key={`fill-row-${commandKey(cmd)}`} flexDirection="row" columnGap={1}>
+            <Button key={`fill-${commandKey(cmd)}`} label="✎ Fill" hotkey={HOTKEYS[i]} onPress={() => fill($, cmd)} />
+            <Box flexGrow={1} flexShrink={1}>
+              <Code source={shown(cmd)} language="bash" />
+            </Box>
+          </Box>
+        ))}
+        <Box flexDirection="row" justifyContent="flex-end">
           <Button
             key="dismiss"
             label="Dismiss"
