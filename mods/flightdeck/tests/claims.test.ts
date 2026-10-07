@@ -1,7 +1,7 @@
 import type { On } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 
-import { DEFAULT_GATE, DEFAULT_TURN } from '../hooks/core'
+import { DEFAULT_GATE, DEFAULT_TURN, adviceLine } from '../hooks/core'
 import { scrub } from '../hooks/hygiene'
 import { flightdeck, stateStore } from './store'
 import type { AgentCard, Architect, Gate, Hygiene, LogLine, Turn, Usage } from '../types'
@@ -176,6 +176,21 @@ describe("an architect's advice", () => {
 
   test('is cut to 160 characters', async ($, on) => {
     expect(await advise($, on, 'a'.repeat(300))).toBe(`${'a'.repeat(159)}…`)
+  })
+
+  test('masks a flag value at the start of the line', async ($, on) => {
+    expect(await advise($, on, '--token abc12345xyz is hardcoded in deploy.sh; move it to the environment')).toBe('token [masked] is hardcoded in deploy.sh; move it to the environment')
+  })
+
+  test('masks a flag value after a bullet or a quote mark, a token split by __, and a glued PEM block', () => {
+    expect(adviceLine('- --api-key MVzE-MV2n0').text).toBe('api-key [masked]')
+    expect(adviceLine('> --secret abc123def456').text).toBe('secret [masked]')
+    expect(adviceLine('ghp__abcdefghijkl12 leaked').text).toBe('[masked] leaked')
+    expect(adviceLine('-----BEGIN PRIVATE KEY-----MIIEvQIBADANBgkqhkiG9w0BAQEFAASC-----END PRIVATE KEY-----').text).toBe('BEGIN PRIVATE KEY-----[masked]-----END PRIVATE KEY-----')
+  })
+
+  test('skips a line that is only marks', async ($, on) => {
+    expect(await advise($, on, '---\n**\nShip it')).toBe('Ship it')
   })
 })
 

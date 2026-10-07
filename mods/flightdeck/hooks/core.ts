@@ -547,9 +547,19 @@ export const handbackOf = (text: string): { from: string; body: string } | null 
   return body ? { from, body } : null
 }
 
+/**
+ * One line of an architect's report: the first non-empty line that does not open with `[` or `<`,
+ * masked whole, then with its Markdown marks removed. The marks come off the masked text, so a
+ * flag or a token prefix at the start of the line is still in place when scrub() reads it.
+ */
 export const adviceLine = (report: string): Scrubbed => {
-  const first = report.split('\n').map(l => l.trim()).find(l => l && !l.startsWith('[') && !l.startsWith('<')) ?? ''
-  return scrub(first.replace(/\*\*|__/g, '').replace(/^[#>*\s-]+/, ''), CAP.advice)
+  for (const line of report.split('\n')) {
+    const raw = line.trim()
+    if (!raw || raw.startsWith('[') || raw.startsWith('<')) continue
+    const found = kept(raw, CAP.advice, masked => masked.replace(/\*\*|__/g, '').replace(/^[#>*\s-]+/, ''))
+    if (found.text) return found
+  }
+  return { text: NO_TEXT, masked: 0 }
 }
 
 export const elapsedOf = (c: AgentCard, now: number) => (c.endedAt ?? now) - c.spawnedAt
