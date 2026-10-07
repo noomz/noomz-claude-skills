@@ -523,11 +523,22 @@ export const titleLines = (title: string, first: number, rest: number): [string,
   return [t.slice(0, at).trim(), shorten(t.slice(at), rest)]
 }
 
-export const promptLine = (text: string): { who: string; text: string } => {
-  const tag = /^\s*<([a-z][a-z-]{0,31})[\s>]/.exec(text)?.[1]
-  if (!tag) return { who: 'you', text: `new turn · ${plural([...text].length, 'char')}` }
-  const from = /\bfrom="([a-z0-9]+)"/i.exec(text)?.[1]
-  return { who: 'engine', text: `${tag.replace(/-/g, ' ')}${from ? ` from ${from.slice(0, 8)}` : ''}` }
+/** The rows for the turns the engine starts, by the UserPromptSubmit `source` of their text. */
+const ENGINE_TURNS: Record<string, string> = {
+  system: 'message delivered',
+  loop_wakeup: 'loop wakeup',
+  schedule_wakeup: 'scheduled task',
+  poll_event: 'event delivered',
+}
+
+/**
+ * A turn's log row. Nothing of the text is read: a prompt you type (or send through the SDK) is
+ * its length alone, and a turn the engine started is a fixed label for its source. A source the
+ * table does not name, or none, is logged as typed.
+ */
+export const promptLine = (text: string, source: string | undefined): { who: string; text: string } => {
+  const engine = source === undefined ? undefined : ENGINE_TURNS[source]
+  return engine ? { who: 'engine', text: engine } : { who: 'you', text: `new turn · ${plural([...text].length, 'char')}` }
 }
 
 /**

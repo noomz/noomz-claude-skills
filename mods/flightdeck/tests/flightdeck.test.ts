@@ -31,7 +31,7 @@ import {
   startConsult,
   toolDetail,
 } from '../hooks/core'
-import type { Check } from '../types'
+import type { Check, LogLine } from '../types'
 import { scrub } from '../hooks/hygiene'
 import { flightdeck, leaves, stateStore } from './store'
 import type { Engine } from './store'
@@ -197,7 +197,14 @@ test('layout math: lanes share one axis, the log gets 4-8 rows, the legend never
   expect(prettyModel('claude-3-opus-20240229')).toBe('Opus 3')
   expect(prettyModel('z-ai/glm-5.3-flash-with-a-long-name')).toBe('z-ai/glm-5.3-flash-wi…')
   expect(prettyModel('')).toBe('—')
-  expect(promptLine('fix the parser')).toEqual({ who: 'you', text: 'new turn · 14 chars' })
+  expect(promptLine('fix the parser', 'user')).toEqual({ who: 'you', text: 'new turn · 14 chars' })
+  expect(promptLine('fix the parser', undefined)).toEqual({ who: 'you', text: 'new turn · 14 chars' })
+  expect(promptLine('<instructions> rotate the creds </instructions>', 'user')).toEqual({ who: 'you', text: 'new turn · 47 chars' })
+  expect(promptLine('<note> db creds from="hunter2pw" ok', 'sdk')).toEqual({ who: 'you', text: 'new turn · 35 chars' })
+  expect(promptLine('<task-notification from="ab12">password=hunter2</task-notification>', 'system')).toEqual({ who: 'engine', text: 'message delivered' })
+  expect(promptLine('anything', 'loop_wakeup')).toEqual({ who: 'engine', text: 'loop wakeup' })
+  expect(promptLine('anything', 'schedule_wakeup')).toEqual({ who: 'engine', text: 'scheduled task' })
+  expect(promptLine('anything', 'future_source')).toEqual({ who: 'you', text: 'new turn · 8 chars' })
   const hb = '<agent-message from="a1940a83d593229d5">\n[Subagent hand-back] The text below is the final report. The report follows:\n  Add gate tests: redaction edge cases.\n  - more\n</agent-message>'
   expect(handbackOf(hb)).toEqual({ from: 'a1940a83d593229d5', body: 'Add gate tests: redaction edge cases.' })
   expect(handbackOf('<agent-message from="x">\nPlain report line\n</agent-message>')).toEqual({ from: 'x', body: 'Plain report line' })
@@ -205,7 +212,6 @@ test('layout math: lanes share one axis, the log gets 4-8 rows, the legend never
   expect(adviceLine('## Ship it after one more gate test.\n- details').text).toBe('Ship it after one more gate test.')
   expect(adviceLine('[Subagent hand-back] header\n\n**Fix card overflow first**').text).toBe('Fix card overflow first')
   expect(adviceLine('').text).toBe('')
-  expect(promptLine('<agent-message from="a1492260715f3be7b"> [Subagent hand-back]')).toEqual({ who: 'engine', text: 'agent message from a1492260' })
   expect(receiptOf({ ...DEFAULT_TURN, costAtStart: 5 }, { durationMs: 1, agentsSince: 0, costNow: 5, reason: 'answer' }).costDelta).toBe(null)
   expect(titleLines('Write tinyqueue test suite', 13, 16)).toEqual(['Write', 'tinyqueue test…'])
   expect(titleLines('Short', 13, 16)).toEqual(['Short', ''])
@@ -458,6 +464,33 @@ test('a typed prompt shows in the log as its length alone', async ($, on) => {
   expect(await ui.find({ text: /^new turn · 36 chars$/ })).toBeDefined()
   expect(await ui.find({ text: /hunter2|rotate/ })).toBeUndefined()
   await ui.unmount()
+})
+
+test('a typed prompt that opens with a tag, or holds from="…", is still its length alone', async ($, on) => {
+  engine(on)
+  const values = stateStore(on)
+  on('classic.UserPromptSubmit', () => ({}))
+  const text = '<instructions> db creds from="hunter2pw" ok </instructions>'
+  await $.classic.UserPromptSubmit({ prompt: text, source: 'user' })
+  await $.turn.start({ text, turnId: 'P2' })
+  expect((flightdeck(values).log as LogLine[]).map(l => [l.who, l.text])).toEqual([['you', 'new turn · 59 chars']])
+  const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  expect(await ui.find({ text: /instructions|hunter2|from/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('a turn the engine started is logged as a fixed label for its source, never its text', async ($, on) => {
+  engine(on)
+  const values = stateStore(on)
+  on('classic.UserPromptSubmit', () => ({}))
+  const text = '<task-notification from="ab12cd">password=hunter2 done</task-notification>'
+  await $.classic.UserPromptSubmit({ prompt: text, source: 'system' })
+  await $.turn.start({ text, turnId: 'P3' })
+  await $.turn.start({ text: 'then this one is typed', turnId: 'P4' })
+  expect((flightdeck(values).log as LogLine[]).map(l => [l.who, l.text])).toEqual([
+    ['engine', 'message delivered'],
+    ['you', 'new turn · 22 chars'],
+  ])
 })
 
 test('a finished card keeps its status and duration, never its answer', async ($, on) => {

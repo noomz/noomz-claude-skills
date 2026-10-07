@@ -311,8 +311,11 @@ export const register: Register = (on, options) => {
     return { text: 'Flightdeck opened. Focus it with ctrl+x tab; 1-6 expand cards, f/s/o open the gate rows.' }
   })
 
+  // Who started the next turn: the engine says so here, and turn.start carries only the text.
+  let promptSource: string | undefined
   on('classic.UserPromptSubmit', async ($, e, next) => {
     await noteMode($, e.permission_mode)
+    promptSource = e.source
     return next(e)
   })
 
@@ -343,9 +346,10 @@ export const register: Register = (on, options) => {
     if (back && a && a.ids.includes(back.from)) {
       await noteAdvice($, cfg, back.body)
     } else if (e.text) {
-      const p = promptLine(e.text)
+      const p = promptLine(e.text, promptSource)
       await say($, p.who, p.text)
     }
+    promptSource = undefined
     return next(e)
   })
 
