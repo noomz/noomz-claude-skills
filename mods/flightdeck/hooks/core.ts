@@ -26,6 +26,11 @@ import type { Hygiene, SafeText, Scrubbed } from './hygiene'
 
 export const SCHEMA_VERSION = 3
 
+const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
+
+/** Only state this version wrote reads as current: upstream flightdeck stored no `meta` at all. */
+export const isCurrentSchema = (meta: unknown) => isObject(meta) && meta.schemaVersion === SCHEMA_VERSION
+
 export const CAP = { description: 80, name: 40, detail: 64, advice: 160, who: 40, line: 160 } as const
 
 export const NO_TEXT = '' as SafeText
@@ -49,8 +54,6 @@ export const DEFAULT_TURN: Turn = { edits: 0, errorStreak: 0, errors: 0, isRevie
 export const DEFAULT_VIEW: View = { expanded: null, gateOpen: null, layout: null }
 export const DEFAULT_ROSTER: Roster = { architectTypes: [] }
 export const DEFAULT_HYGIENE: Hygiene = { masked: 0, rejected: 0 }
-
-const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 
 /** A stored object merged over its defaults, so a value saved under an older shape still reads. */
 export const normalize = <T extends object>(def: T, stored: unknown): T =>

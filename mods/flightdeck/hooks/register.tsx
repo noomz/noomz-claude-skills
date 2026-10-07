@@ -16,6 +16,7 @@ import {
   DEFAULT_VIEW,
   EDIT_TOOLS,
   SCHEMA_VERSION,
+  isCurrentSchema,
   afterCall,
   applyStep,
   bucketOf,
@@ -69,7 +70,7 @@ const PANE_COLUMNS = 66
 
 // ---------------------------------------------------------------- state
 
-const meta = atom({ plugin: 'flightdeck', key: 'meta' } as const, { schemaVersion: SCHEMA_VERSION })
+const meta = atom({ plugin: 'flightdeck', key: 'meta' } as const, { schemaVersion: 0 })
 const main = atom({ plugin: 'flightdeck', key: 'main' } as const, DEFAULT_MAIN)
 const usage = atom({ plugin: 'flightdeck', key: 'usage' } as const, DEFAULT_USAGE)
 const architect = atom({ plugin: 'flightdeck', key: 'architect' } as const, DEFAULT_ARCHITECT)
@@ -134,9 +135,8 @@ async function audit($: EngineInterface) {
   for (const [key, entries] of rows) $.ui.log(`${key}: ${entries.join(', ')}`)
 }
 
-async function resetIfOlderSchema($: EngineInterface) {
-  const m = await read($, meta)
-  if ((m?.schemaVersion ?? 0) < SCHEMA_VERSION) await resetAll($)
+async function resetUnlessCurrentSchema($: EngineInterface) {
+  if (!isCurrentSchema(await read($, meta))) await resetAll($)
 }
 
 async function tally($: EngineInterface, ...found: Scrubbed[]) {
@@ -258,7 +258,7 @@ export const register: Register = (on, options) => {
       description: 'Flightdeck, the live agent dashboard: open, close, reset, audit what it holds, or set the layout',
       argumentHint: '[open|close|reset|audit|layout auto|compact|wide|mini]',
     })
-    await resetIfOlderSchema($)
+    await resetUnlessCurrentSchema($)
     // A host without usage (headless, an SDK host, a session not yet bound) just starts without it.
     const u = await $.session.usage().catch(() => null)
     if (u) {

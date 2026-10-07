@@ -243,12 +243,20 @@ describe('what a reset empties and keeps', () => {
     expect([s.usage, s.turn, s.gate]).toEqual([{ ...usage, pct: null, tokens: null }, DEFAULT_TURN, DEFAULT_GATE])
   })
 
-  for (const [schemaVersion, kept] of [[2, 0], [3, 1]] as const) {
-    test(`session start ${kept ? 'keeps' : 'empties'} state stored under schema version ${schemaVersion}`, async ($, on) => {
+  const metas: [label: string, meta: unknown, kept: number][] = [
+    ['version 2', { schemaVersion: 2 }, 0],
+    ['version 3', { schemaVersion: 3 }, 1],
+    ['version 4', { schemaVersion: 4 }, 0],
+    ['no meta, as upstream flightdeck wrote it', undefined, 0],
+    ['an empty meta', {}, 0],
+    ['a meta that is not an object', 'v3', 0],
+  ]
+  for (const [label, meta, kept] of metas) {
+    test(`session start ${kept ? 'keeps' : 'empties'} state stored under ${label}`, async ($, on) => {
       const values = engine(on)
       on('command.register', (_$, e) => ({ value: { command: e.name } }))
       on('session.start', (_$, e) => ({ cwd: e.cwd }))
-      values.set('flightdeck/meta/', { value: { schemaVersion }, version: 1 })
+      if (meta !== undefined) values.set('flightdeck/meta/', { value: meta, version: 1 })
       values.set('flightdeck/log/', { value: [{ at: 0, who: 'you', text: 'old', kind: 'info', agentId: null }], version: 1 })
       await $.session.start({ cwd: '/w', surface: null, isInteractive: false })
       expect(state(values).log.length).toBe(kept)
