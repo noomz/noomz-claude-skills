@@ -65,6 +65,16 @@ describe('scrub misses a key wrapped in Markdown emphasis', () => {
   ])
 })
 
+describe('scrub misses a key in backticks, brackets or escaped JSON, and a URL password with a second @ or a space', () => {
+  rows([
+    ['Use `password`: hunter2zz', 'Use `password`: hunter2zz', 0],
+    ["config['password']='hunter2'", "config['password']='hunter2'", 0],
+    ['{\\"password\\":\\"hunter2\\"}', '{\\"password\\":\\"hunter2\\"}', 0],
+    ['https://app:p@ssw0rd9@db', 'https://app:[masked]@ssw0rd9@db', 1],
+    ['https://app:correct horse9@db', 'https://app:correct horse9@db', 0],
+  ])
+})
+
 describe('scrub leaves a PASS or PAT value that starts with a PEM armor word', () => {
   rows([
     ['DB_PASS=-----BEGINhunter2!', 'DB_PASS=-----BEGINhunter2!', 0],
