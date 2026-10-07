@@ -90,6 +90,8 @@ test('a URL tool detail keeps the host alone', () => {
   expect(toolDetail('WebFetch', { url: 'https://user%40x.com:pw@host.example/a' }).text).toBe('WebFetch')
   expect(toolDetail('WebFetch', { url: 'https://[::1]:8080/x' }).text).toBe('WebFetch → [::1]')
   expect(toolDetail('WebFetch', { url: 'https://--secret:@api.x.com/v1' }).text).toBe('WebFetch → api.x.com')
+  expect(toolDetail('WebFetch', { url: 'https://AKIAABCDEFGHIJKLMNOP.example.com/x' }).text).toBe('WebFetch → [masked].example.com')
+  expect(toolDetail('WebFetch', { url: 'https://Docs.Example.COM/x' }).text).toBe('WebFetch → Docs.Example.COM')
   expect(toolDetail('WebSearch', { query: 'my password is hunter2' }).text).toBe('WebSearch')
 })
 

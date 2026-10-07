@@ -1,7 +1,7 @@
 import type { On } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 
-import { DEFAULT_GATE, DEFAULT_TURN, adviceLine } from '../hooks/core'
+import { DEFAULT_GATE, DEFAULT_TURN, adviceLine, consultVia } from '../hooks/core'
 import { scrub } from '../hooks/hygiene'
 import { flightdeck, stateStore } from './store'
 import type { AgentCard, Architect, Gate, Hygiene, LogLine, Turn, Usage } from '../types'
@@ -50,8 +50,15 @@ describe('scrub misses the curl -u forms the README lists', () => {
   ])
 })
 
-describe('scrub misses a value after api key and a space', () => {
-  rows([['api key abc123def456', 'api key abc123def456', 0]])
+describe('scrub masks a value after a space for password, passwd and passphrase, and misses it after api key, pwd, token and secret', () => {
+  rows([
+    ['passwd abc123def456', 'passwd [masked]', 1],
+    ['passphrase abc123def456', 'passphrase [masked]', 1],
+    ['api key abc123def456', 'api key abc123def456', 0],
+    ['pwd abc123def456', 'pwd abc123def456', 0],
+    ['token abc123def456', 'token abc123def456', 0],
+    ['secret abc123def456', 'secret abc123def456', 0],
+  ])
 })
 
 describe('scrub leaves a PASS or PAT value that starts with a PEM armor word', () => {
@@ -156,6 +163,7 @@ describe('the names flightdeck keeps are masked and cut to 40 characters', () =>
     await $.turn.start({ text: 'go', turnId: 'N3' })
     await $.agent.spawn(spawn('password:hunter2architect', 'review'))
     expect(state(values).architect.consults.map(c => c.via)).toEqual(['[masked]'])
+    expect(consultVia('architect:password:hunter2zz').text).toBe('[masked]')
   })
 
   test('an architect roster entry', async ($, on) => {

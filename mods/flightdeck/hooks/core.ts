@@ -28,7 +28,6 @@ export const SCHEMA_VERSION = 3
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 
-/** Only state this version wrote reads as current: upstream flightdeck stored no `meta` at all. */
 export const isCurrentSchema = (meta: unknown) => isObject(meta) && meta.schemaVersion === SCHEMA_VERSION
 
 export const CAP = { description: 80, name: 40, detail: 64, advice: 160, who: 40, line: 160 } as const
@@ -37,12 +36,7 @@ export const NO_TEXT = '' as SafeText
 
 const UNCUT = Number.MAX_SAFE_INTEGER
 
-/**
- * The boundary every kept field crosses: scrub() the raw text whole, derive the part to keep from
- * the masked text, then cap it with scrub()'s own cut. A derivation reads only what scrub() left
- * visible, so it cannot move a secret out of a mask. The count is what the whole text held.
- */
-export const kept = (raw: unknown, cap: number, derive: (masked: string) => string = s => s): Scrubbed => {
+export const kept = (raw: unknown, cap: number, derive: (masked: SafeText) => string = s => s): Scrubbed => {
   const whole = scrub(raw, UNCUT)
   const text = derive(whole.text)
   return { text: text.length > cap ? scrub(text, cap).text : (text as SafeText), masked: whole.masked }
@@ -227,7 +221,6 @@ export const prettyModel = (id: string) => {
 
 const MASK = '[masked]'
 
-/** One line cut to `n` cells with a final …. The cut never lands inside a `[masked]`, so a title cut from a masked field re-scrubs to nothing new. */
 export const shorten = (s: string, n: number) => {
   const one = s.replace(/\s+/g, ' ').trim()
   if (n <= 0) return ''
@@ -288,25 +281,14 @@ export const bucketOf = (tool: string): Bucket =>
 const lastSegments = (path: string, n: number) => path.split(/[\\/]/).filter(Boolean).slice(-n).join('/')
 
 const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/
-/** The next shell word after any whitespace: plain runs, quoted strings (closed or not) and escapes. */
 const SHELL_WORD = /\s*((?:[^\s"'\\]+|"(?:[^"\\]|\\[\s\S])*"?|'[^']*'?|\\[\s\S]?)+)/y
 const QUOTING = /"((?:[^"\\]|\\[\s\S])*)"?|'([^']*)'?|\\([\s\S])/g
 
 const unquoted = (word: string) => word.replace(QUOTING, (_, d: string | undefined, s: string | undefined, e: string | undefined) => d ?? s ?? e ?? '')
 
-/**
- * An assignment whose value scrub() would read on past the next word, so the next word may be
- * that value: a value with no letter or digit, one that ends in `=`, `:` or a bare `--flag`, the
- * word `is`, or any value of `Authorization`.
- */
 const RUNS_ON = /^(?:[^A-Za-z0-9]*|is|[\s\S]*(?:[=:]|--[^\s=]*))$/i
 const valueRunsOn = (name: string, value: string) => RUNS_ON.test(value) || /^authorization$/i.test(name)
 
-/**
- * The first shell word that is not a `NAME=value` assignment, as written: quotes and backslash
- * escapes keep a word together, so a quoted value is never split at its spaces, and the quotes
- * stay on for scrub() to read. An assignment whose value runs on ends the search with no program.
- */
 const programOf = (command: string) => {
   SHELL_WORD.lastIndex = 0
   for (let word = SHELL_WORD.exec(command)?.[1]; word; word = SHELL_WORD.exec(command)?.[1]) {
@@ -328,7 +310,9 @@ const HOST = /^[a-z0-9._-]+$|^\[[0-9a-f:.]+\]$/i
 const hostOf = (url: string) => {
   try {
     const u = new URL(url)
-    return u.username.includes('%') || u.password.includes('%') || !HOST.test(u.hostname) ? '' : u.hostname
+    if (u.username.includes('%') || u.password.includes('%') || !HOST.test(u.hostname)) return ''
+    const at = url.toLowerCase().indexOf(u.hostname)
+    return at < 0 ? u.hostname : url.slice(at, at + u.hostname.length)
   } catch {
     return ''
   }
@@ -336,40 +320,35 @@ const hostOf = (url: string) => {
 
 const KEY_MARK = /[=:'"`\s]|--/
 const DRIVE = /^[A-Za-z]:[\\/]/
-
-/**
- * A path's last two segments, taken before scrub() when the path holds nothing that can open a
- * key or a URL: a `=`, `:`, quote, space or `--` anywhere in it (a drive letter aside) keeps the
- * path whole for scrub(), and the segments are picked from the masked text.
- */
-const pathPart = (path: string): [part: string, segments: number] =>
-  KEY_MARK.test(DRIVE.test(path) ? path.slice(2) : path) ? [path, 2] : [lastSegments(path, 2), 0]
-
 const FRAME = ' → '
 const QUOTED = /["'\\]/
 const SLASH = /[\\/]/
 
-/**
- * The tool name and one part of its input: a command's program word, a file path's last two
- * segments or a URL's host. The part is taken whole before scrub(), never cut inside a shell word
- * or a value, and the program's quotes come off and its last segment is picked from the masked
- * text, so a URL used as the program keeps its mask.
- */
+const afterFrame = (derive: (part: string) => string) => (masked: SafeText) => {
+  const at = masked.indexOf(FRAME)
+  if (at < 0) return masked
+  const part = derive(masked.slice(at + FRAME.length))
+  return part ? `${masked.slice(0, at)}${FRAME}${part}` : masked.slice(0, at)
+}
+
+const programPart = afterFrame(word => {
+  const plain = QUOTED.test(word) ? unquoted(word) : word
+  return SLASH.test(plain) ? lastSegments(plain, 1) : plain
+})
+
+const pathSegments = afterFrame(path => lastSegments(path, 2))
+
+const detailOf = (tool: string, part: string, derive?: (masked: SafeText) => string) =>
+  part ? kept(`${tool}${FRAME}${part}`, CAP.detail, derive) : kept(tool, CAP.detail)
+
 export const toolDetail = (tool: string, input: unknown): Scrubbed => {
   const i = isObject(input) ? input : {}
   const str = (k: string) => (typeof i[k] === 'string' ? (i[k] as string) : '')
   const path = str('file_path') || str('notebook_path') || str('path')
-  const [part, segments] = str('command') ? [programOf(str('command')), 1] : path ? pathPart(path) : [hostOf(str('url')), 0]
-  if (!part) return kept(tool, CAP.detail)
-  if (!segments) return kept(`${tool}${FRAME}${part}`, CAP.detail)
-  return kept(`${tool}${FRAME}${part}`, CAP.detail, masked => {
-    const at = masked.indexOf(FRAME)
-    if (at < 0) return masked
-    const word = masked.slice(at + FRAME.length)
-    const plain = segments === 1 && QUOTED.test(word) ? unquoted(word) : word
-    const rest = SLASH.test(plain) ? lastSegments(plain, segments) : plain
-    return rest ? `${masked.slice(0, at)}${FRAME}${rest}` : masked.slice(0, at)
-  })
+  if (str('command')) return detailOf(tool, programOf(str('command')), programPart)
+  if (!path) return detailOf(tool, hostOf(str('url')))
+  const holdsKey = KEY_MARK.test(DRIVE.test(path) ? path.slice(2) : path)
+  return holdsKey ? detailOf(tool, path, pathSegments) : detailOf(tool, lastSegments(path, 2))
 }
 
 /** Keeps the last `max` checks, but never drops a pending ask: its settle must still find it. */
@@ -548,7 +527,6 @@ export const titleLines = (title: string, first: number, rest: number): [string,
   return [t.slice(0, at).trim(), shorten(t.slice(at), rest)]
 }
 
-/** The rows for the turns the engine starts, by the UserPromptSubmit `source` of their text. */
 const ENGINE_TURNS: Record<string, string> = {
   system: 'message delivered',
   loop_wakeup: 'loop wakeup',
@@ -556,13 +534,8 @@ const ENGINE_TURNS: Record<string, string> = {
   poll_event: 'event delivered',
 }
 
-/**
- * A turn's log row. Nothing of the text is read: a prompt you type (or send through the SDK) is
- * its length alone, and a turn the engine started is a fixed label for its source. A source the
- * table does not name, or none, is logged as typed.
- */
 export const promptLine = (text: string, source: string | undefined): { who: string; text: string } => {
-  const engine = source === undefined ? undefined : ENGINE_TURNS[source]
+  const engine = source ? ENGINE_TURNS[source] : undefined
   return engine ? { who: 'engine', text: engine } : { who: 'you', text: `new turn · ${plural([...text].length, 'char')}` }
 }
 
@@ -583,11 +556,6 @@ export const handbackOf = (text: string): { from: string; body: string } | null 
   return body ? { from, body } : null
 }
 
-/**
- * One line of an architect's report: the first non-empty line that does not open with `[` or `<`,
- * masked whole, then with its Markdown marks removed. The marks come off the masked text, so a
- * flag or a token prefix at the start of the line is still in place when scrub() reads it.
- */
 export const adviceLine = (report: string): Scrubbed => {
   for (const line of report.split('\n')) {
     const raw = line.trim()
@@ -598,7 +566,6 @@ export const adviceLine = (report: string): Scrubbed => {
   return { text: NO_TEXT, masked: 0 }
 }
 
-/** A consult's agent type: what follows the last `:` of the masked type, so a key before it still masks its value. */
 export const consultVia = (subagentType: string): Scrubbed => kept(subagentType, CAP.name, masked => masked.slice(masked.lastIndexOf(':') + 1))
 
 export const elapsedOf = (c: AgentCard, now: number) => (c.endedAt ?? now) - c.spawnedAt
