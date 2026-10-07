@@ -387,15 +387,16 @@ export const register: Register = on => {
     const { tool, tool_use_id, agentId, consent, ...input } = e
     const parsed = parseUpdate(input)
     if (!parsed.ok) {
-      await update($, board, old => tally(old, 'rejected', 1))
+      await update($, board, old => tally(recheckBoard(old), 'rejected', 1))
       return { deny: parsed.error }
     }
     const outcome: { error?: string } = {}
     const written = await capture($, () =>
       update($, board, old => {
-        const applied = applyUpdate(old, parsed.update)
+        const stored = recheckBoard(old)
+        const applied = applyUpdate(stored, parsed.update)
         outcome.error = applied.ok ? undefined : applied.error
-        return applied.ok ? { ...tally(old, 'masked', parsed.masked), ...applied.board } : tally(old, 'rejected', 1)
+        return applied.ok ? { ...tally(stored, 'masked', parsed.masked), ...applied.board } : tally(stored, 'rejected', 1)
       }),
     )
     return outcome.error === undefined ? { result: describeBoard(written) } : { deny: outcome.error }
