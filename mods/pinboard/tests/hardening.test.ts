@@ -63,3 +63,23 @@ describe('a link the checks cannot finish', () => {
     expect(value('links')).toEqual([{ href: 'https://github.com/o/r/pull/5', label: 'r PR #5' }])
   })
 })
+
+describe('the masked count is a running total of the masks accepted calls wrote', () => {
+  test('an accepted call adds its masks, items leaving do not lower it, a capped call adds none, and /clear resets both counts', async ($, on) => {
+    const { value } = stateStore(on)
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    on('session.end', (_$, e) => ({ sessionId: e.sessionId }))
+    const hygiene = () => (value('board') as Pinboard).hygiene
+    const call = (input: Record<string, unknown>) => $.tool.call({ tool: TOOL, ...input } as Parameters<typeof $.tool.call>[0])
+    expect(await call({ add_todos: ['rotate creds password=hunter2 AKIAABCDEFGHIJKLMNOP', 'plain'], open_decisions: ['keep token=abc123x?'] })).toHaveProperty('result')
+    expect(hygiene()).toEqual({ masked: 3, rejected: 0 })
+    expect(await call({ decide: [{ id: 'd1', answer: 'yes, password=hunter2' }], remove_todos: ['t1'] })).toHaveProperty('result')
+    expect(hygiene()).toEqual({ masked: 4, rejected: 0 })
+    expect(value('board')).toMatchObject({ todos: [{ id: 't2', text: 'plain' }], decisions: [] })
+    for (const n of [20, 20, 9]) await call({ add_todos: Array.from({ length: n }, (_, i) => `todo ${i}`) })
+    expect(await call({ add_todos: ['password=hunter2'] })).toEqual({ deny: 'The board would hold 51 todos; the limit is 50. Remove finished todos first.' })
+    expect(hygiene()).toEqual({ masked: 4, rejected: 1 })
+    await $.session.end({ reason: 'clear', sessionId: 's1', resume: { id: 's1' } })
+    expect(hygiene()).toEqual({ masked: 0, rejected: 0 })
+  })
+})
