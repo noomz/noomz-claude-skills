@@ -954,3 +954,9 @@ describe('the deny text names an unknown key as it was received', () => {
     expect('deny' in result && result.deny).toMatch(/^The update has an unknown key .*\[masked\]/)
   })
 })
+
+describe('parsePin refuses the links the README lists as lost to the masking rules', () => {
+  for (const href of ['https://web.archive.org/web/2020/https://host:8080/a@b', 'https://example.com/wiki/100%25Beef']) {
+    test(href, () => expect(parsePin(href)).toBeNull())
+  }
+})
