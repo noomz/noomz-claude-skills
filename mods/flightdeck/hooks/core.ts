@@ -288,70 +288,87 @@ export const bucketOf = (tool: string): Bucket =>
 const lastSegments = (path: string, n: number) => path.split(/[\\/]/).filter(Boolean).slice(-n).join('/')
 
 const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/
-/** One shell word: plain runs, quoted strings (closed or not) and escapes, up to unquoted whitespace. */
-const SHELL_WORD = /(?:[^\s"'\\]+|"(?:[^"\\]|\\[\s\S])*"?|'[^']*'?|\\[\s\S]?)+/y
+/** The next shell word after any whitespace: plain runs, quoted strings (closed or not) and escapes. */
+const SHELL_WORD = /\s*((?:[^\s"'\\]+|"(?:[^"\\]|\\[\s\S])*"?|'[^']*'?|\\[\s\S]?)+)/y
 const QUOTING = /"((?:[^"\\]|\\[\s\S])*)"?|'([^']*)'?|\\([\s\S])/g
 
 const unquoted = (word: string) => word.replace(QUOTING, (_, d: string | undefined, s: string | undefined, e: string | undefined) => d ?? s ?? e ?? '')
 
-/** An assignment whose value scrub() would read on past the next space: the next word may be that value. */
-const valueRunsOn = (name: string, value: string) => !/[A-Za-z0-9]/.test(value) || /^is$/i.test(value) || /^authorization$/i.test(name)
+/**
+ * An assignment whose value scrub() would read on past the next word, so the next word may be
+ * that value: a value with no letter or digit, one that ends in `=`, `:` or a bare `--flag`, the
+ * word `is`, or any value of `Authorization`.
+ */
+const RUNS_ON = /^(?:[^A-Za-z0-9]*|is|[\s\S]*(?:[=:]|--[^\s=]*))$/i
+const valueRunsOn = (name: string, value: string) => RUNS_ON.test(value) || /^authorization$/i.test(name)
 
 /**
- * The first shell word that is not a `NAME=value` assignment, whole: quotes and backslash escapes
- * keep a word together, so a quoted value is never split at its spaces. An assignment whose value
- * runs on ends the search with no program.
+ * The first shell word that is not a `NAME=value` assignment, as written: quotes and backslash
+ * escapes keep a word together, so a quoted value is never split at its spaces, and the quotes
+ * stay on for scrub() to read. An assignment whose value runs on ends the search with no program.
  */
 const programOf = (command: string) => {
-  for (let at = 0; at < command.length; ) {
-    const c = command[at]
-    if (c === ' ' || c === '\t' || c === '\n' || c === '\r') {
-      at += 1
-      continue
-    }
-    SHELL_WORD.lastIndex = at
-    const word = unquoted(SHELL_WORD.exec(command)?.[0] ?? '')
+  SHELL_WORD.lastIndex = 0
+  for (let word = SHELL_WORD.exec(command)?.[1]; word; word = SHELL_WORD.exec(command)?.[1]) {
     const assignment = ASSIGNMENT.exec(word)
     if (!assignment) return word
     const [, name = '', value = ''] = assignment
     if (valueRunsOn(name, value)) return ''
-    at = SHELL_WORD.lastIndex
   }
   return ''
 }
 
+const HOST = /^[a-z0-9._-]+$|^\[[0-9a-f:.]+\]$/i
+
+/**
+ * A URL's parsed host, when its authority reads as `host` or `user:pass@host`: a user name or
+ * password with a percent-encoded character (a space, a quote, an `=`, a second `@`) is prose
+ * the parser split at an `@`, and a host outside the DNS or IP shape is not a host.
+ */
 const hostOf = (url: string) => {
   try {
-    return new URL(url).hostname
+    const u = new URL(url)
+    return u.username.includes('%') || u.password.includes('%') || !HOST.test(u.hostname) ? '' : u.hostname
   } catch {
     return ''
   }
 }
 
+const KEY_MARK = /[=:'"`\s]|--/
+const DRIVE = /^[A-Za-z]:[\\/]/
+
+/**
+ * A path's last two segments, taken before scrub() when the path holds nothing that can open a
+ * key or a URL: a `=`, `:`, quote, space or `--` anywhere in it (a drive letter aside) keeps the
+ * path whole for scrub(), and the segments are picked from the masked text.
+ */
+const pathPart = (path: string): [part: string, segments: number] =>
+  KEY_MARK.test(DRIVE.test(path) ? path.slice(2) : path) ? [path, 2] : [lastSegments(path, 2), 0]
+
 const FRAME = ' → '
+const QUOTED = /["'\\]/
+const SLASH = /[\\/]/
 
 /**
  * The tool name and one part of its input: a command's program word, a file path's last two
- * segments (the whole path when it holds a URL) or a URL's parsed host. The part is taken whole
- * before scrub(), never cut inside a shell word, and a program's last segment is picked from the
- * masked text, so a URL used as the program keeps its mask.
+ * segments or a URL's host. The part is taken whole before scrub(), never cut inside a shell word
+ * or a value, and the program's quotes come off and its last segment is picked from the masked
+ * text, so a URL used as the program keeps its mask.
  */
 export const toolDetail = (tool: string, input: unknown): Scrubbed => {
   const i = isObject(input) ? input : {}
   const str = (k: string) => (typeof i[k] === 'string' ? (i[k] as string) : '')
   const path = str('file_path') || str('notebook_path') || str('path')
-  const program = str('command') ? programOf(str('command')) : ''
-  const [part, segments] = str('command')
-    ? [program, /[\\/]/.test(program) ? 1 : 0]
-    : path.includes('://')
-      ? [path, 2]
-      : [path ? lastSegments(path, 2) : hostOf(str('url')), 0]
+  const [part, segments] = str('command') ? [programOf(str('command')), 1] : path ? pathPart(path) : [hostOf(str('url')), 0]
   if (!part) return kept(tool, CAP.detail)
+  if (!segments) return kept(`${tool}${FRAME}${part}`, CAP.detail)
   return kept(`${tool}${FRAME}${part}`, CAP.detail, masked => {
     const at = masked.indexOf(FRAME)
-    const rest = at < 0 ? '' : masked.slice(at + FRAME.length)
-    const kept = segments > 0 ? lastSegments(rest, segments) : rest
-    return at < 0 ? masked : kept ? `${masked.slice(0, at)}${FRAME}${kept}` : masked.slice(0, at)
+    if (at < 0) return masked
+    const word = masked.slice(at + FRAME.length)
+    const plain = segments === 1 && QUOTED.test(word) ? unquoted(word) : word
+    const rest = SLASH.test(plain) ? lastSegments(plain, segments) : plain
+    return rest ? `${masked.slice(0, at)}${FRAME}${rest}` : masked.slice(0, at)
   })
 }
 
