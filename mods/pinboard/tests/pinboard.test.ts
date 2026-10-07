@@ -299,7 +299,7 @@ describe('session', () => {
     on('tool.call', (_$, e, next) => (e.tool.startsWith('mcp__') ? answer() : next(e)))
     const makes = ['gh release create v1', 'gh repo create o/r', 'gh gist create f', 'gh issue create', 'gh pr create', 'gh issue comment 1 -b x', 'gh pr comment 1 -b x', 'git push']
     for (const command of makes) await $.tool.call({ tool: 'Bash', command })
-    for (const tool of ['mcp__slack__send_message', 'mcp__docs__create_doc', 'mcp__gmail__create_draft', 'mcp__docs__read_doc']) {
+    for (const tool of ['mcp__slack__send_message', 'mcp__docs__create_doc', 'mcp__gmail__create_draft', 'mcp__docs__read_doc', 'mcp__a__create__x']) {
       await $.tool.call({ tool } as Parameters<typeof $.tool.call>[0])
     }
     await $.tool.call({ tool: 'Bash', command: 'gh pr view 1' })
