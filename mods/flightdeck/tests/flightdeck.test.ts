@@ -43,6 +43,20 @@ test('a Bash detail keeps only the program the command runs', () => {
   expect(toolDetail('Bash', { command: '  /usr/local/bin/psql postgres://bob:hunter2@db/x' }).text).toBe('Bash → psql')
   expect(toolDetail('Bash', { command: 'DB_PASS=hunter2 GITHUB_TOKEN=abc "/opt/tool/run" --go' }).text).toBe('Bash → run')
   expect(toolDetail('Bash', { command: 'export OPENAI_API_KEY=sk-proj-1234567890abcdef' }).text).toBe('Bash → export')
+  expect(toolDetail('Bash', { command: 'PGPASSWORD="correct horse battery staple" psql -h db' })).toEqual({ text: 'Bash → psql', masked: 0 })
+  expect(toolDetail('Bash', { command: "API_KEY='Winter 2024!' mysql -u root" }).text).toBe('Bash → mysql')
+  expect(toolDetail('Bash', { command: 'Api_Key="oCRQ\tmnIRN" docker login' }).text).toBe('Bash → docker')
+  expect(toolDetail('Bash', { command: 'AWS_SECRET_ACCESS_KEY=notARealKey/exampleOnly+fakeValue00000000' })).toEqual({ text: 'Bash', masked: 0 })
+  expect(toolDetail('Bash', { command: 'db_password="A1GYlg/sIR"' }).text).toBe('Bash')
+  expect(toolDetail('Bash', { command: 'postgres://app:S3cr/et@db' }).text).toBe('Bash → app:[masked]@db')
+  expect(toolDetail('Bash', { command: 'token=ab\\cd' }).text).toBe('Bash')
+  expect(toolDetail('Bash', { command: '--token=abc/def123' }).text).toBe('Bash → --token=[masked]')
+  expect(toolDetail('Bash', { command: 'password= hunter2 run' }).text).toBe('Bash')
+  expect(toolDetail('Bash', { command: 'PASSWORD=is hunter2 run' }).text).toBe('Bash')
+  expect(toolDetail('Bash', { command: 'PASSWORD=-- hunter2 run' }).text).toBe('Bash')
+  expect(toolDetail('Bash', { command: 'Authorization=Basic xyz987 curl' }).text).toBe('Bash')
+  expect(toolDetail('Bash', { command: 'KEY="a b" OTHER=\'c d\' ./go' }).text).toBe('Bash → go')
+  expect(toolDetail('Bash', { command: 'run\\ me.sh --token abc12345' }).text).toBe('Bash → run me.sh')
 })
 
 test('a file tool detail keeps the last two path segments and drops the pattern', () => {
@@ -50,11 +64,14 @@ test('a file tool detail keeps the last two path segments and drops the pattern'
   expect(toolDetail('Read', { file_path: '/home/me/password=hunter2/notes.txt' }).text).toBe('Read → password=[masked]')
   expect(toolDetail('Grep', { pattern: 'password=hunter2', path: '/repo/src/auth' }).text).toBe('Grep → src/auth')
   expect(toolDetail('Grep', { pattern: 'AKIAABCDEFGHIJKLMNOP' }).text).toBe('Grep')
+  expect(toolDetail('Grep', { path: '/repo/postgres://u:pw@h/db' }).text).toBe('Grep → u:[masked]@h/db')
+  expect(toolDetail('Read', { file_path: 'https://u:hunter2zz@h.example/a' }).text).toBe('Read → u:[masked]@h.example/a')
 })
 
 test('a URL tool detail keeps the host alone', () => {
   expect(toolDetail('WebFetch', { url: 'https://bob:hunter2@docs.example.com:8443/a/b?token=abc#frag', prompt: 'summarise' }).text).toBe('WebFetch → docs.example.com')
   expect(toolDetail('WebFetch', { url: 'not a url' }).text).toBe('WebFetch')
+  expect(toolDetail('WebFetch', { url: 'https://API_KEY=`P@ssw0rd`' }).text).toBe('WebFetch → ssw0rd`')
   expect(toolDetail('WebSearch', { query: 'my password is hunter2' }).text).toBe('WebSearch')
 })
 

@@ -35,6 +35,19 @@ export const CAP = { description: 80, name: 40, detail: 64, advice: 160, who: 40
 
 export const NO_TEXT = '' as SafeText
 
+const UNCUT = Number.MAX_SAFE_INTEGER
+
+/**
+ * The boundary every kept field crosses: scrub() the raw text whole, derive the part to keep from
+ * the masked text, then cap it with scrub()'s own cut. A derivation reads only what scrub() left
+ * visible, so it cannot move a secret out of a mask. The count is what the whole text held.
+ */
+export const kept = (raw: unknown, cap: number, derive: (masked: string) => string = s => s): Scrubbed => {
+  const whole = scrub(raw, UNCUT)
+  const text = derive(whole.text)
+  return { text: text.length > cap ? scrub(text, cap).text : (text as SafeText), masked: whole.masked }
+}
+
 // ---------------------------------------------------------------- defaults
 
 export const DEFAULT_MAIN: Main = { model: '', effort: '', mode: '', steps: 0, isRunning: false }
@@ -266,8 +279,38 @@ export const bucketOf = (tool: string): Bucket =>
 
 const lastSegments = (path: string, n: number) => path.split(/[\\/]/).filter(Boolean).slice(-n).join('/')
 
-const programOf = (command: string) =>
-  lastSegments(/^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*["']?([^\s"']*)/.exec(command)?.[1] ?? '', 1)
+const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/
+/** One shell word: plain runs, quoted strings (closed or not) and escapes, up to unquoted whitespace. */
+const SHELL_WORD = /(?:[^\s"'\\]+|"(?:[^"\\]|\\[\s\S])*"?|'[^']*'?|\\[\s\S]?)+/y
+const QUOTING = /"((?:[^"\\]|\\[\s\S])*)"?|'([^']*)'?|\\([\s\S])/g
+
+const unquoted = (word: string) => word.replace(QUOTING, (_, d: string | undefined, s: string | undefined, e: string | undefined) => d ?? s ?? e ?? '')
+
+/** An assignment whose value scrub() would read on past the next space: the next word may be that value. */
+const valueRunsOn = (name: string, value: string) => !/[A-Za-z0-9]/.test(value) || /^is$/i.test(value) || /^authorization$/i.test(name)
+
+/**
+ * The first shell word that is not a `NAME=value` assignment, whole: quotes and backslash escapes
+ * keep a word together, so a quoted value is never split at its spaces. An assignment whose value
+ * runs on ends the search with no program.
+ */
+const programOf = (command: string) => {
+  for (let at = 0; at < command.length; ) {
+    const c = command[at]
+    if (c === ' ' || c === '\t' || c === '\n' || c === '\r') {
+      at += 1
+      continue
+    }
+    SHELL_WORD.lastIndex = at
+    const word = unquoted(SHELL_WORD.exec(command)?.[0] ?? '')
+    const assignment = ASSIGNMENT.exec(word)
+    if (!assignment) return word
+    const [, name = '', value = ''] = assignment
+    if (valueRunsOn(name, value)) return ''
+    at = SHELL_WORD.lastIndex
+  }
+  return ''
+}
 
 const hostOf = (url: string) => {
   try {
@@ -277,12 +320,31 @@ const hostOf = (url: string) => {
   }
 }
 
+const FRAME = ' → '
+
+/**
+ * The tool name and one part of its input: a command's program word, a file path's last two
+ * segments (the whole path when it holds a URL) or a URL's parsed host. The part is taken whole
+ * before scrub(), never cut inside a shell word, and a program's last segment is picked from the
+ * masked text, so a URL used as the program keeps its mask.
+ */
 export const toolDetail = (tool: string, input: unknown): Scrubbed => {
   const i = isObject(input) ? input : {}
   const str = (k: string) => (typeof i[k] === 'string' ? (i[k] as string) : '')
   const path = str('file_path') || str('notebook_path') || str('path')
-  const what = str('command') ? programOf(str('command')) : path ? lastSegments(path, 2) : str('url') ? hostOf(str('url')) : ''
-  return scrub(what ? `${tool} → ${what}` : tool, CAP.detail)
+  const program = str('command') ? programOf(str('command')) : ''
+  const [part, segments] = str('command')
+    ? [program, /[\\/]/.test(program) ? 1 : 0]
+    : path.includes('://')
+      ? [path, 2]
+      : [path ? lastSegments(path, 2) : hostOf(str('url')), 0]
+  if (!part) return kept(tool, CAP.detail)
+  return kept(`${tool}${FRAME}${part}`, CAP.detail, masked => {
+    const at = masked.indexOf(FRAME)
+    const rest = at < 0 ? '' : masked.slice(at + FRAME.length)
+    const kept = segments > 0 ? lastSegments(rest, segments) : rest
+    return at < 0 ? masked : kept ? `${masked.slice(0, at)}${FRAME}${kept}` : masked.slice(0, at)
+  })
 }
 
 /** Keeps the last `max` checks, but never drops a pending ask: its settle must still find it. */
