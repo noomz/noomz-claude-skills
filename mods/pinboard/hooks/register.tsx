@@ -76,11 +76,11 @@ const reject = (error: string): never => {
   throw new Rejected(error)
 }
 
-// Scrubbed before escaping, while a separator still reads as a space; a key with nothing to mask is shown as received
+const quotedAscii = (text: string): string => JSON.stringify(text).replace(/[^ -~]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)
+
 const asReceived = (key: string): string => {
-  const raw = scrub(key, TEXT_CAP)
-  const shown = JSON.stringify(raw.masked > 0 ? raw.text : key)
-  return scrub(shown.replace(/[^ -~]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`), TEXT_CAP).text
+  const scrubbed = scrub(key, TEXT_CAP)
+  return scrub(quotedAscii(scrubbed.masked > 0 ? scrubbed.text : key), TEXT_CAP).text
 }
 
 const isRecord = (raw: unknown): raw is Record<string, unknown> => typeof raw === 'object' && raw !== null && !Array.isArray(raw)
@@ -324,11 +324,28 @@ async function capture<T>($: EngineInterface, change: () => Promise<T>): Promise
 
 const ENDS_TRANSCRIPT = new Set(['clear', 'resume'])
 
-// The older values go first, so a session start that takes them has read the board before this reset writes it
 const resetBoard = async ($: EngineInterface) => {
   await clearRetired($)
   await update($, board, () => EMPTY_BOARD)
   await update($, links, () => [])
+}
+
+const foldRetiredUnlessWritten = async ($: EngineInterface) => {
+  const held = await $.state.get(BOARD)
+  let todos: unknown
+  let decisions: unknown
+  await update($, RETIRED_TODOS, old => {
+    todos = old
+    return null
+  })
+  await update($, RETIRED_DECISIONS, old => {
+    decisions = old
+    return null
+  })
+  await $.state.set(RETIRED_HYGIENE, null)
+  const kept = recheckBoard(held.value)
+  const folded = kept.todos.length + kept.decisions.length > 0 ? kept : recheckBoard({ ...kept, todos, decisions })
+  if (!(await $.state.set(BOARD, folded, { ifVersion: held.version })).isSet) await update($, board, recheckBoard)
 }
 
 export const register: Register = on => {
@@ -340,22 +357,7 @@ export const register: Register = on => {
       immediate: true,
     })
     await $.tool.register({ name: 'update', description: DESCRIPTION, inputSchema: SCHEMA })
-    const held = await $.state.get(BOARD)
-    let todos: unknown
-    let decisions: unknown
-    await update($, RETIRED_TODOS, old => {
-      todos = old
-      return null
-    })
-    await update($, RETIRED_DECISIONS, old => {
-      decisions = old
-      return null
-    })
-    await $.state.set(RETIRED_HYGIENE, null)
-    const kept = recheckBoard(held.value)
-    const folded = kept.todos.length + kept.decisions.length > 0 ? kept : recheckBoard({ ...kept, todos, decisions })
-    // A write since the read, such as a /clear, wins over the older values
-    if (!(await $.state.set(BOARD, folded, { ifVersion: held.version })).isSet) await update($, board, recheckBoard)
+    await foldRetiredUnlessWritten($)
     await update($, links, old => storedList(old).flatMap(pin => (typeof pin.href === 'string' && parsePin(pin.href)) || []))
     return next(e)
   })
