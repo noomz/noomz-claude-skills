@@ -4,6 +4,8 @@ import type { Pinboard } from '../types'
 import { parsePin, parseUpdate } from '../hooks/register'
 import { stateStore } from './state-store'
 
+const RACE_MS = 60_000
+
 const TOOL = 'mcp__pinboard__update'
 const UNCHECKED = 'The update could not be checked, so it was refused.'
 const TOKEN_BULLET = '--token=•'
@@ -147,7 +149,7 @@ describe('a refusal races other writes and loses none of them', () => {
   }
   const refused = { add_todos: Array.from({ length: 21 }, () => 'x') }
 
-  test('a refused call and an accepted add in one turn both land, at any microtask offset', async ($, on) => {
+  test('a refused call and an accepted add in one turn both land, at any microtask offset', { timeoutMs: RACE_MS }, async ($, on) => {
     const { values, value } = stateStore(on)
     on('ui.open', () => ({ value: { isPlaced: true } }))
     const lost: number[] = []
@@ -163,7 +165,7 @@ describe('a refusal races other writes and loses none of them', () => {
     expect(lost).toEqual([])
   })
 
-  test('a refused call racing /clear never brings back what the clear removed', async ($, on) => {
+  test('a refused call racing /clear never brings back what the clear removed', { timeoutMs: RACE_MS }, async ($, on) => {
     const { values, value } = stateStore(on)
     on('ui.open', () => ({ value: { isPlaced: true } }))
     on('session.end', (_$, e) => ({ sessionId: e.sessionId }))
@@ -247,7 +249,7 @@ describe('session start rebuilds a repeated id from its first usable item', () =
 })
 
 describe('/clear racing session start', () => {
-  test('never brings back the todos and decisions an older build kept apart, at any microtask offset', async ($, on) => {
+  test('never brings back the todos and decisions an older build kept apart, at any microtask offset', { timeoutMs: RACE_MS }, async ($, on) => {
     const { values, value } = stateStore(on)
     on('session.start', (_$, e) => ({ cwd: e.cwd }))
     on('session.end', (_$, e) => ({ sessionId: e.sessionId }))

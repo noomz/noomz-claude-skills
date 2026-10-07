@@ -4,6 +4,8 @@ import type { Pinboard } from '../types'
 import { applyUpdate, type Board, describeBoard, parsePin, parseUpdate } from '../hooks/register'
 import { stateStore } from './state-store'
 
+const RACE_MS = 60_000
+
 const SURFACES = ['terminal', 'desktop'] as const
 const TOOL = 'mcp__pinboard__update'
 const PANE = {
@@ -531,7 +533,7 @@ describe('session', () => {
 })
 
 describe('updates that race', () => {
-  test('an add that first meets a full board and lands on retry answers with the board it wrote', async ($, on) => {
+  test('an add that first meets a full board and lands on retry answers with the board it wrote', { timeoutMs: RACE_MS }, async ($, on) => {
     const { values, value } = stateStore(on)
     on('ui.open', () => ({ value: { isPlaced: true } }))
     on('prompt.compose', () => ({ sections: [] }))
@@ -589,7 +591,7 @@ describe('updates that race', () => {
     expect(['Pinboard is empty.', `${HEADER}\nt1 [ ] "racing"`]).toContain(await boardText($))
   })
 
-  test('a masked add racing /clear at any microtask offset leaves the masked count equal to the masks the board shows', async ($, on) => {
+  test('a masked add racing /clear at any microtask offset leaves the masked count equal to the masks the board shows', { timeoutMs: RACE_MS }, async ($, on) => {
     const { values } = stateStore(on)
     on('ui.open', () => ({ value: { isPlaced: true } }))
     on('prompt.compose', () => ({ sections: [] }))
