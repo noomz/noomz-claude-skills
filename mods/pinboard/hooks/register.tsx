@@ -68,6 +68,8 @@ export type Update = {
 
 export type Parsed = { ok: true; update: Update; masked: number } | { ok: false; error: string }
 
+const UNCHECKED = 'The update could not be checked, so it was refused.'
+
 class Rejected extends Error {}
 const reject = (error: string): never => {
   throw new Rejected(error)
@@ -118,8 +120,7 @@ export function parseUpdate(raw: unknown): Parsed {
     }
     return { ok: true, update: update as Update, masked }
   } catch (error) {
-    if (error instanceof Rejected) return { ok: false, error: error.message }
-    throw error
+    return { ok: false, error: error instanceof Rejected ? error.message : UNCHECKED }
   }
 }
 
@@ -213,7 +214,7 @@ const isClean = (text: string): boolean => {
   return scrubbed.masked === 0 && scrubbed.text === text
 }
 
-export function parsePin(href: string): Pin | null {
+const checkedPin = (href: string): Pin | null => {
   if (href.length > HREF_CAP) return null
   let url: URL
   try {
@@ -233,6 +234,14 @@ export function parsePin(href: string): Pin | null {
   const named = gh && scrub(`${gh[1]} ${gh[2] === 'pull' ? 'PR' : 'issue'} #${gh[3]}${anchor ? ' comment' : ''}`, LABEL_CAP)
   const label = named && named.masked === 0 ? named : scrub(fitLabel(url.host, url.pathname), LABEL_CAP)
   return { href: kept as SafeText, label: label.text }
+}
+
+export function parsePin(href: string): Pin | null {
+  try {
+    return checkedPin(href)
+  } catch {
+    return null
+  }
 }
 
 const pinsIn = (text: string): Pin[] => {

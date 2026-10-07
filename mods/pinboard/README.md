@@ -23,7 +23,7 @@ The tool checks each call before it changes the board:
 - Todo ids look like `t1` and decision ids look like `d1`.
 - The board holds at most 50 todos and 20 decisions.
 
-A call that fails a check is refused. Claude reads the reason as an error result, the board stays the same, and the `rejected` counter goes up by one. A subagent's denied call does not count. Each call reads and writes the board and its hygiene counters in one step, so two calls in the same turn both land, a call that races `/clear` never brings back what the clear removed, and the `masked` count always matches the masks the board holds.
+A call that fails a check is refused. Claude reads the reason as an error result, the board stays the same, and the `rejected` counter goes up by one. A call the checks cannot finish, because a check itself failed, is refused the same way with one fixed reason that holds none of the call's text. A subagent's denied call does not count. Each call reads and writes the board and its hygiene counters in one step, so two calls in the same turn both land, a call that races `/clear` never brings back what the clear removed, and the `masked` count always matches the masks the board holds.
 
 ## What it stores, sends and masks
 
