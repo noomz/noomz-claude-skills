@@ -418,6 +418,17 @@ describe('session', () => {
     expect(value('links')).toEqual([])
   })
 
+  test('links an older build kept past the cap are cut to the 12 newest at session start', async ($, on) => {
+    const { values, value } = stateStore(on)
+    on('session.start', (_$, e) => ({ cwd: e.cwd }))
+    on('command.register', (_$, e) => ({ value: { command: e.name } }))
+    on('tool.register', (_$, e) => ({ value: { tool: `mcp__pinboard__${e.name}` } }))
+    const pin = (n: number) => ({ href: `https://example.com/${n}`, label: `example.com/${n}` })
+    values.set('pinboard/links/', { value: Array.from({ length: 13 }, (_, i) => pin(i + 1)), version: 1 })
+    await $.session.start({ cwd: '/w', surface: null, isInteractive: false })
+    expect(value('links')).toEqual(Array.from({ length: 12 }, (_, i) => pin(i + 1)))
+  })
+
   test('after session start the pane shows hygiene counts only as non-negative whole numbers', async ($, on) => {
     const { values } = stateStore(on)
     on('session.start', (_$, e) => ({ cwd: e.cwd }))

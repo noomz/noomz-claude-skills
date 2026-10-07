@@ -10,6 +10,7 @@ const TOOL = 'mcp__pinboard__update'
 const MAX_ITEMS = 20
 const MAX_TODOS = 50
 const MAX_DECISIONS = 20
+const MAX_LINKS = 12
 const TEXT_CAP = 200
 
 const EMPTY_BOARD: Pinboard = { todos: [], decisions: [], hygiene: { masked: 0, rejected: 0 } }
@@ -358,7 +359,7 @@ export const register: Register = on => {
     })
     await $.tool.register({ name: 'update', description: DESCRIPTION, inputSchema: SCHEMA })
     await foldRetiredUnlessWritten($)
-    await update($, links, old => storedList(old).flatMap(pin => (typeof pin.href === 'string' && parsePin(pin.href)) || []))
+    await update($, links, old => storedList(old).flatMap(pin => (typeof pin.href === 'string' && parsePin(pin.href)) || []).slice(0, MAX_LINKS))
     return next(e)
   })
 
@@ -409,7 +410,7 @@ export const register: Register = on => {
     if (e.agentId !== undefined || !makes || !('text' in ran) || ran.isError) return ran
     const found = pinsIn(ran.text ?? '')
     if (found.length > 0 && found.length <= 3) {
-      await capture($, () => update($, links, old => [...found, ...old.filter(p => !found.some(f => f.href === p.href))].slice(0, 12)))
+      await capture($, () => update($, links, old => [...found, ...old.filter(p => !found.some(f => f.href === p.href))].slice(0, MAX_LINKS)))
     }
     return ran
   })
