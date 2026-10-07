@@ -201,3 +201,30 @@ describe('session start rebuilds a repeated id from its first usable item', () =
     expect((value('board') as Pinboard).todos).toEqual([{ id: 't1', text: 'real', isDone: false }])
   })
 })
+
+describe('/clear racing session start', () => {
+  test('never brings back the todos and decisions an older build kept apart, at any microtask offset', async ($, on) => {
+    const { values, value } = stateStore(on)
+    on('session.start', (_$, e) => ({ cwd: e.cwd }))
+    on('session.end', (_$, e) => ({ sessionId: e.sessionId }))
+    on('command.register', (_$, e) => ({ value: { command: e.name } }))
+    on('tool.register', (_$, e) => ({ value: { tool: `mcp__pinboard__${e.name}` } }))
+    const revived: number[] = []
+    for (let offset = -20; offset <= 150; offset++) {
+      values.clear()
+      values.set('pinboard/todos/', { value: [{ id: 't1', text: 'legacy todo', isDone: false }], version: 1 })
+      values.set('pinboard/decisions/', { value: [{ id: 'd1', text: 'legacy decision' }], version: 1 })
+      const after = async (ticks: number, run: () => Promise<unknown>) => {
+        for (let i = 0; i < ticks; i++) await Promise.resolve()
+        return run()
+      }
+      await Promise.all([
+        after(Math.max(0, -offset), () => $.session.start({ cwd: '/w', surface: null, isInteractive: false })),
+        after(Math.max(0, offset), () => $.session.end({ reason: 'clear', sessionId: 's1', resume: { id: 's1' } })),
+      ])
+      const stored = value('board') as Pinboard
+      if (stored.todos.length + stored.decisions.length > 0 || value('todos') !== null || value('decisions') !== null) revived.push(offset)
+    }
+    expect(revived).toEqual([])
+  })
+})

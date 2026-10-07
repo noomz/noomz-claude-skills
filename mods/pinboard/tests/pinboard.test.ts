@@ -589,14 +589,17 @@ describe('updates that race', () => {
       return { value: undefined }
     })
     const seen: { offset: number; shown: number; counted: string | undefined }[] = []
-    for (let offset = 0; offset < 150; offset++) {
+    const after = async (ticks: number, run: () => Promise<unknown>) => {
+      for (let i = 0; i < ticks; i++) await Promise.resolve()
+      return run()
+    }
+    for (let offset = -150; offset < 150; offset++) {
       values.clear()
       await $.tool.call({ tool: TOOL, add_todos: ['seed'] })
-      const clearAfter = async (ticks: number) => {
-        for (let i = 0; i < ticks; i++) await Promise.resolve()
-        await $.session.end({ reason: 'clear', sessionId: 's1', resume: { id: 's1' } })
-      }
-      await Promise.all([$.tool.call({ tool: TOOL, add_todos: ['rotate token=abc123x'] }), clearAfter(offset)])
+      await Promise.all([
+        after(Math.max(0, -offset), () => $.tool.call({ tool: TOOL, add_todos: ['rotate token=abc123x'] })),
+        after(Math.max(0, offset), () => $.session.end({ reason: 'clear', sessionId: 's1', resume: { id: 's1' } })),
+      ])
       logged = []
       await $.command.run({ command: 'pinboard', args: 'audit', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 120 } })
       const shown = ((await boardText($)) ?? '').split('[masked]').length - 1

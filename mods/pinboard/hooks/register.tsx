@@ -13,7 +13,8 @@ const MAX_DECISIONS = 20
 const TEXT_CAP = 200
 
 const EMPTY_BOARD: Pinboard = { todos: [], decisions: [], hygiene: { masked: 0, rejected: 0 } }
-const board = atom({ plugin: 'pinboard', key: 'board' } as const, EMPTY_BOARD)
+const BOARD = { plugin: 'pinboard', key: 'board' } as const
+const board = atom(BOARD, EMPTY_BOARD)
 const links = atom({ plugin: 'pinboard', key: 'links' } as const, [] as Pin[])
 const RETIRED_TODOS = { plugin: 'pinboard', key: 'todos' } as const
 const RETIRED_DECISIONS = { plugin: 'pinboard', key: 'decisions' } as const
@@ -323,10 +324,11 @@ async function capture<T>($: EngineInterface, change: () => Promise<T>): Promise
 
 const ENDS_TRANSCRIPT = new Set(['clear', 'resume'])
 
+// The older values go first, so a session start that takes them has read the board before this reset writes it
 const resetBoard = async ($: EngineInterface) => {
+  await clearRetired($)
   await update($, board, () => EMPTY_BOARD)
   await update($, links, () => [])
-  await clearRetired($)
 }
 
 export const register: Register = on => {
@@ -338,13 +340,22 @@ export const register: Register = on => {
       immediate: true,
     })
     await $.tool.register({ name: 'update', description: DESCRIPTION, inputSchema: SCHEMA })
-    const todos = (await $.state.get(RETIRED_TODOS)).value
-    const decisions = (await $.state.get(RETIRED_DECISIONS)).value
-    await update($, board, old => {
-      const kept = recheckBoard(old)
-      return kept.todos.length + kept.decisions.length > 0 ? kept : recheckBoard({ ...kept, todos, decisions })
+    const held = await $.state.get(BOARD)
+    let todos: unknown
+    let decisions: unknown
+    await update($, RETIRED_TODOS, old => {
+      todos = old
+      return null
     })
-    await clearRetired($)
+    await update($, RETIRED_DECISIONS, old => {
+      decisions = old
+      return null
+    })
+    await $.state.set(RETIRED_HYGIENE, null)
+    const kept = recheckBoard(held.value)
+    const folded = kept.todos.length + kept.decisions.length > 0 ? kept : recheckBoard({ ...kept, todos, decisions })
+    // A write since the read, such as a /clear, wins over the older values
+    if (!(await $.state.set(BOARD, folded, { ifVersion: held.version })).isSet) await update($, board, recheckBoard)
     await update($, links, old => storedList(old).flatMap(pin => (typeof pin.href === 'string' && parsePin(pin.href)) || []))
     return next(e)
   })
