@@ -624,6 +624,26 @@ describe('updates that race', () => {
 })
 
 describe('links', () => {
+  test('a URL ends before non-ASCII punctuation, a format character or a wide space, and keeps non-ASCII letters', async ($, on) => {
+    const { value } = stateStore(on)
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    const outputs = [
+      'https://github.com/o/r/pull/12，next\nhttps://github.com/o/r/pull/13…\nhttps://github.com/o/r/pull/11\u200b\n',
+      'https://ja.wikipedia.org/wiki/東京\u3000と\n',
+    ]
+    on('tool.call', { tool: 'Bash' }, () => {
+      const text = outputs.shift() ?? ''
+      return { result: { stdout: text, stderr: '', interrupted: false }, text }
+    })
+    for (let i = 0; i < 2; i++) await $.tool.call({ tool: 'Bash', command: 'gh pr create --fill' })
+    expect(value('links')).toEqual([
+      { href: 'https://ja.wikipedia.org/wiki/%E6%9D%B1%E4%BA%AC', label: 'ja.wikipedia.org/wiki/%E6%9D%B1%E4%BA%AC' },
+      { href: 'https://github.com/o/r/pull/12', label: 'r PR #12' },
+      { href: 'https://github.com/o/r/pull/13', label: 'r PR #13' },
+      { href: 'https://github.com/o/r/pull/11', label: 'r PR #11' },
+    ])
+  })
+
   test('output with more than three links pins none of them', async ($, on) => {
     const { value } = stateStore(on)
     on('ui.open', () => ({ value: { isPlaced: true } }))

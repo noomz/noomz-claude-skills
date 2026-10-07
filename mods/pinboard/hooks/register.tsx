@@ -184,7 +184,7 @@ const MAKING_VERBS = new Set(['create', 'draft', 'send', 'publish', 'share', 'up
 const makesMcp = (tool: string): boolean =>
   (MCP_TOOL.exec(tool)?.[1] ?? '').split(WORD_BREAK).some(word => MAKING_VERBS.has(word.toLowerCase()))
 
-const URL_IN_TEXT = /https:\/\/[^\s<>"'`]+/g
+const URL_IN_TEXT = /https:\/\/(?:[^\s<>"'`\P{ASCII}]|[\p{L}\p{N}\p{M}])+/gu
 const GITHUB_ITEM = /^\/[\w.-]+\/([\w.-]+)\/(pull|issues)\/([1-9]\d{0,9})\/?$/
 const GITHUB_ANCHOR = /^#(?:issuecomment-\d{1,12}|discussion_r\d{1,12})$/
 const LABEL_CAP = 80
