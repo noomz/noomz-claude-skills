@@ -23,6 +23,8 @@ import {
   cardTitle,
   titleLines,
   consultTimeline,
+  consultVia,
+  kept,
   endConsult,
   fitLegend,
   fmtClock,
@@ -178,8 +180,9 @@ async function whoIs($: EngineInterface, agentId: string | undefined) {
   return card ? shorten(cardTitle(card), 14) : 'agent'
 }
 
-async function consultStarted($: EngineInterface, cfg: Config, id: string, rawVia: string) {
-  const via = await scrubAndTally($, rawVia, CAP.name)
+async function consultStarted($: EngineInterface, cfg: Config, id: string, found: Scrubbed) {
+  await tally($, found)
+  const via = found.text
   const t = await getTurn($)
   const moment = momentOf(t)
   const at = await $.clock.now()
@@ -484,7 +487,7 @@ export const register: Register = (on, options) => {
             return { ...y, seen: [...listOf<string>(y.seen), id].slice(-60) }
           })
           opened.add(id)
-          await consultStarted($, cfg, id, `${block.name} tool`)
+          await consultStarted($, cfg, id, kept(`${block.name} tool`, CAP.name))
         } else if (block.type.endsWith('_tool_result') && block.tool_use_id) {
           const id = block.tool_use_id
           const isOpen = opened.has(id) || (await getArchitect($)).consults.some(c => c.id === id && c.endAt === null)
@@ -506,7 +509,7 @@ export const register: Register = (on, options) => {
         return { ...x, ids: [...listOf<string>(x.ids), id].slice(-40) }
       })
       await update($, loops, l => listOf<Loop>(l).filter(x => x.id !== id))
-      await consultStarted($, cfg, id, e.subagentType.split(':').pop() ?? 'agent')
+      await consultStarted($, cfg, id, consultVia(e.subagentType))
       return started
     }
     const [type, description] = await Promise.all([scrubAndTally($, e.name ?? e.subagentType, CAP.name), scrubAndTally($, e.description, CAP.description)])

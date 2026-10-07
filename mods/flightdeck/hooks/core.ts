@@ -225,9 +225,17 @@ export const prettyModel = (id: string) => {
   return shorten(id, 22)
 }
 
+const MASK = '[masked]'
+
+/** One line cut to `n` cells with a final …. The cut never lands inside a `[masked]`, so a title cut from a masked field re-scrubs to nothing new. */
 export const shorten = (s: string, n: number) => {
   const one = s.replace(/\s+/g, ' ').trim()
-  return n <= 0 ? '' : one.length > n ? `${one.slice(0, Math.max(0, n - 1)).trimEnd()}…` : one
+  if (n <= 0) return ''
+  if (one.length <= n) return one
+  let at = Math.max(0, n - 1)
+  const open = one.lastIndexOf('[', at - 1)
+  if (open >= 0 && open + MASK.length > at && one.startsWith(MASK, open)) at = open
+  return `${one.slice(0, at).trimEnd()}…`
 }
 
 export const kTokens = (n: number) =>
@@ -572,6 +580,9 @@ export const adviceLine = (report: string): Scrubbed => {
   }
   return { text: NO_TEXT, masked: 0 }
 }
+
+/** A consult's agent type: what follows the last `:` of the masked type, so a key before it still masks its value. */
+export const consultVia = (subagentType: string): Scrubbed => kept(subagentType, CAP.name, masked => masked.slice(masked.lastIndexOf(':') + 1))
 
 export const elapsedOf = (c: AgentCard, now: number) => (c.endedAt ?? now) - c.spawnedAt
 

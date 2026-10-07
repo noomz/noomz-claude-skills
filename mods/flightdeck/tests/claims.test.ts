@@ -146,7 +146,16 @@ describe('the names flightdeck keeps are masked and cut to 40 characters', () =>
     on('agent.spawn', () => ({ model: 'claude-fable-5-1', agentId: 'cv1' }))
     await $.turn.start({ text: 'go', turnId: 'N2' })
     await $.agent.spawn(spawn(`plugin:architect token=abc123 ${'v'.repeat(40)}`, 'review'))
-    expect(state(values).architect.consults.map(c => c.via)).toEqual([`architect token=[masked] ${'v'.repeat(14)}…`])
+    const s = state(values)
+    expect([s.architect.consults.map(c => c.via), s.hygiene.masked]).toEqual([[`architect token=[masked] ${'v'.repeat(14)}…`], 1])
+  })
+
+  test("a consult's agent type keeps a mask whose key sits before the last colon", async ($, on) => {
+    const values = engine(on)
+    on('agent.spawn', () => ({ model: 'claude-fable-5-1', agentId: 'cv2' }))
+    await $.turn.start({ text: 'go', turnId: 'N3' })
+    await $.agent.spawn(spawn('password:hunter2architect', 'review'))
+    expect(state(values).architect.consults.map(c => c.via)).toEqual(['[masked]'])
   })
 
   test('an architect roster entry', async ($, on) => {
@@ -219,13 +228,55 @@ const fill = async ($: Engine, on: On) => {
   await $.tool.check({ tool: 'Read', input: { file_path: '/a/b.ts' }, tool_use_id: 'fk1' })
 }
 
-test('the masked count adds the masks of each kept field, so a description masked on the card and in its log row counts 2', async ($, on) => {
-  const values = engine(on)
-  on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: 'mc1' }))
-  await $.turn.start({ text: 'go', turnId: 'M1' })
-  await $.agent.spawn(spawn('general-purpose', 'token=abc123 go'))
-  const s = state(values)
-  expect([s.agents.map(c => c.description), s.log.map(l => l.who), s.hygiene.masked]).toEqual([['token=[masked] go'], ['you', 'token=[masked]…'], 2])
+describe('the masked count adds the masks scrub() finds each time flightdeck reads text for a field it keeps', () => {
+  test('an agent description counts 1: the log row title cut from the masked card adds nothing', async ($, on) => {
+    const values = engine(on)
+    on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: 'mc1' }))
+    await $.turn.start({ text: 'go', turnId: 'M1' })
+    await $.agent.spawn(spawn('general-purpose', 'token=abc123 go'))
+    const s = state(values)
+    expect([s.agents.map(c => c.description), s.log.map(l => l.who), s.hygiene.masked]).toEqual([['token=[masked] go'], ['you', 'token=…'], 1])
+  })
+
+  test('a denied check counts 1: the gate detail, and the denial row built from it adds nothing', async ($, on) => {
+    const values = engine(on)
+    on('tool.check', () => ({ decision: 'deny' as const, reason: 'rule' }))
+    await $.tool.check({ tool: 'Bash', input: { command: 'postgres://app:pw1234@db' }, tool_use_id: 'dk1' })
+    const s = state(values)
+    expect([s.gate.recent.map(c => c.detail), s.log.map(l => l.text), s.hygiene.masked]).toEqual([['Bash → app:[masked]@db'], ['denied by rule · Bash → app:[masked]@db'], 1])
+  })
+
+  test("a subagent's command counts 2: its permission check and its tool call each read it", async ($, on) => {
+    const values = engine(on)
+    on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: 'mc2' }))
+    on('tool.check', () => ({ decision: 'allow' as const }))
+    on('tool.call', () => ({ result: {}, text: 'ok' }))
+    await $.turn.start({ text: 'go', turnId: 'M2' })
+    await $.agent.spawn(spawn('general-purpose', 'migrate'))
+    await $.tool.check({ tool: 'Bash', input: { command: 'postgres://app:pw1234@db' }, tool_use_id: 'sk1' })
+    await $.tool.call({ tool: 'Bash', command: 'postgres://app:pw1234@db', agentId: 'mc2', tool_use_id: 'sk1' } as never)
+    const s = state(values)
+    expect([s.gate.recent.map(c => c.detail), s.agents[0]?.tools.map(n => n.text), s.hygiene.masked]).toEqual([['Bash → app:[masked]@db'], ['Bash → app:[masked]@db'], 2])
+  })
+
+  test('an offered architect type counts 1, once, however often it is offered', async ($, on) => {
+    const values = engine(on)
+    const offer = { agent: 'architect-token=abc123', description: 'reviews', source: 'plugin' as const, provider: { plugin: 'engine', tier: 'core' as const } }
+    await $.agent.offer(offer)
+    await $.agent.offer(offer)
+    const s = state(values)
+    expect([s.roster.architectTypes, s.hygiene.masked]).toEqual([['architect-token=[masked]'], 1])
+  })
+
+  test("an architect's advice line counts its masks", async ($, on) => {
+    const values = engine(on)
+    on('agent.spawn', () => ({ model: 'claude-fable-5-1', agentId: 'mc3' }))
+    await $.turn.start({ text: 'go', turnId: 'M3' })
+    await $.agent.spawn(spawn('architect', 'review'))
+    await $.turn.complete({ answer: 'Rotate password=hunter2 and token=abc123 now', durationMs: 5, isAborted: false, turnId: 'M4', agentId: 'mc3', reason: 'answer' })
+    const s = state(values)
+    expect([s.architect.lastAdvice, s.hygiene.masked]).toEqual(['Rotate password=[masked] and token=[masked] now', 2])
+  })
 })
 
 test('the masked count keeps a mask the 80-character description cap cuts away', async ($, on) => {
@@ -241,7 +292,7 @@ describe('what a reset empties and keeps', () => {
   test('/clear empties every text field and the masked count', async ($, on) => {
     const values = engine(on)
     await fill($, on)
-    expect(state(values).hygiene.masked).toBe(2)
+    expect(state(values).hygiene.masked).toBe(1)
     await $.session.end({ reason: 'clear', sessionId: 's' } as never)
     const s = state(values)
     expect([s.log, s.agents, s.gate.recent, s.architect.lastAdvice, s.roster.architectTypes, s.hygiene.masked]).toEqual([[], [], [], '', [], 0])
