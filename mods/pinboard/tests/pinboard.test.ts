@@ -164,14 +164,13 @@ describe('parsePin', () => {
     })
     expect(parsePin('https://github.com.attacker.example/o/r/pull/1')?.label).toBe('github.com.attacker.example/o/r/pull/1')
     expect(parsePin('https://github.com:8443/o/r/pull/1')?.label).toBe('github.com:8443/o/r/pull/1')
+    expect(parsePin('https://example.com:8443/password-reset')?.label).toBe('example.com:8443/password-reset')
     expect(parsePin('https://github.com/o/r%20PR%20%23999/pull/1')?.label).toBe('github.com/o/r%20PR%20%23999/pull/1')
   })
 
   test('a long host keeps its end, and a long path is cut after the host', () => {
     const lookalike = `github.com.${'a'.repeat(70)}.evil.example`
-    const label = parsePin(`https://${lookalike}/o/r/pull/1`)?.label ?? ''
-    expect(label).toHaveLength(80)
-    expect(label.endsWith('.evil.example')).toBe(true)
+    expect(parsePin(`https://${lookalike}/o/r/pull/1`)?.label).toBe(`…${lookalike.slice(-79)}`)
     expect(parsePin(`https://example.com/${'p'.repeat(100)}`)?.label).toBe(`example.com/${'p'.repeat(67)}…`)
   })
 
