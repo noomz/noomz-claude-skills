@@ -75,6 +75,7 @@ Link limits found so far. An ASCII control character does not end a link, so col
 - the rest of a value after a run of five or more dashes inside it, so `DB_PASS=x-----y` shows `-----y`, and a `PASS` or `PAT` value that starts `-----BEGIN` or `-----END`, such as `DB_PASS=-----BEGINhunter2!` and `GH_PAT: -----BEGINabc`. A value that starts with other dashes, such as `DB_PASS=-----S3cure!` and `REDIS_PASS=--x9`, is masked.
 - the password in `curl -u` with an empty user, as in `curl -u :hunter2` and `curl -u "":hunter2`, or with a quote inside the user or the password: `curl -u "ad"min:hunter2` stays as written, `curl -u "admin:hun"ter2` shows `ter2`, and `curl -u "ad:min":"pw"` shows `"pw"`
 - a value after `api key` and a space, such as `api key abc123def456`
+- a key wrapped in Markdown emphasis, such as `**Password**: hunter2xyz`, `Set **DB_PASSWORD**=S3cretPass99`, `__password__=x` and `The **password** is x`. Flightdeck's `redact()` does not mask these either.
 - a private-use character inside a key name, such as U+E000 in `pass` U+E000 `word=hunter2`. It splits the key and stays in the text, and many fonts draw it as nothing, so the line can look like an unmasked `password=hunter2`.
 - an input `•` or `[masked]` in some places where `redact()` would hide a value, which stays as the same glyph, so `https://u:•@h then password=x` reads `https://u:•@h then password=[masked]`
 - the words after the first of a value in brackets, such as `password: (correct horse9)`, which shows `horse9)`

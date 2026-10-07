@@ -56,6 +56,15 @@ describe('scrub misses a value after api key and a space', () => {
   rows([['api key abc123def456', 'api key abc123def456', 0]])
 })
 
+describe('scrub misses a key wrapped in Markdown emphasis', () => {
+  rows([
+    ['**Password**: hunter2xyz', '**Password**: hunter2xyz', 0],
+    ['Set **DB_PASSWORD**=S3cretPass99', 'Set **DB_PASSWORD**=S3cretPass99', 0],
+    ['__password__=x', '__password__=x', 0],
+    ['The **password** is x', 'The **password** is x', 0],
+  ])
+})
+
 describe('scrub leaves a PASS or PAT value that starts with a PEM armor word', () => {
   rows([
     ['DB_PASS=-----BEGINhunter2!', 'DB_PASS=-----BEGINhunter2!', 0],
