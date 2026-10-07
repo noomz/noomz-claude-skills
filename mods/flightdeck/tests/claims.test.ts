@@ -268,6 +268,25 @@ describe('the masked count adds the masks scrub() finds each time flightdeck rea
     expect([s.roster.architectTypes, s.hygiene.masked]).toEqual([['architect-token=[masked]'], 1])
   })
 
+  test("a main loop's call that ran counts 0: nothing of it is kept", async ($, on) => {
+    const values = engine(on)
+    on('tool.call', () => ({ result: {}, text: 'ok' }))
+    await $.tool.call({ tool: 'Bash', command: 'postgres://app:pw1234@db', tool_use_id: 'mk2' } as never)
+    const s = state(values)
+    expect([s.log ?? [], s.hygiene?.masked ?? 0]).toEqual([[], 0])
+  })
+
+  test("an architect's hand-back through SubagentHandback counts its masks", async ($, on) => {
+    const values = engine(on)
+    on('agent.spawn', () => ({ model: 'claude-fable-5-1', agentId: 'hb1' }))
+    on('tool.call', () => ({ result: {}, text: 'ok' }))
+    await $.turn.start({ text: 'go', turnId: 'M5' })
+    await $.agent.spawn(spawn('architect', 'review'))
+    await $.tool.call({ tool: 'SubagentHandback', message: 'rotate password=hunter2 first', agentId: 'hb1', tool_use_id: 'hb-1' } as never)
+    const s = state(values)
+    expect([s.architect.lastAdvice, s.hygiene.masked]).toEqual(['rotate password=[masked] first', 1])
+  })
+
   test("an architect's advice line counts its masks", async ($, on) => {
     const values = engine(on)
     on('agent.spawn', () => ({ model: 'claude-fable-5-1', agentId: 'mc3' }))
@@ -328,6 +347,58 @@ describe('what a reset empties and keeps', () => {
       expect(state(values).log.length).toBe(kept)
     })
   }
+})
+
+test('a log row built from an engine value is masked and cut to 160 characters', async ($, on) => {
+  const values = engine(on)
+  const messages = [{ role: 'user', text: 'hi', toolUses: [] }]
+  on('session.compact', () => ({ messages } as never))
+  await $.session.compact({ trigger: `password=hunter2 ${'x'.repeat(300)}`, messages } as never)
+  const [row] = state(values).log
+  expect(row?.text.startsWith('context compacted (password=[masked]')).toBe(true)
+  expect(row?.text.length).toBe(160)
+})
+
+test("/flightdeck audit lists a card's tool notes", async ($, on) => {
+  const values = engine(on)
+  const logged: string[] = []
+  on('ui.log', (_$, e) => {
+    logged.push(e.text)
+    return { value: undefined }
+  })
+  on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: 'at1' }))
+  on('tool.call', () => ({ result: {}, text: 'ok' }))
+  await $.turn.start({ text: 'go', turnId: 'A1' })
+  await $.agent.spawn(spawn('general-purpose', 'read it'))
+  await $.tool.call({ tool: 'Read', file_path: '/d/f.ts', agentId: 'at1', tool_use_id: 'at-1' } as never)
+  await $.command.run({ command: 'flightdeck', args: 'audit' } as never)
+  expect(state(values).agents[0]?.tools.map(n => n.text)).toEqual(['Read → d/f.ts'])
+  expect(logged.filter(row => row.startsWith('agents:'))).toEqual(['agents: 0.type 15, 0.description 7, 0.tools.0.text 13'])
+})
+
+test('with matchDescriptions, an offered type whose description matches joins the roster and spawns as a consult', { options: { matchDescriptions: true } }, async ($, on) => {
+  const values = engine(on)
+  on('agent.spawn', () => ({ model: 'claude-fable-5-1', agentId: 'rd1' }))
+  await $.agent.offer({ agent: 'reviewer-bot', description: 'the architect of plans', source: 'plugin', provider: { plugin: 'engine', tier: 'core' } })
+  await $.turn.start({ text: 'go', turnId: 'R1' })
+  await $.agent.spawn(spawn('reviewer-bot', 'review'))
+  const s = state(values)
+  expect([s.roster.architectTypes, s.architect.ids, s.agents ?? []]).toEqual([['reviewer-bot'], ['rd1'], []])
+})
+
+test('a check made inside a subagent call is marked as such, and the gate draws it dim', async ($, on) => {
+  const values = engine(on)
+  on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: 'ns1' }))
+  on('tool.check', () => ({ decision: 'allow' as const }))
+  on('tool.call', async (_$, e) => {
+    await $.tool.check({ tool: e.tool, input: { command: 'ls' }, tool_use_id: e.tool_use_id })
+    return { result: {}, text: 'ok' }
+  })
+  await $.turn.start({ text: 'go', turnId: 'Z1' })
+  await $.agent.spawn(spawn('general-purpose', 'list'))
+  await $.tool.call({ tool: 'Bash', command: 'ls', agentId: 'ns1', tool_use_id: 'zk1' } as never)
+  await $.tool.call({ tool: 'Bash', command: 'ls', tool_use_id: 'zk2' } as never)
+  expect(state(values).gate.recent.map(c => c.inSubagent)).toEqual([true, false])
 })
 
 test('/flightdeck audit lists the text fields under gate, architect and roster too', async ($, on) => {
