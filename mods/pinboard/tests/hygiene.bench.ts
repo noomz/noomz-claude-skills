@@ -70,6 +70,7 @@ const CORPUS: Record<string, string> = {
   'scheme x. then ://': ending('x.'.repeat(2000) + '://h:' + 'y'.repeat(80)),
   'url creds x512': fill('a://b:c@'),
   'filler mix': fill('password\u3164x9 pass\u3164word=a '),
+  'braille filler mix': fill('password\u2800x9 pass\u2800word=a '),
   'secrets mix': fill('rotate password=hunter2 AKIAABCDEFGHIJKLMNOP now '),
   'password: " unclosed': 'password: "' + 'x '.repeat(2100),
   'password= then masks': fill('password=[masked]x '),
