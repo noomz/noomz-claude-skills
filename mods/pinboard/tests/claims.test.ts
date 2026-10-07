@@ -197,11 +197,40 @@ describe('the three-link cap counts distinct addresses', () => {
   })
 })
 
+describe('a kept GitHub comment anchor', () => {
+  const pr = 'https://github.com/o/r/pull/9'
+
+  test('makes its link distinct from the bare pull request address', async ($, on) => {
+    const { value } = stateStore(on)
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    const text = `${pr}#issuecomment-1 ${pr}\n`
+    on('tool.call', { tool: 'Bash' }, () => ({ result: { stdout: text, stderr: '', interrupted: false }, text }))
+    await $.tool.call({ tool: 'Bash', command: 'gh pr comment 9 --body x' })
+    expect(((value('links') as unknown[] | undefined) ?? []).length).toBe(2)
+  })
+
+  test('four anchors on one pull request pin none', async ($, on) => {
+    const { value } = stateStore(on)
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    const text = [1, 2, 3, 4].map(n => `${pr}#issuecomment-${n}\n`).join('')
+    on('tool.call', { tool: 'Bash' }, () => ({ result: { stdout: text, stderr: '', interrupted: false }, text }))
+    await $.tool.call({ tool: 'Bash', command: 'gh pr comment 9 --body x' })
+    expect(((value('links') as unknown[] | undefined) ?? []).length).toBe(0)
+  })
+})
+
 describe('an unknown key that JavaScript orders first', () => {
   test('is the one the refusal names', async ($, on) => {
     stateStore(on)
     on('ui.open', () => ({ value: { isPlaced: true } }))
     expect(await $.tool.call({ tool: TOOL, foo: 1, 7: 2 } as Parameters<typeof $.tool.call>[0])).toEqual({ deny: 'The update has an unknown key "7".' })
+  })
+
+  test('is not a key that only looks like an integer', async ($, on) => {
+    stateStore(on)
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    const input = { tool: TOOL, add_todos: ['a'], zed: 1, 4294967295: 2, '-1': 3 } as Parameters<typeof $.tool.call>[0]
+    expect(await $.tool.call(input)).toEqual({ deny: 'The update has an unknown key "zed".' })
   })
 })
 
