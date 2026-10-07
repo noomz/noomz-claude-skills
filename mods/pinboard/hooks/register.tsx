@@ -75,8 +75,12 @@ const reject = (error: string): never => {
   throw new Rejected(error)
 }
 
-const asReceived = (key: string): string =>
-  scrub(JSON.stringify(key).replace(/[^ -~]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`), TEXT_CAP).text
+// Scrubbed before escaping, while a separator still reads as a space; a key with nothing to mask is shown as received
+const asReceived = (key: string): string => {
+  const raw = scrub(key, TEXT_CAP)
+  const shown = JSON.stringify(raw.masked > 0 ? raw.text : key)
+  return scrub(shown.replace(/[^ -~]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`), TEXT_CAP).text
+}
 
 const isRecord = (raw: unknown): raw is Record<string, unknown> => typeof raw === 'object' && raw !== null && !Array.isArray(raw)
 

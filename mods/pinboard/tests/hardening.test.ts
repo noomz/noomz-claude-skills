@@ -83,3 +83,13 @@ describe('the masked count is a running total of the masks accepted calls wrote'
     expect(hygiene()).toEqual({ masked: 0, rejected: 0 })
   })
 })
+
+describe('the deny text for an unknown key', () => {
+  for (const key of ['password hunter2', 'password　hunter2', 'password\thunter2', 'password hunter2', 'café password hunter2']) {
+    test(`masks a secret whose separator is not printable ASCII: ${JSON.stringify(key)}`, async $ => {
+      const result = await $.tool.call({ tool: TOOL, add_todos: ['a'], [key]: 'x' } as Parameters<typeof $.tool.call>[0])
+      expect('deny' in result && result.deny).toMatch(/^The update has an unknown key "[ -~]*\[masked\]"\.$/)
+      expect(JSON.stringify(result)).not.toContain('hunter2')
+    })
+  }
+})

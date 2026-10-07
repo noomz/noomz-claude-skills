@@ -18,7 +18,7 @@ Pinboard registers a tool, `mcp__pinboard__update`. Claude calls it to add todos
 
 The tool checks each call before it changes the board:
 
-- It accepts only its six keys: `add_todos`, `start_todo`, `done_todos`, `remove_todos`, `open_decisions` and `decide`. The engine owns four more names beside them, `tool`, `tool_use_id`, `agentId` and `consent`, so a model-written one never reaches the board, and a model-written `agentId` of any value, `''`, `0`, `false` and `null` included, reads as a subagent's call. The engine drops an own `__proto__` key before the mod sees the call. The refusal for any other key names it as received: JSON-quoted, with each character outside printable ASCII written as `\uXXXX`, then scrubbed.
+- It accepts only its six keys: `add_todos`, `start_todo`, `done_todos`, `remove_todos`, `open_decisions` and `decide`. The engine owns four more names beside them, `tool`, `tool_use_id`, `agentId` and `consent`, so a model-written one never reaches the board, and a model-written `agentId` of any value, `''`, `0`, `false` and `null` included, reads as a subagent's call. The engine drops an own `__proto__` key before the mod sees the call. The refusal for any other key names it: the key is scrubbed first, so a secret behind a tab, a no-break space or another separator is masked, then JSON-quoted, with each character outside printable ASCII written as `\uXXXX`, and scrubbed again. A key that scrubbing masks nothing in is quoted as received, invisible characters and trailing spaces included.
 - Each list holds at most 20 entries per call.
 - Todo ids look like `t1` and decision ids look like `d1`.
 - The board holds at most 50 todos and 20 decisions.
