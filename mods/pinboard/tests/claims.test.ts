@@ -164,6 +164,47 @@ describe('stored links', () => {
   })
 })
 
+describe('stored links through an update', () => {
+  test('stay as stored after an accepted and a refused update', async ($, on) => {
+    const { values, value } = stateStore(on)
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    const stored = { href: 'https://u:p@x.com/password=hunter2', label: 'password=hunter2' }
+    values.set('pinboard/links/', { value: [stored], version: 1 })
+    await $.tool.call({ tool: TOOL, add_todos: ['b'] })
+    expect(value('links')).toEqual([stored])
+    expect(await $.tool.call({ tool: TOOL, bogus: 1 } as Parameters<typeof $.tool.call>[0])).toEqual({ deny: 'The update has an unknown key "bogus".' })
+    expect(value('links')).toEqual([stored])
+  })
+})
+
+describe('the three-link cap counts distinct addresses', () => {
+  test('four addresses that differ only in query or fragment pin one', async ($, on) => {
+    const { value } = stateStore(on)
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    const text = 'https://x.com/a?x=1 https://x.com/a?x=2 https://x.com/a#f https://x.com/a\n'
+    on('tool.call', { tool: 'Bash' }, () => ({ result: { stdout: text, stderr: '', interrupted: false }, text }))
+    await $.tool.call({ tool: 'Bash', command: 'gh pr create --fill' })
+    expect((value('links') as { href: string }[]).map(pin => pin.href)).toEqual(['https://x.com/a'])
+  })
+
+  test('one pull request address printed four times pins it once', async ($, on) => {
+    const { value } = stateStore(on)
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    const text = `${'https://github.com/o/r/pull/9\n'.repeat(4)}`
+    on('tool.call', { tool: 'Bash' }, () => ({ result: { stdout: text, stderr: '', interrupted: false }, text }))
+    await $.tool.call({ tool: 'Bash', command: 'gh pr create --fill' })
+    expect(value('links')).toEqual([{ href: 'https://github.com/o/r/pull/9', label: 'r PR #9' }])
+  })
+})
+
+describe('an unknown key that JavaScript orders first', () => {
+  test('is the one the refusal names', async ($, on) => {
+    stateStore(on)
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    expect(await $.tool.call({ tool: TOOL, foo: 1, 7: 2 } as Parameters<typeof $.tool.call>[0])).toEqual({ deny: 'The update has an unknown key "7".' })
+  })
+})
+
 describe('the masked count at a cap', () => {
   test('counts a mask the cut hides', () => {
     expect(scrub('password=hunter2', 12)).toEqual({ text: 'password=\u2026', masked: 1 })
