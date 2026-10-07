@@ -829,6 +829,14 @@ describe('session start folds the values older builds kept apart into the board,
     expect(RETIRED.map(value)).toEqual([null, null, null])
   })
 
+  test('an empty board keeps its own hygiene counts when it takes the upstream items', async ($, on) => {
+    const { values, value } = engine(on)
+    legacy(values)
+    values.set('pinboard/board/', { value: { todos: [], decisions: [], hygiene: { masked: 3, rejected: 2 } }, version: 1 })
+    await start($)
+    expect(value('board')).toMatchObject({ todos: [{ id: 't1' }, { id: 't2' }], decisions: [{ id: 'd1' }], hygiene: { masked: 3, rejected: 2 } })
+  })
+
   test('a board that holds items keeps them, and the older values are still cleared', async ($, on) => {
     const { values, value } = engine(on)
     legacy(values)
@@ -959,6 +967,12 @@ describe('the deny text names an unknown key as it was received', () => {
 
   test('a reserved name with a trailing space keeps the space inside the quotes', async $ => {
     expect(await deny($, 'agentId ')).toEqual({ deny: 'The update has an unknown key "agentId ".' })
+  })
+
+  test('a key longer than the text cap is cut, as quoted, to 200 characters with a final …', async $ => {
+    expect(await deny($, 'a'.repeat(198))).toEqual({ deny: `The update has an unknown key "${'a'.repeat(198)}".` })
+    expect(await deny($, 'a'.repeat(300))).toEqual({ deny: `The update has an unknown key "${'a'.repeat(198)}….` })
+    expect(await deny($, 'é'.repeat(40))).toEqual({ deny: `The update has an unknown key "${'\\u00e9'.repeat(33)}….` })
   })
 
   test('a key that holds a secret is masked', async $ => {
