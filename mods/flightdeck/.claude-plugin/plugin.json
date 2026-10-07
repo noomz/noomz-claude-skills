@@ -1,7 +1,7 @@
 {
   "name": "flightdeck",
   "version": "0.4.0",
-  "description": "Flightdeck: a live agent dashboard for Claude Code. Main model vitals, an on-call architect, every permission check, subagent cards and swimlanes, a turn receipt and a session log, all from real session events. Hardened port: session text is masked and cut before it is kept, and /flightdeck audit shows what is held",
+  "description": "Flightdeck: a live agent dashboard for Claude Code. Main model vitals, an on-call architect, recent permission checks, subagent cards and swimlanes, a turn receipt and a session log, all from real session events. Hardened port: session text is masked and cut before it is kept, and /flightdeck audit shows what is held",
   "author": {
     "name": "noomz",
     "email": "lazym0m3nt@gmail.com"

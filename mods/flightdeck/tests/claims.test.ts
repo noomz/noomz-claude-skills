@@ -198,6 +198,11 @@ describe("an architect's advice", () => {
     expect(adviceLine('-----BEGIN PRIVATE KEY-----MIIEvQIBADANBgkqhkiG9w0BAQEFAASC-----END PRIVATE KEY-----').text).toBe('BEGIN PRIVATE KEY-----[masked]-----END PRIVATE KEY-----')
   })
 
+  test('keeps a value whose key sits on a skipped or earlier line, since each line is masked on its own', () => {
+    expect(adviceLine('[x] password:\nhunter2 rotate it').text).toBe('hunter2 rotate it')
+    expect(adviceLine("[architect] PGPASSWORD='Vckb\nf2lyk'").text).toBe("f2lyk'")
+  })
+
   test('skips a line that is only marks', async ($, on) => {
     expect(await advise($, on, '---\n**\nShip it')).toBe('Ship it')
   })
