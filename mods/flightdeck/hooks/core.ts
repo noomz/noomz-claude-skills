@@ -551,15 +551,17 @@ export const titleLines = (title: string, first: number, rest: number): [string,
   return [t.slice(0, at).trim(), shorten(t.slice(at), rest)]
 }
 
-const ENGINE_TURNS: Record<string, string> = {
-  system: 'message delivered',
-  loop_wakeup: 'loop wakeup',
-  schedule_wakeup: 'scheduled task',
-  poll_event: 'event delivered',
-}
+const ENGINE_TURNS = new Map<string, string>([
+  ['system', 'message delivered'],
+  ['loop_wakeup', 'loop wakeup'],
+  ['schedule_wakeup', 'scheduled task'],
+  ['poll_event', 'event delivered'],
+])
+
+export const isEngineTurn = (source: string | undefined) => source !== undefined && ENGINE_TURNS.has(source)
 
 export const promptLine = (text: string, source: string | undefined): { who: string; text: string } => {
-  const engine = source ? ENGINE_TURNS[source] : undefined
+  const engine = source === undefined ? undefined : ENGINE_TURNS.get(source)
   return engine ? { who: 'engine', text: engine } : { who: 'you', text: `new turn · ${plural([...text].length, 'char')}` }
 }
 

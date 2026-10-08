@@ -53,6 +53,7 @@ import {
   prettyModel,
   promptLine,
   handbackOf,
+  isEngineTurn,
   adviceLine,
   receiptOf,
   recordCheck,
@@ -342,9 +343,10 @@ export const register: Register = (on, options) => {
     const [now, cost] = await Promise.all([$.clock.now(), costNow($)])
     await update($, turn, () => ({ ...DEFAULT_TURN, startedAt: now, costAtStart: cost }))
     await update($, main, m => ({ ...normalize(DEFAULT_MAIN, m), isRunning: true }))
-    // A background architect's report reaches the main loop as the text opening this turn. The
-    // SubagentHandback tool call (in tool.call) normally carries it first; this is the fallback.
-    const back = e.text ? handbackOf(e.text) : null
+    // A background architect's report reaches the main loop as the text of a turn the engine
+    // started; the SubagentHandback tool call normally carries it first. A turn typed or sent
+    // through the SDK is never read.
+    const back = e.text && isEngineTurn(promptSource) ? handbackOf(e.text) : null
     const a = back ? await getArchitect($) : null
     if (back && a && a.ids.includes(back.from)) {
       await noteAdvice($, cfg, back.body)
