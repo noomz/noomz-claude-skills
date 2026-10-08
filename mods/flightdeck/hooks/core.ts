@@ -291,7 +291,7 @@ const unquoted = (word: string) => word.replace(QUOTING, (_, d: string | undefin
 const RUNS_ON = /^(?:[^A-Za-z0-9]*|is|[\s\S]*(?:[=:]|--[^\s=]*))$/i
 const CREDENTIAL_SCHEME = /^(?:bearer|basic)$/i
 const AUTHORIZATION_NAME = /authorization$/i
-const leftOpen = (value: string) => value.split('(').length > value.split(')').length
+const leftOpen = (value: string) => value.includes('(') && value.split('(').length > value.split(')').length
 const valueRunsOn = (name: string, value: string) =>
   RUNS_ON.test(value) || CREDENTIAL_SCHEME.test(value) || AUTHORIZATION_NAME.test(name) || leftOpen(value)
 
