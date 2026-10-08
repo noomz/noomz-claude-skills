@@ -282,11 +282,9 @@ export const bucketOf = (tool: string): Bucket =>
 
 const lastSegments = (path: string, n: number) => path.split(/[\\/]/).filter(Boolean).slice(-n).join('/')
 
-/**
- * A command whose leading text is plain `NAME=value` words and then a plain program word; anything
- * else (a quote, `$`, a backtick, `\`, a bracket, `+=`) shows the tool name alone.
- */
-const SIMPLE_COMMAND = /^[ \t\r\n]*((?:[A-Za-z_]\w*=[\w!#%*+,./:=?@^~-]*[ \t]+)*)([\w./][\w./-]*)(?=[ \t\r\n]|$)/
+const PLAIN_ASSIGNMENT = String.raw`[A-Za-z_]\w*=[\w!#%*+,./:=?@^~-]*[ \t]+`
+const PLAIN_PROGRAM = String.raw`[\w./][\w./-]*`
+const SIMPLE_COMMAND = new RegExp(String.raw`^[ \t\r\n]*((?:${PLAIN_ASSIGNMENT})*)(${PLAIN_PROGRAM})(?=[ \t\r\n]|$)`)
 const ASSIGNMENT = /([A-Za-z_]\w*)=(\S*)/g
 
 const RUNS_ON = /^(?:[^A-Za-z0-9]*|is|[\s\S]*(?:[=:]|--[^\s=]*))$/i
@@ -546,8 +544,7 @@ const ENGINE_TURNS = new Map<string, string>([
 
 export const isEngineTurn = (source: string | undefined): source is string => source !== undefined && ENGINE_TURNS.has(source)
 
-/** A 53-bit hash (cyrb53), so the source map holds no prompt text. */
-const textHash = (text: string) => {
+const promptKey = (text: string) => {
   let h1 = 0xdeadbeef
   let h2 = 0x41c6ce57
   for (let i = 0; i < text.length; i++) {
@@ -563,32 +560,26 @@ const textHash = (text: string) => {
 const PENDING_MAX = 32
 const TYPED_MAX = 4096
 
-/**
- * The engine source of the turn a prompt starts, keyed by its text: UserPromptSubmit carries no
- * turn id, and turn.start carries only the text. The last 32 engine deliveries wait for their turn.
- * A text once submitted from any other source reads as typed for the rest of the session; once
- * that memory is full, every turn reads as typed.
- */
+/** Keyed by prompt text: UserPromptSubmit carries no turn id, and turn.start carries only the text. */
 export const promptSources = () => {
   const pending = new Map<number, string>()
-  const typed = new Set<number>()
-  let typedFull = false
+  let typed: Set<number> | 'overflowed' = new Set()
   return {
     submit(text: string, source: string | undefined) {
-      const key = textHash(text)
+      const key = promptKey(text)
       if (isEngineTurn(source)) {
         pending.set(key, source)
         if (pending.size > PENDING_MAX) pending.delete(pending.keys().next().value as number)
-      } else if (!typed.has(key)) {
+      } else if (typed !== 'overflowed' && !typed.has(key)) {
         if (typed.size < TYPED_MAX) typed.add(key)
-        else typedFull = true
+        else typed = 'overflowed'
       }
     },
     start(text: string) {
-      const key = textHash(text)
+      const key = promptKey(text)
       const source = pending.get(key)
       pending.delete(key)
-      return typedFull || typed.has(key) ? undefined : source
+      return typed === 'overflowed' || typed.has(key) ? undefined : source
     },
   }
 }
