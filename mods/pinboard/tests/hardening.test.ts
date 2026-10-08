@@ -50,7 +50,7 @@ describe('a stored board in a shape no build writes', () => {
     expect(value('board')).toEqual({
       todos: [{ id: 't2', text: 'kept', isDone: false }, { id: 't3', text: 'a', isDone: false }],
       decisions: [],
-      hygiene: { masked: 0, rejected: 0 },
+      hygiene: { masked: 0, rejected: 0 }, dropped: 0,
     })
   })
 
