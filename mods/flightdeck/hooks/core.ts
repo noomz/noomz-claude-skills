@@ -297,7 +297,8 @@ const programOf = (command: string) => {
   const simple = SIMPLE_COMMAND.exec(command)
   if (!simple) return ''
   const [, assignments = '', program = ''] = simple
-  for (const [, name = '', value = ''] of assignments.matchAll(ASSIGNMENT)) if (valueRunsOn(name, value)) return ''
+  ASSIGNMENT.lastIndex = 0
+  for (let a = ASSIGNMENT.exec(assignments); a; a = ASSIGNMENT.exec(assignments)) if (valueRunsOn(a[1] ?? '', a[2] ?? '')) return ''
   return program
 }
 
