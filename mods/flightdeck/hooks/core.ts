@@ -36,10 +36,17 @@ export const NO_TEXT = '' as SafeText
 
 const UNCUT = Number.MAX_SAFE_INTEGER
 
+/**
+ * A kept field: the unit is scrubbed whole and the field is derived from the masked text. A
+ * derivation that is not a suffix of the masked unit (marks or quotes removed) is scrubbed again,
+ * since the removal can rebuild a key the first pass did not see.
+ */
 export const kept = (raw: unknown, cap: number, derive: (masked: SafeText) => string = s => s): Scrubbed => {
   const whole = scrub(raw, UNCUT)
   const text = derive(whole.text)
-  return { text: text.length > cap ? scrub(text, cap).text : (text as SafeText), masked: whole.masked }
+  if (text.length <= cap && whole.text.endsWith(text)) return { text: text as SafeText, masked: whole.masked }
+  const again = scrub(text, cap)
+  return { text: again.text, masked: whole.masked + again.masked }
 }
 
 // ---------------------------------------------------------------- defaults
@@ -324,22 +331,32 @@ const FRAME = ' → '
 const QUOTED = /["'\\]/
 const SLASH = /[\\/]/
 
-const afterFrame = (derive: (part: string) => string) => (masked: SafeText) => {
-  const at = masked.indexOf(FRAME)
-  if (at < 0) return masked
-  const part = derive(masked.slice(at + FRAME.length))
-  return part ? `${masked.slice(0, at)}${FRAME}${part}` : masked.slice(0, at)
-}
-
-const programPart = afterFrame(word => {
+const programPart = (word: SafeText) => {
   const plain = QUOTED.test(word) ? unquoted(word) : word
   return SLASH.test(plain) ? lastSegments(plain, 1) : plain
-})
+}
 
-const pathSegments = afterFrame(path => lastSegments(path, 2))
+const pathSegments = (path: SafeText) => lastSegments(path, 2)
 
-const detailOf = (tool: string, part: string, derive?: (masked: SafeText) => string) =>
-  part ? kept(`${tool}${FRAME}${part}`, CAP.detail, derive) : kept(tool, CAP.detail)
+const TOOL_NAMES = new Map<string, Scrubbed>()
+
+/** A tool name is an engine identifier repeated on every call: scrubbed once, kept for the next call. */
+const toolName = (tool: string): Scrubbed => {
+  const known = TOOL_NAMES.get(tool)
+  if (known) return known
+  if (TOOL_NAMES.size >= 64) TOOL_NAMES.clear()
+  const name = scrub(tool, CAP.detail)
+  TOOL_NAMES.set(tool, name)
+  return name
+}
+
+const detailOf = (tool: string, part: string, derive?: (masked: SafeText) => string): Scrubbed => {
+  const name = toolName(tool)
+  const room = CAP.detail - name.text.length - FRAME.length
+  if (!part || room < 1) return name
+  const shown = kept(part, room, derive)
+  return shown.text ? { text: `${name.text}${FRAME}${shown.text}` as SafeText, masked: name.masked + shown.masked } : name
+}
 
 export const toolDetail = (tool: string, input: unknown): Scrubbed => {
   const i = isObject(input) ? input : {}
