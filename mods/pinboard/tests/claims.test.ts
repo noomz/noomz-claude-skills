@@ -75,6 +75,19 @@ describe('scrub misses a key in backticks, brackets or escaped JSON, and a URL p
   ])
 })
 
+describe('scrub leaves an Azure connection string, an ApiKey, Digest or Negotiate credential, a table row, a bold label and a JWT glued after an underscore or a hyphen', () => {
+  rows([
+    ['DefaultEndpointsProtocol=https;AccountName=acct;AccountKey=ZHVtbXlkdW1teQ==', 'DefaultEndpointsProtocol=https;AccountName=acct;AccountKey=ZHVtbXlkdW1teQ==', 0],
+    ['Authorization: ApiKey dummycred123456', 'Authorization: [masked] dummycred123456', 1],
+    ['Authorization: Digest dummycred123456', 'Authorization: [masked] dummycred123456', 1],
+    ['Authorization: Negotiate dummycred123456', 'Authorization: [masked] dummycred123456', 1],
+    ['| Password | hunter2xyz |', '| Password | hunter2xyz |', 0],
+    ['**Credentials**: admin:hunter2xyz', '**Credentials**: admin:hunter2xyz', 0],
+    ['_eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJkdW1teSJ9.c2lnZHVtbXlzaWdkdW1teQ_', '_eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJkdW1teSJ9.c2lnZHVtbXlzaWdkdW1teQ_', 0],
+    ['-eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJkdW1teSJ9.c2lnZHVtbXlzaWdkdW1teQ-', '-eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJkdW1teSJ9.c2lnZHVtbXlzaWdkdW1teQ-', 0],
+  ])
+})
+
 describe('scrub leaves a PASS or PAT value that starts with a PEM armor word', () => {
   rows([
     ['DB_PASS=-----BEGINhunter2!', 'DB_PASS=-----BEGINhunter2!', 0],
