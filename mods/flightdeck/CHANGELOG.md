@@ -1,0 +1,40 @@
+# Changelog
+
+## 0.4.0
+
+Hardened port of scasella/claude-flightdeck 0.3.2, published in noomz/noomz-claude-skills.
+
+- Session text reaches state or the pane only through `scrub()` in `hooks/hygiene.ts`, which masks secrets, removes ESC, control, bidi and zero-width characters, and cuts each field to a fixed cap. `redact()` is gone.
+- The log no longer keeps your prompts: a typed turn reads `you · new turn · <n> chars`.
+- Agent cards no longer keep a subagent's answer. The expanded card shows its status and duration in place of the answer.
+- The tool detail on cards, in the log and in the gate drill-down is derived: a command's program word, a file's last two path segments, or a URL's host, each masked before any cut. A command shows the plain word it opens with, after any leading spaces, tabs or line breaks and followed by one of those or the end. Only the opening is checked, so `echo ok; pwd` shows `echo`. A command that opens with an assignment, such as `PGPASSWORD=hunter2 psql` or PowerShell's `$x=` or `$env:X=`, or with any other character, shows the tool name alone. A derived part is masked again whenever the derivation changed it. Patterns, queries and descriptions are dropped.
+- A turn's log row comes from who started it (the `source` `UserPromptSubmit` carried with the turn's text), never from its text: a typed prompt is its length alone, and an engine-started turn is a fixed label. Flightdeck holds a hash of each submitted text, never the text, and a text once typed reads as typed for as long as flightdeck stays loaded, through `/clear` and `/resume`. The text of a turn is read only when the engine started it and it opens as the hand-back of an architect agent the session spawned.
+- A session start resets state unless its `meta` names this schema version, so state upstream flightdeck wrote (it stored no `meta`) is never drawn. The reset also empties the model, mode, cost and rate limits.
+- Architect advice, agent descriptions, names and types, and the architect roster are masked and cut before they are kept. Advice is masked again after its Markdown marks come off, so a bold key no longer unmasks.
+- New `/flightdeck audit` lists each stored text field by state path with its length in UTF-16 units, and the masked count, without printing a value. The receipt panel and the mini layout show a `hygiene · <n> masked` cell.
+- `/flightdeck reset`, `/clear` and a resume also empty the architect roster and the masked count. State saved by an older version is reset when a session starts.
+- An agent description holding an escape sequence no longer blanks the pane.
+
+## 0.3.2
+
+- A background architect's advice is read from its `SubagentHandback` tool call, where the report actually arrives, with the hand-back text as a fallback. Bold markers no longer leak into the advice line.
+- README: no longer promises that counters survive every update; a change to the state's shape may reset them once.
+
+## 0.3.1
+
+- The main box shows the model and effort as soon as a request starts, not after the first one finishes.
+- Advice from a background architect agent (such as `fable-advisor`) now reaches the architect's `»` line; it arrives as a hand-back message, not as the agent's own answer.
+- New README media showing the Flightdeck header; plainer wording about opening on start.
+- More gate tests (24 in all).
+
+## 0.3.0
+
+First public release.
+
+- Panels: main vitals (context, compactions, cost, rate limits), architect timeline, permission gate strip with per-family drill-down, agent cards and swimlanes, other loops, turn receipt, session log.
+- Layouts: docked one- or two-column, and an 8-row inline summary for the main screen. Cards fall back to swimlanes when they don't fit.
+- Theme colours by default, with a `pastel` palette option.
+- Animated connectors and live clocks as surface modules, only while work flows.
+- Works on the terminal, desktop app, VS Code and mobile surfaces.
+- Config for the architect pattern, labels, panels, layout, card limit, motion, moments, palette, opening on start and the status line.
+- `/clear` and `/flightdeck reset` start the pane fresh; reads tolerate missing or older fields.

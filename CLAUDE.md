@@ -65,7 +65,12 @@ awk 'FNR>500{print FILENAME,"exceeds 500 lines:",FNR}' skills/*/SKILL.md
 
 # 4. Mods: manifest + module the way the engine reads them, and their tests
 for m in mods/*/; do claude plugin validate "$m" && claude plugin test "$m"; done
+
+# 5. Mods: every copy of the hygiene gate matches pinboard's byte for byte
+cmp mods/pinboard/hooks/hygiene.ts mods/flightdeck/hooks/hygiene.ts && cmp mods/pinboard/tests/hygiene.test.ts mods/flightdeck/tests/hygiene.test.ts
 ```
+
+The block's exit status is its last command's, so the `cmp` step stays last. It fails the block when either pair of hygiene copies differs by one byte.
 
 ## Content rules that matter here
 
