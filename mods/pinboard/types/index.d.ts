@@ -10,7 +10,7 @@ export type Pin = { href: SafeText; label: SafeText }
 
 export type Board = { todos: Todo[]; decisions: Decision[] }
 
-export type Pinboard = Board & { hygiene: Hygiene }
+export type Pinboard = Board & { hygiene: Hygiene; dropped: number }
 
 export type Retired = unknown
 

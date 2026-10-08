@@ -13,7 +13,7 @@ const MAX_DECISIONS = 20
 const MAX_LINKS = 12
 const TEXT_CAP = 200
 
-const EMPTY_BOARD: Pinboard = { todos: [], decisions: [], hygiene: { masked: 0, rejected: 0 } }
+const EMPTY_BOARD: Pinboard = { todos: [], decisions: [], hygiene: { masked: 0, rejected: 0 }, dropped: 0 }
 const BOARD = { plugin: 'pinboard', key: 'board' } as const
 const board = atom(BOARD, EMPTY_BOARD)
 const links = atom({ plugin: 'pinboard', key: 'links' } as const, [] as Pin[])
@@ -25,6 +25,7 @@ const DESCRIPTION = [
   "Keep the session's task list and open decisions on the user's Pinboard, a sidebar that stays in view while the transcript scrolls.",
   'Use it in place of writing task lists or decision lists in your reply, whenever the work takes 3+ distinct steps or the user gives new instructions.',
   'add_todos: one action per item. start_todo: the todo id you are working on now; exactly one is in progress at a time. done_todos / remove_todos: todo ids.',
+  'remove_todos only for a todo that no longer applies, and say which one and why in your reply. Leave a todo that waits on a condition open until that condition is settled.',
   'Update in real time; do not batch completions. Mark a todo done only after the work is actually done, including any verification it needs, never based on intent.',
   'If blocked or partly done, leave it in progress and add a follow-up todo describing the blocker.',
   'open_decisions: questions that need the user to choose. decide: close a decision by id once the user has answered.',
@@ -288,7 +289,7 @@ const recheckBoard = (raw: unknown): Pinboard => {
     return isActive ? { id, text, isDone, isActive } : { id, text, isDone }
   })
   const decisions = recheckItems<Decision>(stored.decisions, DECISION_ID, (id, text) => ({ id, text }))
-  return { todos: capTodos(todos), decisions: decisions.slice(0, MAX_DECISIONS), hygiene: counts(stored.hygiene) }
+  return { todos: capTodos(todos), decisions: decisions.slice(0, MAX_DECISIONS), hygiene: counts(stored.hygiene), dropped: count(stored.dropped) }
 }
 
 const clearRetired = async ($: EngineInterface) => {
@@ -307,6 +308,7 @@ async function audit($: EngineInterface): Promise<string[]> {
     describeBoard(stored),
     `Stored: ${plural(stored.todos.length, 'todo')}, ${plural(stored.decisions.length, 'decision')}, ${plural((await read($, links)).length, 'link')}.`,
     `Hygiene: ${masked} masked, ${rejected} rejected.`,
+    `Dropped: ${plural(stored.dropped, 'open todo')} removed before done.`,
   ].flatMap(text => text.split('\n'))
 }
 
@@ -397,7 +399,11 @@ export const register: Register = on => {
         const stored = recheckBoard(old)
         const applied = applyUpdate(stored, parsed.update)
         outcome.error = applied.ok ? undefined : applied.error
-        return applied.ok ? { ...tally(stored, 'masked', parsed.masked), ...applied.board } : tally(stored, 'rejected', 1)
+        if (!applied.ok) return tally(stored, 'rejected', 1)
+        // Open todos removed unfinished; clearing finished ones is housekeeping
+        const removed = new Set(parsed.update.remove_todos)
+        const dropped = stored.todos.filter(t => removed.has(t.id) && !t.isDone).length
+        return { ...tally(stored, 'masked', parsed.masked), ...applied.board, dropped: stored.dropped + dropped }
       }),
     )
     return outcome.error === undefined ? { result: describeBoard(written) } : { deny: outcome.error }
@@ -440,7 +446,7 @@ export const register: Register = on => {
     const { Box, Text, Button, Link } = $.ui.resolve(e)
     // One cell of padding on every side
     const inner = Math.max(10, e.props.bodyColumns - 2)
-    const { todos: allTodos, decisions: allDecisions, hygiene } = await read($, board)
+    const { todos: allTodos, decisions: allDecisions, hygiene, dropped } = await read($, board)
     const allLinks = await read($, links)
     const doneCount = allTodos.filter(t => t.isDone).length
 
@@ -473,7 +479,7 @@ export const register: Register = on => {
         {allTodos.length === 0 && empty('No todos yet.')}
         {allTodos.filter(t => !t.isDone).map(t => (t.isActive ? item('▸', t.text, false, 'warning') : item('○', t.text)))}
         {/* Finished todos fold into one line so open work stays on top */}
-        {doneCount > 0 && <Text dimColor>{`  ✓ ${doneCount} done`}</Text>}
+        {(doneCount > 0 || dropped > 0) && <Text dimColor>{'  ' + [doneCount > 0 && `✓ ${doneCount} done`, dropped > 0 && `${dropped} dropped`].filter(Boolean).join(' · ')}</Text>}
         <Text> </Text>
 
         <Box flexDirection="row" justifyContent="space-between" width={inner}>
