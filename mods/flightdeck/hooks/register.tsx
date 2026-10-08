@@ -321,11 +321,14 @@ export const register: Register = (on, options) => {
     return { text: 'Flightdeck opened. Focus it with ctrl+x tab; 1-6 expand cards, f/s/o open the gate rows.' }
   })
 
-  // Who started the next turn: the engine says so here, and turn.start carries only the text.
-  let promptSource: string | undefined
+  // Who submitted each prompt, by its text: UserPromptSubmit carries no turn id, and turn.start
+  // carries only the text. A text two sources submitted has no source.
+  const sources = new Map<string, string | undefined>()
   on('classic.UserPromptSubmit', async ($, e, next) => {
     await noteMode($, e.permission_mode)
-    promptSource = e.source
+    const seen = sources.has(e.prompt) && sources.get(e.prompt) !== e.source
+    sources.set(e.prompt, seen ? undefined : e.source)
+    if (sources.size > 32) sources.delete(sources.keys().next().value as string)
     return next(e)
   })
 
@@ -349,15 +352,16 @@ export const register: Register = (on, options) => {
     const [now, cost] = await Promise.all([$.clock.now(), costNow($)])
     await update($, turn, () => ({ ...DEFAULT_TURN, startedAt: now, costAtStart: cost }))
     await update($, main, m => ({ ...normalize(DEFAULT_MAIN, m), isRunning: true }))
-    const back = e.text && isEngineTurn(promptSource) ? handbackOf(e.text) : null
+    const source = sources.get(e.text)
+    sources.delete(e.text)
+    const back = e.text && isEngineTurn(source) ? handbackOf(e.text) : null
     const a = back ? await getArchitect($) : null
     if (back && a && a.ids.includes(back.from)) {
       await noteAdvice($, cfg, back.body)
     } else if (e.text) {
-      const p = promptLine(e.text, promptSource)
+      const p = promptLine(e.text, source)
       await say($, p.who, p.text)
     }
-    promptSource = undefined
     return next(e)
   })
 
