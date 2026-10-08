@@ -94,6 +94,34 @@ test('a Bash or PowerShell detail shows the tool name alone for any command outs
   expect(failClosed.map(([tool, command]) => toolDetail(tool, { command }))).toEqual(failClosed.map(([tool]) => ({ text: tool, masked: 0 })))
 })
 
+test('a command that opens with an assignment, or with `$`, `\\` or `-`, shows the tool name alone', () => {
+  const opens = [
+    ['Bash', 'PGPASSWORD=hunter2 psql -h db'],
+    ['Bash', 'DB_HOST=db.local PORT=5432 ./deploy.sh --go'],
+    ['Bash', ' \tA=1 run'],
+    ['Bash', 'H=Authorization:Bearer dummytok123456 curl https://api.example/v1'],
+    ['Bash', 'H=Authorization:Basic dXNlcjpwYXNzZHVtbXk curl https://api.example/v1'],
+    ['Bash', 'X=/Bearer abcdefgh12345678 curl'],
+    ['Bash', 'AUTH_HEADER=token abc123def456hunter2 curl https://api.github.com'],
+    ['Bash', 'AUTH=Token abc123def456 curl x'],
+    ['Bash', 'PGPASSWORD=hunter2 hunter2xyz psql'],
+    ['Bash', 'PGPASSWORD=correct horse9 psql'],
+    ['Bash', 'ARGS=-p hunter2x mysql'],
+    ['Bash', 'X=password:x hunter2zz run'],
+    ['Bash', 'password= hunter2 run'],
+    ['Bash', 'X_AUTHORIZATION=token abc123def curl x'],
+    ['Bash', 'X=a\\ hunter2x cmd'],
+    ['Bash', 'X=$a hunter2x'],
+    ['Bash', '$hunter2x run'],
+    ['Bash', '\\hunter2x run'],
+    ['Bash', '-x hunter2x'],
+    ['PowerShell', 'X=Authorization=Basic xyz987 curl'],
+    ['PowerShell', '$x=1; psql'],
+    ['PowerShell', "$env:PGPASSWORD='hunter2'; psql"],
+  ] as const
+  expect(opens.map(([tool, command]) => toolDetail(tool, { command }))).toEqual(opens.map(([tool]) => ({ text: tool, masked: 0 })))
+})
+
 test('an assignment value that reads as running on into the next word ends the search', () => {
   for (const command of ['password= hunter2 run', 'PASSWORD=is hunter2 run', 'PASSWORD=-- hunter2 run', 'X=--secret= abc123xyz run', 'X=key: abc123xyz run', 'X=--password abc123xyz run', 'Authorization=Basic xyz987 curl', 'AUTH=Bearer abc123def456ghi curl x', 'X=bearer abcdefgh12345678 ./run', 'HTTP_AUTHORIZATION=Basic abc123 curl'])
     expect(toolDetail('Bash', { command }).text).toBe('Bash')
