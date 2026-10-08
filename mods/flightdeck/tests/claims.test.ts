@@ -318,9 +318,9 @@ describe('the masked count adds the masks scrub() finds each time flightdeck rea
   test('a denied check counts 1: the gate detail, and the denial row built from it adds nothing', async ($, on) => {
     const values = engine(on)
     on('tool.check', () => ({ decision: 'deny' as const, reason: 'rule' }))
-    await $.tool.check({ tool: 'Bash', input: { command: 'postgres://app:pw1234@db' }, tool_use_id: 'dk1' })
+    await $.tool.check({ tool: 'Bash', input: { command: 'AKIAABCDEFGHIJKLMNOP' }, tool_use_id: 'dk1' })
     const s = state(values)
-    expect([s.gate.recent.map(c => c.detail), s.log.map(l => l.text), s.hygiene.masked]).toEqual([['Bash → app:[masked]@db'], ['denied by rule · Bash → app:[masked]@db'], 1])
+    expect([s.gate.recent.map(c => c.detail), s.log.map(l => l.text), s.hygiene.masked]).toEqual([['Bash → [masked]'], ['denied by rule · Bash → [masked]'], 1])
   })
 
   test("a subagent's command counts 2: its permission check and its tool call each read it", async ($, on) => {
@@ -330,10 +330,10 @@ describe('the masked count adds the masks scrub() finds each time flightdeck rea
     on('tool.call', () => ({ result: {}, text: 'ok' }))
     await $.turn.start({ text: 'go', turnId: 'M2' })
     await $.agent.spawn(spawn('general-purpose', 'migrate'))
-    await $.tool.check({ tool: 'Bash', input: { command: 'postgres://app:pw1234@db' }, tool_use_id: 'sk1' })
-    await $.tool.call({ tool: 'Bash', command: 'postgres://app:pw1234@db', agentId: 'mc2', tool_use_id: 'sk1' } as never)
+    await $.tool.check({ tool: 'Bash', input: { command: 'AKIAABCDEFGHIJKLMNOP' }, tool_use_id: 'sk1' })
+    await $.tool.call({ tool: 'Bash', command: 'AKIAABCDEFGHIJKLMNOP', agentId: 'mc2', tool_use_id: 'sk1' } as never)
     const s = state(values)
-    expect([s.gate.recent.map(c => c.detail), s.agents[0]?.tools.map(n => n.text), s.hygiene.masked]).toEqual([['Bash → app:[masked]@db'], ['Bash → app:[masked]@db'], 2])
+    expect([s.gate.recent.map(c => c.detail), s.agents[0]?.tools.map(n => n.text), s.hygiene.masked]).toEqual([['Bash → [masked]'], ['Bash → [masked]'], 2])
   })
 
   test('an offered architect type counts 1, once, however often it is offered', async ($, on) => {

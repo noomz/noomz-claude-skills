@@ -38,52 +38,65 @@ import type { Engine } from './store'
 
 // ---------------------------------------------------------------- pure behaviour
 
-test('a Bash detail keeps only the program the command runs', () => {
+test('a Bash or PowerShell detail shows the program of a simple command: plain NAME=value words, then a plain word', () => {
   expect(toolDetail('Bash', { command: 'curl -u admin:s3cr3t https://h.example/x?sig=abc' })).toEqual({ text: 'Bash → curl', masked: 0 })
   expect(toolDetail('Bash', { command: '  /usr/local/bin/psql postgres://bob:hunter2@db/x' }).text).toBe('Bash → psql')
-  expect(toolDetail('Bash', { command: 'DB_PASS=hunter2 GITHUB_TOKEN=abc "/opt/tool/run" --go' }).text).toBe('Bash → run')
+  expect(toolDetail('Bash', { command: 'DB_HOST=db.local PORT=5432 ./deploy.sh --go' }).text).toBe('Bash → deploy.sh')
   expect(toolDetail('Bash', { command: 'export OPENAI_API_KEY=sk-proj-1234567890abcdef' }).text).toBe('Bash → export')
-  expect(toolDetail('Bash', { command: 'PGPASSWORD="correct horse battery staple" psql -h db' })).toEqual({ text: 'Bash → psql', masked: 0 })
-  expect(toolDetail('Bash', { command: "API_KEY='Winter 2024!' mysql -u root" }).text).toBe('Bash → mysql')
-  expect(toolDetail('Bash', { command: 'Api_Key="oCRQ\tmnIRN" docker login' }).text).toBe('Bash → docker')
-  expect(toolDetail('Bash', { command: 'AWS_SECRET_ACCESS_KEY=notARealKey/exampleOnly+fakeValue00000000' })).toEqual({ text: 'Bash', masked: 0 })
-  expect(toolDetail('Bash', { command: 'db_password="A1GYlg/sIR"' }).text).toBe('Bash')
-  expect(toolDetail('Bash', { command: 'postgres://app:S3cr/et@db' }).text).toBe('Bash → app:[masked]@db')
-  expect(toolDetail('Bash', { command: 'token=ab\\cd' }).text).toBe('Bash')
-  expect(toolDetail('Bash', { command: '--token=abc/def123' }).text).toBe('Bash → --token=[masked]')
-  expect(toolDetail('Bash', { command: 'password= hunter2 run' }).text).toBe('Bash')
-  expect(toolDetail('Bash', { command: 'PASSWORD=is hunter2 run' }).text).toBe('Bash')
-  expect(toolDetail('Bash', { command: 'PASSWORD=-- hunter2 run' }).text).toBe('Bash')
-  expect(toolDetail('Bash', { command: 'X=--secret= abc123xyz run' }).text).toBe('Bash')
-  expect(toolDetail('Bash', { command: 'X=key: abc123xyz run' }).text).toBe('Bash')
-  expect(toolDetail('Bash', { command: 'X=--password abc123xyz run' }).text).toBe('Bash')
-  expect(toolDetail('Bash', { command: 'Authorization=Basic xyz987 curl' }).text).toBe('Bash')
-  expect(toolDetail('Bash', { command: 'KEY="a b" OTHER=\'c d\' ./go' }).text).toBe('Bash → go')
-  expect(toolDetail('Bash', { command: 'run\\ me.sh --token abc12345' }).text).toBe('Bash → run me.sh')
-  expect(toolDetail('Bash', { command: "'/opt/my tool/run' --go" }).text).toBe('Bash → run')
-  expect(toolDetail('Bash', { command: 'Qa&Qb"xoxs--Password-u gh pr list' }).text).toBe('Bash → Qa&Qb[masked] gh pr list')
-  expect(toolDetail('Bash', { command: "passwd:'Qa y'" }).text).toBe('Bash → passwd:[masked]')
-  expect(toolDetail('Bash', { command: 'Qa==\u3164passwd: \u1160Qb9Lm2Pz7\uffa0Qcwordyfoo\u2800 npm run deploy' }).text).toBe('Bash')
-  expect(toolDetail('Bash', { command: '"DB_PASSWORD="my secret pass" ./deploy.sh"' }).text).toBe('Bash → DB_PASSWORD=[masked]')
-  expect(toolDetail('Bash', { command: 'pass"word=hunter2"' }).text).toBe('Bash → password=[masked]')
-  expect(toolDetail('Bash', { command: 'p\\assword=hunter2 x' }).text).toBe('Bash → password=[masked]')
-  expect(toolDetail('Bash', { command: '"ghp_"abcdefghijklmnopqrstuvwxyz0123456789 x' }).text).toBe('Bash → [masked]')
-  expect(toolDetail('Bash', { command: 'PGPASSWORD=$(echo hunter2) psql -h db' })).toEqual({ text: 'Bash → psql', masked: 0 })
-  expect(toolDetail('Bash', { command: 'PGPASSWORD=$(cat ~/.pgpass) psql -h db' }).text).toBe('Bash → psql')
-  expect(toolDetail('Bash', { command: 'TOKEN=`echo abc123def456` ./deploy' }).text).toBe('Bash → deploy')
-  expect(toolDetail('Bash', { command: 'PGPASSWORD="$(echo hunter2zz)" psql -h db' }).text).toBe('Bash → psql')
-  expect(toolDetail('Bash', { command: 'foo(bar) baz' }).text).toBe('Bash → foo')
-  expect(toolDetail('Bash', { command: 'postgres://user:pa(ss@db' })).toEqual({ text: 'Bash → user:[masked]@db', masked: 1 })
-  expect(toolDetail('Bash', { command: 'https://a-b:y?c(hMAQw1}@h.example.com/x. ./deploy.sh' })).toEqual({ text: 'Bash → deploy.sh', masked: 1 })
-  expect(toolDetail('Bash', { command: 'API_KEY=(abc123def456) run' }).text).toBe('Bash → run')
-  expect(toolDetail('Bash', { command: '$(echo hunter2) deploy' })).toEqual({ text: 'Bash → $', masked: 0 })
+  expect(toolDetail('Bash', { command: 'PGPASSWORD=hunter2 psql -h db' })).toEqual({ text: 'Bash → psql', masked: 0 })
   expect(toolDetail('Bash', { command: 'echo $((1+2)) x' }).text).toBe('Bash → echo')
-  expect(toolDetail('Bash', { command: 'AUTH=Bearer abc123def456ghi curl x' }).text).toBe('Bash')
-  expect(toolDetail('Bash', { command: 'X=bearer abcdefgh12345678 ./run' }).text).toBe('Bash')
-  expect(toolDetail('Bash', { command: 'HTTP_AUTHORIZATION=Basic abc123 curl' }).text).toBe('Bash')
-  expect(toolDetail('PowerShell', { command: "[Environment]::SetEnvironmentVariable('API_KEY','abc123def456')" }).text).toBe('PowerShell → [Environment]::SetEnvironmentVariable')
-  expect(toolDetail('PowerShell', { command: "[Environment]::SetEnvironmentVariable('TOKEN','abc123')" }).text).toBe('PowerShell → [Environment]::SetEnvironmentVariable')
-  expect(toolDetail('PowerShell', { command: '[Environment]::SetEnvironmentVariable("API_KEY", "abc123def456", "User")' }).text).toBe('PowerShell → [Environment]::SetEnvironmentVariable')
+  expect(toolDetail('Bash', { command: 'git\tstatus' }).text).toBe('Bash → git')
+  expect(toolDetail('Bash', { command: 'make' }).text).toBe('Bash → make')
+  expect(toolDetail('Bash', { command: 'AKIAABCDEFGHIJKLMNOP x' })).toEqual({ text: 'Bash → [masked]', masked: 1 })
+  expect(toolDetail('PowerShell', { command: 'Get-ChildItem -Recurse' }).text).toBe('PowerShell → Get-ChildItem')
+})
+
+test('a Bash or PowerShell detail shows the tool name alone for any command outside the simple form', () => {
+  const failClosed = [
+    ['Bash', 'PGPASSWORD=$(echo "a) hunter2xyz") psql'],
+    ['Bash', "PGPASSWORD=$(echo 'Pa)ss w0rdxyz') psql"],
+    ['Bash', "PGPASSWORD=$(printf %s $(printf pre\\)) 'correct horse9') psql"],
+    ['Bash', 'PGPASSWORD=$(echo \\) hunter2zz) psql'],
+    ['Bash', 'PGPASSWORD+=hunter2zz psql'],
+    ['Bash', 'X=$(case $k in a) hunter2zz;; esac) psql'],
+    ['Bash', 'PGPASSWORD=`printf %s \\`echo hunter2x\\`` psql'],
+    ['Bash', 'PGPASSWORD="`echo "hunter 2x"`" psql'],
+    ['Bash', 'PGPASSWORD=$(printf %s $(printf pre) hunter2) psql'],
+    ['Bash', 'PGPASSWORD=$(echo hunter2) psql -h db'],
+    ['Bash', 'TOKEN=`echo abc123def456` ./deploy'],
+    ['Bash', 'PGPASSWORD="correct horse battery staple" psql -h db'],
+    ['Bash', "API_KEY='Winter 2024!' mysql -u root"],
+    ['Bash', 'DB_PASS=hunter2 GITHUB_TOKEN=abc "/opt/tool/run" --go'],
+    ['Bash', 'API_KEY=(abc123def456) run'],
+    ['Bash', 'A=x{hunter2} run'],
+    ['Bash', 'A=x\u00a0hunter2 psql'],
+    ['Bash', 'A=1;hunter2 psql'],
+    ['Bash', 'A=1\nhunter2 psql'],
+    ['Bash', 'pass"word=hunter2"'],
+    ['Bash', 'p\\assword=hunter2 x'],
+    ['Bash', 'run\\ me.sh --token abc12345'],
+    ['Bash', "'/opt/my tool/run' --go"],
+    ['Bash', '$(echo hunter2) deploy'],
+    ['Bash', 'foo(bar) baz'],
+    ['Bash', 'hunter2;ls'],
+    ['Bash', '--token=abc/def123'],
+    ['Bash', 'postgres://app:S3cr/et@db'],
+    ['Bash', 'AWS_SECRET_ACCESS_KEY=notARealKey/exampleOnly+fakeValue00000000'],
+    ['PowerShell', "${env:PGPASSWORD}='hunter2zz'; psql -h db"],
+    ['PowerShell', '${env:DB_PASS}="S3cretPass99"; ./deploy'],
+    ['PowerShell', "$env:PGPASSWORD+='hunter2'; psql"],
+    ['PowerShell', "$env:PGPASSWORD=(Write-Output 'hunter2'); psql"],
+    ['PowerShell', "$env:TOKEN='abc123def456'; gh pr list"],
+    ['PowerShell', "$cred='hunter2xyz'; psql"],
+    ['PowerShell', "[Environment]::SetEnvironmentVariable('API_KEY','abc123def456')"],
+    ['PowerShell', '& "C:\\Program Files\\tool.exe" --go'],
+  ] as const
+  expect(failClosed.map(([tool, command]) => toolDetail(tool, { command }))).toEqual(failClosed.map(([tool]) => ({ text: tool, masked: 0 })))
+})
+
+test('an assignment value that reads as running on into the next word ends the search', () => {
+  for (const command of ['password= hunter2 run', 'PASSWORD=is hunter2 run', 'PASSWORD=-- hunter2 run', 'X=--secret= abc123xyz run', 'X=key: abc123xyz run', 'X=--password abc123xyz run', 'Authorization=Basic xyz987 curl', 'AUTH=Bearer abc123def456ghi curl x', 'X=bearer abcdefgh12345678 ./run', 'HTTP_AUTHORIZATION=Basic abc123 curl'])
+    expect(toolDetail('Bash', { command }).text).toBe('Bash')
 })
 
 test('an assignment whose name ends in Authorization ends the search', () => {
@@ -93,15 +106,6 @@ test('an assignment whose name ends in Authorization ends the search', () => {
 test('a tool detail with a long tool name is cut to 64 characters in all', () => {
   const shown = toolDetail('mcp__deploy_server__run_command', { command: 'x'.repeat(100) }).text
   expect([shown.length, shown.startsWith('mcp__deploy_server__run_command → x'), shown.endsWith('…')]).toEqual([64, true, true])
-})
-
-test("a Bash or PowerShell detail drops a value with a nested substitution or set through $env:", () => {
-  expect(toolDetail('Bash', { command: 'PGPASSWORD=$(printf %s $(printf pre) hunter2) psql' }).text).toBe('Bash')
-  expect(toolDetail('Bash', { command: 'PGPASSWORD=$(a $(b) c $(d) hunter2) psql' }).text).toBe('Bash')
-  expect(toolDetail('Bash', { command: 'PGPASSWORD=$(cat $(dirname $0)/.pw) psql' }).text).toBe('Bash → psql')
-  expect(toolDetail('PowerShell', { command: "$env:PGPASSWORD=(Write-Output 'hunter2'); psql" }).text).toBe('PowerShell → psql')
-  expect(toolDetail('PowerShell', { command: '$Env:API_KEY=(Get-Content key.txt)' }).text).toBe('PowerShell')
-  expect(toolDetail('PowerShell', { command: "$env:TOKEN='abc123def456'; gh pr list" }).text).toBe('PowerShell → gh')
 })
 
 test('a file tool detail keeps the last two path segments and drops the pattern', () => {
