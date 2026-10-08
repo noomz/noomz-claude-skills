@@ -139,7 +139,11 @@ async function audit($: EngineInterface) {
 }
 
 async function resetUnlessCurrentSchema($: EngineInterface) {
-  if (!isCurrentSchema(await read($, meta))) await resetAll($)
+  if (isCurrentSchema(await read($, meta))) return
+  await resetAll($)
+  // State another build wrote never went through scrub(), so none of it is kept.
+  await update($, main, () => DEFAULT_MAIN)
+  await update($, usage, () => DEFAULT_USAGE)
 }
 
 async function tally($: EngineInterface, ...found: Scrubbed[]) {
