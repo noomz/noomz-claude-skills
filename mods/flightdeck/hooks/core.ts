@@ -288,7 +288,7 @@ export const bucketOf = (tool: string): Bucket =>
 const lastSegments = (path: string, n: number) => path.split(/[\\/]/).filter(Boolean).slice(-n).join('/')
 
 const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/
-const SHELL_WORD = /\s*((?:(?:[^\s"'\\`($]|\$(?!\())+|\$\([^)]*\)?|`[^`]*`?|"(?:[^"\\]|\\[\s\S])*"?|'[^']*'?|\\[\s\S]?)+)/y
+const SHELL_WORD = /\s*((?:[^\s"'\\`($]+|\$(?!\()|\$\([^)]*\)?|`[^`]*`?|"(?:[^"\\]|\\[\s\S])*"?|'[^']*'?|\\[\s\S]?)+)/y
 const QUOTING = /"((?:[^"\\]|\\[\s\S])*)"?|'([^']*)'?|\\([\s\S])/g
 
 const unquoted = (word: string) => word.replace(QUOTING, (_, d: string | undefined, s: string | undefined, e: string | undefined) => d ?? s ?? e ?? '')
