@@ -288,7 +288,7 @@ export const bucketOf = (tool: string): Bucket =>
 const lastSegments = (path: string, n: number) => path.split(/[\\/]/).filter(Boolean).slice(-n).join('/')
 
 const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/
-const SHELL_WORD = /\s*((?:[^\s"'\\`($]+|\$(?!\()|\$\([^)]*\)?|`[^`]*`?|"(?:[^"\\]|\\[\s\S])*"?|'[^']*'?|\\[\s\S]?)+)/y
+const SHELL_WORD = /\s*((?:[^\s"'\\`($]+|\$(?!\()|\$?\([^)]*\)?|`[^`]*`?|"(?:[^"\\]|\\[\s\S])*"?|'[^']*'?|\\[\s\S]?)+)/y
 const QUOTING = /"((?:[^"\\]|\\[\s\S])*)"?|'([^']*)'?|\\([\s\S])/g
 
 const unquoted = (word: string) => word.replace(QUOTING, (_, d: string | undefined, s: string | undefined, e: string | undefined) => d ?? s ?? e ?? '')
@@ -297,9 +297,10 @@ const RUNS_ON = /^(?:[^A-Za-z0-9]*|is|[\s\S]*(?:[=:]|--[^\s=]*))$/i
 const valueRunsOn = (name: string, value: string) => RUNS_ON.test(value) || /^(?:bearer|basic)$/i.test(value) || /authorization$/i.test(name)
 
 /**
- * The first word that is not an assignment: a `$(…)` or backtick group is one word, and an unquoted
- * `(` ends a word. A value `Bearer` or `Basic`, or a name ending `authorization`, ends the search the
- * way scrub() reads on past it.
+ * The first word that is not an assignment: a `(…)`, `$(…)` or backtick group is part of the word it
+ * touches, so scrub() reads a URL or a call whole, and programPart() then keeps what sits before the
+ * first `(`. A value `Bearer` or `Basic`, or a name ending `authorization`, ends the search the way
+ * scrub() reads on past it.
  */
 const programOf = (command: string) => {
   SHELL_WORD.lastIndex = 0
@@ -340,7 +341,9 @@ const SLASH = /[\\/]/
 
 const programPart = (word: SafeText) => {
   const plain = QUOTED.test(word) ? unquoted(word) : word
-  return SLASH.test(plain) ? lastSegments(plain, 1) : plain
+  const call = plain.indexOf('(')
+  const name = call < 0 ? plain : plain.slice(0, call)
+  return SLASH.test(name) ? lastSegments(name, 1) : name
 }
 
 const pathSegments = (path: SafeText) => lastSegments(path, 2)
