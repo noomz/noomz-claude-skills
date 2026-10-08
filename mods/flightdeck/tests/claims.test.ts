@@ -227,6 +227,11 @@ describe("an architect's advice", () => {
     expect(adviceLine('**Authorization**: Bearer abcdefgh123').text).toBe('Authorization: Bearer [masked]')
   })
 
+  test('masks a key or a token that a leading mark hid, after the mark comes off', async ($, on) => {
+    expect(await advise($, on, '-pass=hunter2x is the staging creds')).toBe('pass=[masked] is the staging creds')
+    expect(adviceLine('>-eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJkdW1teSJ9.c2lnZHVtbXlzaWdkdW1teQ is the session cookie').text).toBe('[masked] is the session cookie')
+  })
+
   test('masks a bold key mid-sentence, after the marks come off', async ($, on) => {
     expect(await advise($, on, 'Set **PGPASSWORD**=Vckbf2lyk and rerun the migration')).toBe('Set PGPASSWORD=[masked] and rerun the migration')
   })
