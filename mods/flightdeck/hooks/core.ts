@@ -282,28 +282,25 @@ export const bucketOf = (tool: string): Bucket =>
 
 const lastSegments = (path: string, n: number) => path.split(/[\\/]/).filter(Boolean).slice(-n).join('/')
 
-const ASSIGNMENT = /^(?:\$env:)?([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/i
-const SHELL_WORD = /\s*((?:[^\s"'\\`($]+|\$(?!\()|\$?\([^)]*\)?|`[^`]*`?|"(?:[^"\\]|\\[\s\S])*"?|'[^']*'?|\\[\s\S]?)+)/y
-const QUOTING = /"((?:[^"\\]|\\[\s\S])*)"?|'([^']*)'?|\\([\s\S])/g
-
-const unquoted = (word: string) => word.replace(QUOTING, (_, d: string | undefined, s: string | undefined, e: string | undefined) => d ?? s ?? e ?? '')
+/**
+ * A command whose leading text is plain `NAME=value` words and then a plain program word; anything
+ * else (a quote, `$`, a backtick, `\`, a bracket, `+=`) shows the tool name alone.
+ */
+const SIMPLE_COMMAND = /^[ \t\r\n]*((?:[A-Za-z_]\w*=[\w!#%*+,./:=?@^~-]*[ \t]+)*)([\w./][\w./-]*)(?=[ \t\r\n]|$)/
+const ASSIGNMENT = /([A-Za-z_]\w*)=(\S*)/g
 
 const RUNS_ON = /^(?:[^A-Za-z0-9]*|is|[\s\S]*(?:[=:]|--[^\s=]*))$/i
 const CREDENTIAL_SCHEME = /^(?:bearer|basic)$/i
 const AUTHORIZATION_NAME = /authorization$/i
-const leftOpen = (value: string) => value.includes('(') && value.split('(').length > value.split(')').length
 const valueRunsOn = (name: string, value: string) =>
-  RUNS_ON.test(value) || CREDENTIAL_SCHEME.test(value) || AUTHORIZATION_NAME.test(name) || leftOpen(value)
+  RUNS_ON.test(value) || CREDENTIAL_SCHEME.test(value) || AUTHORIZATION_NAME.test(name)
 
 const programOf = (command: string) => {
-  SHELL_WORD.lastIndex = 0
-  for (let word = SHELL_WORD.exec(command)?.[1]; word; word = SHELL_WORD.exec(command)?.[1]) {
-    const assignment = ASSIGNMENT.exec(word)
-    if (!assignment) return word
-    const [, name = '', value = ''] = assignment
-    if (valueRunsOn(name, value)) return ''
-  }
-  return ''
+  const simple = SIMPLE_COMMAND.exec(command)
+  if (!simple) return ''
+  const [, assignments = '', program = ''] = simple
+  for (const [, name = '', value = ''] of assignments.matchAll(ASSIGNMENT)) if (valueRunsOn(name, value)) return ''
+  return program
 }
 
 const HOST = /^[a-z0-9._-]+$|^\[[0-9a-f:.]+\]$/i
@@ -329,15 +326,9 @@ const hostOf = (url: string) => {
 const KEY_MARK = /[=:'"`\s]|--/
 const DRIVE = /^[A-Za-z]:[\\/]/
 const FRAME = ' → '
-const QUOTED = /["'\\]/
 const SLASH = /[\\/]/
 
-const programPart = (word: SafeText) => {
-  const plain = QUOTED.test(word) ? unquoted(word) : word
-  const call = plain.indexOf('(')
-  const name = call < 0 ? plain : plain.slice(0, call)
-  return SLASH.test(name) ? lastSegments(name, 1) : name
-}
+const programPart = (word: SafeText) => (SLASH.test(word) ? lastSegments(word, 1) : word)
 
 const pathSegments = (path: SafeText) => lastSegments(path, 2)
 
