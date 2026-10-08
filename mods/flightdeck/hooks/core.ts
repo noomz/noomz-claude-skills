@@ -36,15 +36,11 @@ export const NO_TEXT = '' as SafeText
 
 const UNCUT = Number.MAX_SAFE_INTEGER
 
-/**
- * A kept field: the unit is scrubbed whole and the field is derived from the masked text. A
- * derivation that is not a suffix of the masked unit (marks or quotes removed) is scrubbed again,
- * since the removal can rebuild a key the first pass did not see.
- */
 export const kept = (raw: unknown, cap: number, derive: (masked: SafeText) => string = s => s): Scrubbed => {
   const whole = scrub(raw, UNCUT)
   const text = derive(whole.text)
-  if (text.length <= cap && whole.text.endsWith(text)) return { text: text as SafeText, masked: whole.masked }
+  const onlyLeadCut = whole.text.endsWith(text)
+  if (text.length <= cap && onlyLeadCut) return { text: text as SafeText, masked: whole.masked }
   const again = scrub(text, cap)
   return { text: again.text, masked: whole.masked + again.masked }
 }
@@ -294,14 +290,10 @@ const QUOTING = /"((?:[^"\\]|\\[\s\S])*)"?|'([^']*)'?|\\([\s\S])/g
 const unquoted = (word: string) => word.replace(QUOTING, (_, d: string | undefined, s: string | undefined, e: string | undefined) => d ?? s ?? e ?? '')
 
 const RUNS_ON = /^(?:[^A-Za-z0-9]*|is|[\s\S]*(?:[=:]|--[^\s=]*))$/i
-const valueRunsOn = (name: string, value: string) => RUNS_ON.test(value) || /^(?:bearer|basic)$/i.test(value) || /authorization$/i.test(name)
+const CREDENTIAL_SCHEME = /^(?:bearer|basic)$/i
+const AUTHORIZATION_NAME = /authorization$/i
+const valueRunsOn = (name: string, value: string) => RUNS_ON.test(value) || CREDENTIAL_SCHEME.test(value) || AUTHORIZATION_NAME.test(name)
 
-/**
- * The first word that is not an assignment: a `(…)`, `$(…)` or backtick group is part of the word it
- * touches, so scrub() reads a URL or a call whole, and programPart() then keeps what sits before the
- * first `(`. A value `Bearer` or `Basic`, or a name ending `authorization`, ends the search the way
- * scrub() reads on past it.
- */
 const programOf = (command: string) => {
   SHELL_WORD.lastIndex = 0
   for (let word = SHELL_WORD.exec(command)?.[1]; word; word = SHELL_WORD.exec(command)?.[1]) {
@@ -350,7 +342,6 @@ const pathSegments = (path: SafeText) => lastSegments(path, 2)
 
 const TOOL_NAMES = new Map<string, Scrubbed>()
 
-/** A tool name is an engine identifier repeated on every call: scrubbed once, kept for the next call. */
 const toolName = (tool: string): Scrubbed => {
   const known = TOOL_NAMES.get(tool)
   if (known) return known

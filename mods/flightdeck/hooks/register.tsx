@@ -139,11 +139,7 @@ async function audit($: EngineInterface) {
 }
 
 async function resetUnlessCurrentSchema($: EngineInterface) {
-  if (isCurrentSchema(await read($, meta))) return
-  await resetAll($)
-  // State another build wrote never went through scrub(), so none of it is kept.
-  await update($, main, () => DEFAULT_MAIN)
-  await update($, usage, () => DEFAULT_USAGE)
+  if (!isCurrentSchema(await read($, meta))) await discardState($)
 }
 
 async function tally($: EngineInterface, ...found: Scrubbed[]) {
@@ -225,7 +221,7 @@ async function openPane($: EngineInterface) {
   return $.ui.open({ id: PANE, title: TITLE, columns: PANE_COLUMNS, rows: 8 })
 }
 
-async function resetAll($: EngineInterface) {
+async function resetSession($: EngineInterface) {
   await update($, meta, () => ({ schemaVersion: SCHEMA_VERSION }))
   await update($, main, m => ({ ...DEFAULT_MAIN, model: normalize(DEFAULT_MAIN, m).model, mode: normalize(DEFAULT_MAIN, m).mode }))
   await update($, architect, () => DEFAULT_ARCHITECT)
@@ -240,6 +236,12 @@ async function resetAll($: EngineInterface) {
   await update($, hygiene, () => DEFAULT_HYGIENE)
   // The context gauge waits for the next measurement rather than showing the pre-clear fill.
   await update($, usage, x => ({ ...normalize(DEFAULT_USAGE, x), pct: null, tokens: null }))
+}
+
+async function discardState($: EngineInterface) {
+  await resetSession($)
+  await update($, main, () => DEFAULT_MAIN)
+  await update($, usage, () => DEFAULT_USAGE)
 }
 
 /** The session's cost read fresh, not from the last measurement: the receipt subtracts two of these. */
@@ -286,7 +288,7 @@ export const register: Register = (on, options) => {
 
   on('session.end', async ($, e, next) => {
     if (e.reason === 'clear' || e.reason === 'resume') {
-      await resetAll($)
+      await resetSession($)
       await refreshStatus($, cfg)
     }
     return next(e)
@@ -299,7 +301,7 @@ export const register: Register = (on, options) => {
       return { text: 'Flightdeck closed.' }
     }
     if (verb === 'reset') {
-      await resetAll($)
+      await resetSession($)
       await refreshStatus($, cfg)
       return { text: 'Flightdeck reset.' }
     }
@@ -347,9 +349,6 @@ export const register: Register = (on, options) => {
     const [now, cost] = await Promise.all([$.clock.now(), costNow($)])
     await update($, turn, () => ({ ...DEFAULT_TURN, startedAt: now, costAtStart: cost }))
     await update($, main, m => ({ ...normalize(DEFAULT_MAIN, m), isRunning: true }))
-    // A background architect's report reaches the main loop as the text of a turn the engine
-    // started; the SubagentHandback tool call normally carries it first. A turn typed or sent
-    // through the SDK is never read.
     const back = e.text && isEngineTurn(promptSource) ? handbackOf(e.text) : null
     const a = back ? await getArchitect($) : null
     if (back && a && a.ids.includes(back.from)) {
