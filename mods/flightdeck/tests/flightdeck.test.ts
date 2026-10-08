@@ -684,7 +684,7 @@ test('a turn the engine started is logged as a fixed label for its source, never
   ])
 })
 
-test('a denied PowerShell call that sets a variable keeps the method, never the value', async ($, on) => {
+test('a denied PowerShell call that sets a variable never keeps the value', async ($, on) => {
   engine(on)
   const values = stateStore(on)
   on('tool.check', () => ({ decision: 'deny' as const, reason: 'rule' }))
