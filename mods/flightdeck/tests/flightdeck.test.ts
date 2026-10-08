@@ -595,6 +595,49 @@ test('a prompt submitted from two sources with the same text is typed', async ($
   expect((flightdeck(values).log as LogLine[]).map(l => [l.who, l.text])).toEqual([['you', 'new turn · 10 chars']])
 })
 
+const architectAt = async ($: Engine, on: On) => {
+  engine(on)
+  const values = stateStore(on)
+  on('classic.UserPromptSubmit', () => ({}))
+  on('agent.spawn', () => ({ model: 'claude-fable-5-1', agentId: 'arch1' }))
+  await $.turn.start({ text: 'go', turnId: 'A0' })
+  await $.agent.spawn(spawn('architect', 'review'))
+  return () => flightdeck(values) as { log: LogLine[]; architect: { lastAdvice: string } }
+}
+const archReport = (body: string) => `<agent-message from="arch1">\nThe report follows:\n${body}\n</agent-message>`
+
+test('a prompt once typed stays typed after 32 other submits and an engine delivery of the same text', async ($, on) => {
+  const now = await architectAt($, on)
+  const text = archReport('my typed words for friday')
+  await $.classic.UserPromptSubmit({ prompt: text, source: 'user' })
+  for (let i = 0; i < 32; i++) await $.classic.UserPromptSubmit({ prompt: `peer ${i}`, source: 'system' })
+  await $.classic.UserPromptSubmit({ prompt: text, source: 'system' })
+  await $.turn.start({ text, turnId: 'A1' })
+  expect([now().log.map(l => [l.who, l.text]).at(-1), now().architect.lastAdvice]).toEqual([['you', `new turn · ${[...text].length} chars`], ''])
+})
+
+test("an engine delivery's source is read by the one turn it starts", async ($, on) => {
+  const now = await architectAt($, on)
+  const text = archReport('ship it')
+  await $.classic.UserPromptSubmit({ prompt: text, source: 'system' })
+  await $.turn.start({ text, turnId: 'A1' })
+  await $.turn.start({ text, turnId: 'A2' })
+  expect(now().log.slice(-2).map(l => l.who)).toEqual(['architect', 'you'])
+})
+
+test('the source map remembers the last 32 submits', async ($, on) => {
+  const now = await architectAt($, on)
+  const kept = archReport('kept advice')
+  const dropped = archReport('dropped advice')
+  await $.classic.UserPromptSubmit({ prompt: kept, source: 'system' })
+  for (let i = 0; i < 31; i++) await $.classic.UserPromptSubmit({ prompt: `peer ${i}`, source: 'system' })
+  await $.turn.start({ text: kept, turnId: 'A1' })
+  await $.classic.UserPromptSubmit({ prompt: dropped, source: 'system' })
+  for (let i = 0; i < 32; i++) await $.classic.UserPromptSubmit({ prompt: `more ${i}`, source: 'system' })
+  await $.turn.start({ text: dropped, turnId: 'A2' })
+  expect(now().log.slice(-2).map(l => l.who)).toEqual(['architect', 'you'])
+})
+
 test('a typed prompt shows in the log as its length alone', async ($, on) => {
   engine(on)
   await $.turn.start({ text: 'password=hunter2 rotate the API keys', turnId: 'P1' })
