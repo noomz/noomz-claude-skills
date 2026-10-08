@@ -2,6 +2,8 @@
 
 **What needs you, pinned where you can see it.** Open decisions, the task list and the links Claude creates stay in a pane beside the conversation, so they don't scroll out of view.
 
+![pinboard demo: Claude pins a decision and a task list, then ticks off the first task](../../docs/media/pinboard.gif)
+
 This is a hardened port of [sirkitree/pinboard](https://github.com/sirkitree/pinboard) by Jerad Bitner (upstream commit `b035c14`, MIT). It keeps the upstream features. Every text the mod writes passes one scrubber, `hooks/hygiene.ts`, before it reaches state, the pane or the system prompt, and the pane shows what was masked. A value that another tool wrote into the mod's state shows unchecked until a check runs, as **Stores** below says.
 
 If you installed the upstream plugin, uninstall it first. Both plugins are named `pinboard`.

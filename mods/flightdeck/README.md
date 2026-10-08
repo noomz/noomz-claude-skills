@@ -5,7 +5,9 @@
 
 **A Claude Code mod that puts a live agent dashboard in your terminal**: context and cost, an advisor timeline, your permission checks, and your subagents as cards or swimlanes. Its numbers come from session events, and nothing leaves your machine.
 
-This is a hardened port of [scasella/claude-flightdeck](https://github.com/scasella/claude-flightdeck) v0.3.2. It keeps the upstream panels and adds one rule: session text reaches state or the pane only through `scrub()` in [`hooks/hygiene.ts`](hooks/hygiene.ts), and a canary test feeds secrets through each place the port's audit found flightdeck reading text. It keeps derived fields in place of your prompts, your subagents' answers and your tool arguments. Screenshots and a demo of the pane live in the upstream repository.
+This is a hardened port of [scasella/claude-flightdeck](https://github.com/scasella/claude-flightdeck) v0.3.2. It keeps the upstream panels and adds one rule: session text reaches state or the pane only through `scrub()` in [`hooks/hygiene.ts`](hooks/hygiene.ts), and a canary test feeds secrets through each place the port's audit found flightdeck reading text. It keeps derived fields in place of your prompts, your subagents' answers and your tool arguments.
+
+![flightdeck demo: the pane tracks vitals, permission checks and a subagent card while Claude works](../../docs/media/flightdeck.gif)
 
 ## Install
 
