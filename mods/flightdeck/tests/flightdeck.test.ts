@@ -86,6 +86,15 @@ test('a Bash detail keeps only the program the command runs', () => {
   expect(toolDetail('PowerShell', { command: '[Environment]::SetEnvironmentVariable("API_KEY", "abc123def456", "User")' }).text).toBe('PowerShell → [Environment]::SetEnvironmentVariable')
 })
 
+test("a Bash or PowerShell detail drops a value with a nested substitution or set through $env:", () => {
+  expect(toolDetail('Bash', { command: 'PGPASSWORD=$(printf %s $(printf pre) hunter2) psql' }).text).toBe('Bash')
+  expect(toolDetail('Bash', { command: 'PGPASSWORD=$(a $(b) c $(d) hunter2) psql' }).text).toBe('Bash')
+  expect(toolDetail('Bash', { command: 'PGPASSWORD=$(cat $(dirname $0)/.pw) psql' }).text).toBe('Bash → psql')
+  expect(toolDetail('PowerShell', { command: "$env:PGPASSWORD=(Write-Output 'hunter2'); psql" }).text).toBe('PowerShell → psql')
+  expect(toolDetail('PowerShell', { command: '$Env:API_KEY=(Get-Content key.txt)' }).text).toBe('PowerShell')
+  expect(toolDetail('PowerShell', { command: "$env:TOKEN='abc123def456'; gh pr list" }).text).toBe('PowerShell → gh')
+})
+
 test('a file tool detail keeps the last two path segments and drops the pattern', () => {
   expect(toolDetail('Read', { file_path: 'C:\\Users\\me\\proj\\src\\main.ts' }).text).toBe('Read → src/main.ts')
   expect(toolDetail('Read', { file_path: '/home/me/password=hunter2/notes.txt' }).text).toBe('Read → me/password=[masked]')
