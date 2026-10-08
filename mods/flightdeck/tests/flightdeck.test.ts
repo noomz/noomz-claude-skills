@@ -68,6 +68,18 @@ test('a Bash detail keeps only the program the command runs', () => {
   expect(toolDetail('Bash', { command: 'pass"word=hunter2"' }).text).toBe('Bash → password=[masked]')
   expect(toolDetail('Bash', { command: 'p\\assword=hunter2 x' }).text).toBe('Bash → password=[masked]')
   expect(toolDetail('Bash', { command: '"ghp_"abcdefghijklmnopqrstuvwxyz0123456789 x' }).text).toBe('Bash → [masked]')
+  expect(toolDetail('Bash', { command: 'PGPASSWORD=$(echo hunter2) psql -h db' })).toEqual({ text: 'Bash → psql', masked: 0 })
+  expect(toolDetail('Bash', { command: 'PGPASSWORD=$(cat ~/.pgpass) psql -h db' }).text).toBe('Bash → psql')
+  expect(toolDetail('Bash', { command: 'TOKEN=`echo abc123def456` ./deploy' }).text).toBe('Bash → deploy')
+  expect(toolDetail('Bash', { command: 'PGPASSWORD="$(echo hunter2zz)" psql -h db' }).text).toBe('Bash → psql')
+  expect(toolDetail('Bash', { command: 'foo(bar) baz' }).text).toBe('Bash → foo')
+  expect(toolDetail('Bash', { command: 'echo $((1+2)) x' }).text).toBe('Bash → echo')
+  expect(toolDetail('Bash', { command: 'AUTH=Bearer abc123def456ghi curl x' }).text).toBe('Bash')
+  expect(toolDetail('Bash', { command: 'X=bearer abcdefgh12345678 ./run' }).text).toBe('Bash')
+  expect(toolDetail('Bash', { command: 'HTTP_AUTHORIZATION=Basic abc123 curl' }).text).toBe('Bash')
+  expect(toolDetail('PowerShell', { command: "[Environment]::SetEnvironmentVariable('API_KEY','abc123def456')" }).text).toBe('PowerShell → [Environment]::SetEnvironmentVariable')
+  expect(toolDetail('PowerShell', { command: "[Environment]::SetEnvironmentVariable('TOKEN','abc123')" }).text).toBe('PowerShell → [Environment]::SetEnvironmentVariable')
+  expect(toolDetail('PowerShell', { command: '[Environment]::SetEnvironmentVariable("API_KEY", "abc123def456", "User")' }).text).toBe('PowerShell → [Environment]::SetEnvironmentVariable')
 })
 
 test('a file tool detail keeps the last two path segments and drops the pattern', () => {
@@ -95,6 +107,9 @@ test('a URL tool detail keeps the host alone', () => {
   expect(toolDetail('WebFetch', { url: 'https://--secret:@api.x.com/v1' }).text).toBe('WebFetch → api.x.com')
   expect(toolDetail('WebFetch', { url: 'https://AKIAABCDEFGHIJKLMNOP.example.com/x' }).text).toBe('WebFetch → [masked].example.com')
   expect(toolDetail('WebFetch', { url: 'https://Docs.Example.COM/x' }).text).toBe('WebFetch → Docs.Example.COM')
+  expect(toolDetail('WebFetch', { url: 'https://Bearer\tP@ssw0rd.example/x' }).text).toBe('WebFetch')
+  expect(toolDetail('WebFetch', { url: 'https://docs.example.com/a\nb' }).text).toBe('WebFetch')
+  expect(toolDetail('WebFetch', { url: 'https://docs.example.com/a\rb' }).text).toBe('WebFetch')
   expect(toolDetail('WebSearch', { query: 'my password is hunter2' }).text).toBe('WebSearch')
 })
 
@@ -514,6 +529,17 @@ test('a turn the engine started is logged as a fixed label for its source, never
     ['engine', 'message delivered'],
     ['you', 'new turn · 22 chars'],
   ])
+})
+
+test('a denied PowerShell call that sets a variable keeps the method, never the value', async ($, on) => {
+  engine(on)
+  const values = stateStore(on)
+  on('tool.check', () => ({ decision: 'deny' as const, reason: 'rule' }))
+  await $.tool.check({ tool: 'PowerShell', input: { command: "[Environment]::SetEnvironmentVariable('API_KEY','abc123def456')" }, tool_use_id: 'ps1' })
+  expect(leaves(flightdeck(values)).filter(([, text]) => text.includes('abc1'))).toEqual([])
+  const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  expect(await ui.find({ text: /abc1/ })).toBeUndefined()
+  await ui.unmount()
 })
 
 test('a finished card keeps its status and duration, never its answer', async ($, on) => {
