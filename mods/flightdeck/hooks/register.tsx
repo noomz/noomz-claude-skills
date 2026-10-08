@@ -52,6 +52,7 @@ import {
   parseConfig,
   prettyModel,
   promptLine,
+  promptSources,
   handbackOf,
   isEngineTurn,
   adviceLine,
@@ -321,13 +322,10 @@ export const register: Register = (on, options) => {
     return { text: 'Flightdeck opened. Focus it with ctrl+x tab; 1-6 expand cards, f/s/o open the gate rows.' }
   })
 
-  // Keyed by text: UserPromptSubmit carries no turn id, and turn.start carries only the text.
-  const sources = new Map<string, string | undefined>()
+  const sources = promptSources()
   on('classic.UserPromptSubmit', async ($, e, next) => {
     await noteMode($, e.permission_mode)
-    const twoSources = sources.has(e.prompt) && sources.get(e.prompt) !== e.source
-    sources.set(e.prompt, twoSources ? undefined : e.source)
-    if (sources.size > 32) sources.delete(sources.keys().next().value as string)
+    sources.submit(e.prompt, e.source)
     return next(e)
   })
 
@@ -351,8 +349,7 @@ export const register: Register = (on, options) => {
     const [now, cost] = await Promise.all([$.clock.now(), costNow($)])
     await update($, turn, () => ({ ...DEFAULT_TURN, startedAt: now, costAtStart: cost }))
     await update($, main, m => ({ ...normalize(DEFAULT_MAIN, m), isRunning: true }))
-    const source = sources.get(e.text)
-    sources.delete(e.text)
+    const source = sources.start(e.text)
     const back = e.text && isEngineTurn(source) ? handbackOf(e.text) : null
     const a = back ? await getArchitect($) : null
     if (back && a && a.ids.includes(back.from)) {

@@ -625,7 +625,7 @@ test("an engine delivery's source is read by the one turn it starts", async ($, 
   expect(now().log.slice(-2).map(l => l.who)).toEqual(['architect', 'you'])
 })
 
-test('the source map remembers the last 32 submits', async ($, on) => {
+test('the source map remembers the last 32 engine deliveries', async ($, on) => {
   const now = await architectAt($, on)
   const kept = archReport('kept advice')
   const dropped = archReport('dropped advice')
@@ -636,6 +636,15 @@ test('the source map remembers the last 32 submits', async ($, on) => {
   for (let i = 0; i < 32; i++) await $.classic.UserPromptSubmit({ prompt: `more ${i}`, source: 'system' })
   await $.turn.start({ text: dropped, turnId: 'A2' })
   expect(now().log.slice(-2).map(l => l.who)).toEqual(['architect', 'you'])
+})
+
+test('once 4096 typed texts fill its memory, every later turn reads as typed', async ($, on) => {
+  const now = await architectAt($, on)
+  for (let i = 0; i < 4097; i++) await $.classic.UserPromptSubmit({ prompt: `typed ${i}`, source: 'user' })
+  const text = archReport('late advice')
+  await $.classic.UserPromptSubmit({ prompt: text, source: 'system' })
+  await $.turn.start({ text, turnId: 'A1' })
+  expect(now().log.at(-1)?.who).toBe('you')
 })
 
 test('a typed prompt shows in the log as its length alone', async ($, on) => {

@@ -544,7 +544,54 @@ const ENGINE_TURNS = new Map<string, string>([
   ['poll_event', 'event delivered'],
 ])
 
-export const isEngineTurn = (source: string | undefined) => source !== undefined && ENGINE_TURNS.has(source)
+export const isEngineTurn = (source: string | undefined): source is string => source !== undefined && ENGINE_TURNS.has(source)
+
+/** A 53-bit hash (cyrb53), so the source map holds no prompt text. */
+const textHash = (text: string) => {
+  let h1 = 0xdeadbeef
+  let h2 = 0x41c6ce57
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i)
+    h1 = Math.imul(h1 ^ c, 2654435761)
+    h2 = Math.imul(h2 ^ c, 1597334677)
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909)
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909)
+  return 4294967296 * (2097151 & h2) + (h1 >>> 0)
+}
+
+const PENDING_MAX = 32
+const TYPED_MAX = 4096
+
+/**
+ * The engine source of the turn a prompt starts, keyed by its text: UserPromptSubmit carries no
+ * turn id, and turn.start carries only the text. The last 32 engine deliveries wait for their turn.
+ * A text once submitted from any other source reads as typed for the rest of the session; once
+ * that memory is full, every turn reads as typed.
+ */
+export const promptSources = () => {
+  const pending = new Map<number, string>()
+  const typed = new Set<number>()
+  let typedFull = false
+  return {
+    submit(text: string, source: string | undefined) {
+      const key = textHash(text)
+      if (isEngineTurn(source)) {
+        pending.set(key, source)
+        if (pending.size > PENDING_MAX) pending.delete(pending.keys().next().value as number)
+      } else if (!typed.has(key)) {
+        if (typed.size < TYPED_MAX) typed.add(key)
+        else typedFull = true
+      }
+    },
+    start(text: string) {
+      const key = textHash(text)
+      const source = pending.get(key)
+      pending.delete(key)
+      return typedFull || typed.has(key) ? undefined : source
+    },
+  }
+}
 
 export const promptLine = (text: string, source: string | undefined): { who: string; text: string } => {
   const engine = source === undefined ? undefined : ENGINE_TURNS.get(source)
