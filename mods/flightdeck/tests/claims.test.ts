@@ -1,7 +1,7 @@
 import type { On } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 
-import { DEFAULT_GATE, DEFAULT_MAIN, DEFAULT_TURN, DEFAULT_USAGE, adviceLine, consultVia } from '../hooks/core'
+import { DEFAULT_GATE, DEFAULT_MAIN, DEFAULT_TURN, DEFAULT_USAGE, adviceLine, consultVia, toolDetail } from '../hooks/core'
 import { scrub } from '../hooks/hygiene'
 import { flightdeck, stateStore } from './store'
 import type { AgentCard, Architect, Gate, Hygiene, LogLine, Main, Turn, Usage } from '../types'
@@ -59,6 +59,31 @@ describe('scrub masks a value after a space for password, passwd and passphrase,
     ['token abc123def456', 'token abc123def456', 0],
     ['secret abc123def456', 'secret abc123def456', 0],
   ])
+})
+
+describe('scrub leaves an Azure connection string, an ApiKey, Digest or Negotiate credential, a table row, a bold label and a JWT glued after an underscore or a hyphen', () => {
+  rows([
+    ['DefaultEndpointsProtocol=https;AccountName=acct;AccountKey=ZHVtbXlkdW1teQ==', 'DefaultEndpointsProtocol=https;AccountName=acct;AccountKey=ZHVtbXlkdW1teQ==', 0],
+    ['Authorization: ApiKey dummycred123456', 'Authorization: [masked] dummycred123456', 1],
+    ['Authorization: Digest dummycred123456', 'Authorization: [masked] dummycred123456', 1],
+    ['Authorization: Negotiate dummycred123456', 'Authorization: [masked] dummycred123456', 1],
+    ['| Password | hunter2xyz |', '| Password | hunter2xyz |', 0],
+    ['**Credentials**: admin:hunter2xyz', '**Credentials**: admin:hunter2xyz', 0],
+    ['_eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJkdW1teSJ9.c2lnZHVtbXlzaWdkdW1teQ_', '_eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJkdW1teSJ9.c2lnZHVtbXlzaWdkdW1teQ_', 0],
+    ['-eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJkdW1teSJ9.c2lnZHVtbXlzaWdkdW1teQ-', '-eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJkdW1teSJ9.c2lnZHVtbXlzaWdkdW1teQ-', 0],
+  ])
+})
+
+describe('scrub shows the rest of a value after a quoted part, and the words after the first of a $(…) value', () => {
+  rows([
+    ["DB_PASS='hun'ter2", "DB_PASS='[masked]'ter2", 1],
+    ["passphrase='correct'' horse9'", "passphrase='[masked]'' horse9'", 1],
+    ['PGPASSWORD=$(printf %s hunter2)', 'PGPASSWORD=[masked] %s hunter2)', 1],
+  ])
+})
+
+test('a tool named after a key shows the value passed as its command', () => {
+  expect(toolDetail('mcp__secrets__set_password', { command: 'abc123def456' }).text).toBe('mcp__secrets__set_password → abc123def456')
 })
 
 describe('scrub leaves a PASS or PAT value that starts with a PEM armor word', () => {
@@ -230,6 +255,14 @@ describe("an architect's advice", () => {
   test('masks a key or a token that a leading mark hid, after the mark comes off', async ($, on) => {
     expect(await advise($, on, '-pass=hunter2x is the staging creds')).toBe('pass=[masked] is the staging creds')
     expect(adviceLine('>-eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJkdW1teSJ9.c2lnZHVtbXlzaWdkdW1teQ is the session cookie').text).toBe('[masked] is the session cookie')
+  })
+
+  test('keeps a bold label that is not a key word, a key in single-underscore emphasis, a bold flag and a JWT after an underscore', () => {
+    expect(adviceLine('**Credentials**: admin:hunter2xyz').text).toBe('Credentials: admin:hunter2xyz')
+    expect(adviceLine('_Password_: hunter2xyz').text).toBe('_Password_: hunter2xyz')
+    expect(adviceLine('**--token** abc123def456').text).toBe('token abc123def456')
+    expect(adviceLine('_eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJkdW1teSJ9.c2lnZHVtbXlzaWdkdW1teQ_ is the session cookie').text).toBe('_eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJkdW1teSJ9.c2lnZHVtbXlzaWdkdW1teQ_ is the session cookie')
+    expect(adviceLine('-eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJkdW1teSJ9.c2lnZHVtbXlzaWdkdW1teQ- is the session cookie').text).toBe('[masked] is the session cookie')
   })
 
   test('masks a bold key mid-sentence, after the marks come off', async ($, on) => {
