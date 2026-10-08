@@ -25,7 +25,7 @@ class PickTests(unittest.TestCase):
     def tearDown(self):
         pick_agent.STAMP = self.old
     def test_fixture_picks_codex_sol_and_astra(self):
-        self.assertEqual(pick_agent.pick("T2", FIXTURE, "work")[0][1], "gpt-6-sol")
+        self.assertEqual(pick_agent.pick("T2", FIXTURE, "work")[0][1], "gpt-6.1-sol")
         self.assertEqual(pick_agent.pick("T3", FIXTURE, "work")[0][1], "gpt-6-luna")
         self.assertEqual(pick_agent.pick("T0", FIXTURE, "work")[0][1], "gpt-6-astra")
     def test_green_grok_beats_red_codex(self):
