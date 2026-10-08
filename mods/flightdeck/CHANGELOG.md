@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.1
+
+- The README shows a recorded demo of the pane in place of a pointer to the upstream screenshots.
+
 ## 0.4.0
 
 Hardened port of scasella/claude-flightdeck 0.3.2, published in noomz/noomz-claude-skills.

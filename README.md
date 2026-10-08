@@ -29,6 +29,22 @@ Mods are Claude Code plugins of function hooks: live UI and behaviour inside the
 | [`pinboard`](mods/pinboard) | Keeps open decisions, the task list and the links Claude creates in a sidebar pane, updated through its own tool. A hardened port of [sirkitree/pinboard](https://github.com/sirkitree/pinboard): every text is scrubbed of secrets and control characters, the board reaches the system prompt as JSON-quoted labels under a header that says they are not instructions, links keep no query or credentials, and the pane counts what was masked. `/pinboard audit` shows what the model reads. |
 | [`flightdeck`](mods/flightdeck) | A live agent dashboard pane: model vitals, an architect timeline, recent permission checks, subagent cards and swimlanes, a turn receipt and a session log. A hardened port of [scasella/claude-flightdeck](https://github.com/scasella/claude-flightdeck): it never keeps your prompts, and of a subagent's answer it keeps nothing but one masked line of an architect's report, keeps tool details as a program, path or host, masks secrets before it stores any text, and `/flightdeck audit` lists what it holds. |
 
+### Demos
+
+Each clip is a real Claude Code session with only that mod loaded, recorded with [VHS](https://github.com/charmbracelet/vhs) and sped up.
+
+**bang-actions**: Claude suggests `! git status`, a ▶ Run button appears above the prompt, and one press runs it and hands Claude the output.
+
+![bang-actions demo](docs/media/bang-actions.gif)
+
+**pinboard**: Claude pins an open decision and a task list, then resolves the decision and ticks off the first task.
+
+![pinboard demo](docs/media/pinboard.gif)
+
+**flightdeck**: the pane tracks model vitals, permission checks and an Explore subagent's card while Claude works.
+
+![flightdeck demo](docs/media/flightdeck.gif)
+
 Install like a skill: `/plugin install bang-actions@noomz-claude-skills`, `/plugin install pinboard@noomz-claude-skills` or `/plugin install flightdeck@noomz-claude-skills`.
 
 ## Installation
