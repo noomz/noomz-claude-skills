@@ -1,10 +1,10 @@
 import type { On } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 
-import { DEFAULT_GATE, DEFAULT_TURN, adviceLine, consultVia } from '../hooks/core'
+import { DEFAULT_GATE, DEFAULT_MAIN, DEFAULT_TURN, DEFAULT_USAGE, adviceLine, consultVia } from '../hooks/core'
 import { scrub } from '../hooks/hygiene'
 import { flightdeck, stateStore } from './store'
-import type { AgentCard, Architect, Gate, Hygiene, LogLine, Turn, Usage } from '../types'
+import type { AgentCard, Architect, Gate, Hygiene, LogLine, Main, Turn, Usage } from '../types'
 import type { Engine } from './store'
 
 type Row = [input: string, text: string, masked: number]
@@ -133,7 +133,7 @@ const spawn = (subagentType: string, description: string, name?: string) => ({
   fork: false,
 })
 
-type Stored = { log: LogLine[]; agents: AgentCard[]; gate: Gate; architect: Architect; roster: { architectTypes: string[] }; hygiene: Hygiene; usage: Usage; turn: Turn }
+type Stored = { log: LogLine[]; agents: AgentCard[]; gate: Gate; architect: Architect; roster: { architectTypes: string[] }; hygiene: Hygiene; usage: Usage; turn: Turn; main: Main }
 
 const state = (values: Map<string, { value: unknown }>) => flightdeck(values) as Stored
 
@@ -371,11 +371,27 @@ describe('what a reset empties and keeps', () => {
     const values = engine(on)
     const usage = { pct: 40, tokens: 400, window: 1000, costUsd: 1.5, limits: [{ kind: 'five_hour', pct: 12 }], compactions: 2, lastCompactAt: 7 }
     values.set('flightdeck/usage/', { value: usage, version: 1 })
+    values.set('flightdeck/main/', { value: { ...DEFAULT_MAIN, model: 'claude-opus-5-5', mode: 'plan' }, version: 1 })
     values.set('flightdeck/turn/', { value: { ...DEFAULT_TURN, edits: 3, errors: 2, startedAt: 5 }, version: 1 })
     values.set('flightdeck/gate/', { value: { ...DEFAULT_GATE, totals: { ...DEFAULT_GATE.totals, shell: { rule: 4, ask: 0, cleared: 1, deny: 2 } } }, version: 1 })
     await $.command.run({ command: 'flightdeck', args: 'reset' } as never)
     const s = state(values)
     expect([s.usage, s.turn, s.gate]).toEqual([{ ...usage, pct: null, tokens: null }, DEFAULT_TURN, DEFAULT_GATE])
+    expect([s.main.model, s.main.mode]).toEqual(['claude-opus-5-5', 'plan'])
+  })
+
+  test('session start on a foreign schema empties the model, mode and rate limits too', async ($, on) => {
+    const values = engine(on)
+    on('command.register', (_$, e) => ({ value: { command: e.name } }))
+    on('session.start', (_$, e) => ({ cwd: e.cwd }))
+    values.set('flightdeck/main/', { value: { model: 'UPSTREAM-MODEL-zz9', mode: 'UPSTREAM-MODE-zz9', effort: 'UPSTREAM-EFFORT', steps: 4, isRunning: true }, version: 1 })
+    values.set('flightdeck/usage/', { value: { pct: 50, tokens: 9, window: 1000, costUsd: 2, limits: [{ kind: 'UPSTREAM-LIMIT-zz9', pct: 3 }], compactions: 1, lastCompactAt: 5 }, version: 1 })
+    await $.session.start({ cwd: '/w', surface: null, isInteractive: false })
+    const s = state(values)
+    expect([s.main, s.usage]).toEqual([DEFAULT_MAIN, DEFAULT_USAGE])
+    const ui = await $.ui.mount(pane(64))
+    expect(await ui.find({ text: /UPSTREAM/ })).toBeUndefined()
+    await ui.unmount()
   })
 
   const metas: [label: string, meta: unknown, kept: number][] = [
