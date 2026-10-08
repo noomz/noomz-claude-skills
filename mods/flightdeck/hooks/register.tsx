@@ -321,13 +321,12 @@ export const register: Register = (on, options) => {
     return { text: 'Flightdeck opened. Focus it with ctrl+x tab; 1-6 expand cards, f/s/o open the gate rows.' }
   })
 
-  // Who submitted each prompt, by its text: UserPromptSubmit carries no turn id, and turn.start
-  // carries only the text. A text two sources submitted has no source.
+  // Keyed by text: UserPromptSubmit carries no turn id, and turn.start carries only the text.
   const sources = new Map<string, string | undefined>()
   on('classic.UserPromptSubmit', async ($, e, next) => {
     await noteMode($, e.permission_mode)
-    const seen = sources.has(e.prompt) && sources.get(e.prompt) !== e.source
-    sources.set(e.prompt, seen ? undefined : e.source)
+    const twoSources = sources.has(e.prompt) && sources.get(e.prompt) !== e.source
+    sources.set(e.prompt, twoSources ? undefined : e.source)
     if (sources.size > 32) sources.delete(sources.keys().next().value as string)
     return next(e)
   })
