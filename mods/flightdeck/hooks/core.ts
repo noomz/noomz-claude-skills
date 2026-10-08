@@ -282,7 +282,7 @@ export const bucketOf = (tool: string): Bucket =>
 
 const lastSegments = (path: string, n: number) => path.split(/[\\/]/).filter(Boolean).slice(-n).join('/')
 
-const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/
+const ASSIGNMENT = /^(?:\$env:)?([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/i
 const SHELL_WORD = /\s*((?:[^\s"'\\`($]+|\$(?!\()|\$?\([^)]*\)?|`[^`]*`?|"(?:[^"\\]|\\[\s\S])*"?|'[^']*'?|\\[\s\S]?)+)/y
 const QUOTING = /"((?:[^"\\]|\\[\s\S])*)"?|'([^']*)'?|\\([\s\S])/g
 
@@ -291,7 +291,9 @@ const unquoted = (word: string) => word.replace(QUOTING, (_, d: string | undefin
 const RUNS_ON = /^(?:[^A-Za-z0-9]*|is|[\s\S]*(?:[=:]|--[^\s=]*))$/i
 const CREDENTIAL_SCHEME = /^(?:bearer|basic)$/i
 const AUTHORIZATION_NAME = /authorization$/i
-const valueRunsOn = (name: string, value: string) => RUNS_ON.test(value) || CREDENTIAL_SCHEME.test(value) || AUTHORIZATION_NAME.test(name)
+const leftOpen = (value: string) => value.split('(').length > value.split(')').length
+const valueRunsOn = (name: string, value: string) =>
+  RUNS_ON.test(value) || CREDENTIAL_SCHEME.test(value) || AUTHORIZATION_NAME.test(name) || leftOpen(value)
 
 const programOf = (command: string) => {
   SHELL_WORD.lastIndex = 0
