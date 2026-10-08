@@ -39,8 +39,7 @@ const UNCUT = Number.MAX_SAFE_INTEGER
 export const kept = (raw: unknown, cap: number, derive: (masked: SafeText) => string = s => s): Scrubbed => {
   const whole = scrub(raw, UNCUT)
   const text = derive(whole.text)
-  const onlyLeadCut = whole.text.endsWith(text)
-  if (text.length <= cap && onlyLeadCut) return { text: text as SafeText, masked: whole.masked }
+  if (text === whole.text && text.length <= cap) return { text: text as SafeText, masked: whole.masked }
   const again = scrub(text, cap)
   return { text: again.text, masked: whole.masked + again.masked }
 }
