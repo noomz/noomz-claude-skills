@@ -282,25 +282,9 @@ export const bucketOf = (tool: string): Bucket =>
 
 const lastSegments = (path: string, n: number) => path.split(/[\\/]/).filter(Boolean).slice(-n).join('/')
 
-const PLAIN_ASSIGNMENT = String.raw`[A-Za-z_]\w*=[\w!#%*+,./:=?@^~-]*[ \t]+`
-const PLAIN_PROGRAM = String.raw`[\w./][\w./-]*`
-const SIMPLE_COMMAND = new RegExp(String.raw`^[ \t\r\n]*((?:${PLAIN_ASSIGNMENT})*)(${PLAIN_PROGRAM})(?=[ \t\r\n]|$)`)
-const ASSIGNMENT = /([A-Za-z_]\w*)=(\S*)/g
+const OPENING_PROGRAM = /^[ \t\r\n]*([\w./][\w./-]*)(?=[ \t\r\n]|$)/
 
-const RUNS_ON = /^(?:[^A-Za-z0-9]*|is|[\s\S]*(?:[=:]|--[^\s=]*))$/i
-const CREDENTIAL_SCHEME = /^(?:bearer|basic)$/i
-const AUTHORIZATION_NAME = /authorization$/i
-const valueRunsOn = (name: string, value: string) =>
-  RUNS_ON.test(value) || CREDENTIAL_SCHEME.test(value) || AUTHORIZATION_NAME.test(name)
-
-const programOf = (command: string) => {
-  const simple = SIMPLE_COMMAND.exec(command)
-  if (!simple) return ''
-  const [, assignments = '', program = ''] = simple
-  ASSIGNMENT.lastIndex = 0
-  for (let a = ASSIGNMENT.exec(assignments); a; a = ASSIGNMENT.exec(assignments)) if (valueRunsOn(a[1] ?? '', a[2] ?? '')) return ''
-  return program
-}
+const programOf = (command: string) => OPENING_PROGRAM.exec(command)?.[1] ?? ''
 
 const HOST = /^[a-z0-9._-]+$|^\[[0-9a-f:.]+\]$/i
 

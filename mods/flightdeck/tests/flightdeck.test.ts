@@ -38,12 +38,10 @@ import type { Engine } from './store'
 
 // ---------------------------------------------------------------- pure behaviour
 
-test('a Bash or PowerShell detail shows the program of a simple command: plain NAME=value words, then a plain word', () => {
+test('a Bash or PowerShell detail shows the plain word a command opens with', () => {
   expect(toolDetail('Bash', { command: 'curl -u admin:s3cr3t https://h.example/x?sig=abc' })).toEqual({ text: 'Bash → curl', masked: 0 })
   expect(toolDetail('Bash', { command: '  /usr/local/bin/psql postgres://bob:hunter2@db/x' }).text).toBe('Bash → psql')
-  expect(toolDetail('Bash', { command: 'DB_HOST=db.local PORT=5432 ./deploy.sh --go' }).text).toBe('Bash → deploy.sh')
   expect(toolDetail('Bash', { command: 'export OPENAI_API_KEY=sk-proj-1234567890abcdef' }).text).toBe('Bash → export')
-  expect(toolDetail('Bash', { command: 'PGPASSWORD=hunter2 psql -h db' })).toEqual({ text: 'Bash → psql', masked: 0 })
   expect(toolDetail('Bash', { command: 'echo $((1+2)) x' }).text).toBe('Bash → echo')
   expect(toolDetail('Bash', { command: 'git\tstatus' }).text).toBe('Bash → git')
   expect(toolDetail('Bash', { command: 'make' }).text).toBe('Bash → make')
@@ -51,7 +49,7 @@ test('a Bash or PowerShell detail shows the program of a simple command: plain N
   expect(toolDetail('PowerShell', { command: 'Get-ChildItem -Recurse' }).text).toBe('PowerShell → Get-ChildItem')
 })
 
-test('a Bash or PowerShell detail shows the tool name alone for any command outside the simple form', () => {
+test('a Bash or PowerShell detail shows the tool name alone for a command that does not open with a plain word', () => {
   const failClosed = [
     ['Bash', 'PGPASSWORD=$(echo "a) hunter2xyz") psql'],
     ['Bash', "PGPASSWORD=$(echo 'Pa)ss w0rdxyz') psql"],
@@ -70,6 +68,9 @@ test('a Bash or PowerShell detail shows the tool name alone for any command outs
     ['Bash', 'API_KEY=(abc123def456) run'],
     ['Bash', 'A=x{hunter2} run'],
     ['Bash', 'A=x\u00a0hunter2 psql'],
+    ['Bash', 'x\u00a0hunter2 run'],
+    ['Bash', '\u3000hunter2 run'],
+    ['Bash', 'h\u00e9hunter2 run'],
     ['Bash', 'A=1;hunter2 psql'],
     ['Bash', 'A=1\nhunter2 psql'],
     ['Bash', 'pass"word=hunter2"'],
@@ -120,15 +121,6 @@ test('a command that opens with an assignment, or with `$`, `\\` or `-`, shows t
     ['PowerShell', "$env:PGPASSWORD='hunter2'; psql"],
   ] as const
   expect(opens.map(([tool, command]) => toolDetail(tool, { command }))).toEqual(opens.map(([tool]) => ({ text: tool, masked: 0 })))
-})
-
-test('an assignment value that reads as running on into the next word ends the search', () => {
-  for (const command of ['password= hunter2 run', 'PASSWORD=is hunter2 run', 'PASSWORD=-- hunter2 run', 'X=--secret= abc123xyz run', 'X=key: abc123xyz run', 'X=--password abc123xyz run', 'Authorization=Basic xyz987 curl', 'AUTH=Bearer abc123def456ghi curl x', 'X=bearer abcdefgh12345678 ./run', 'HTTP_AUTHORIZATION=Basic abc123 curl'])
-    expect(toolDetail('Bash', { command }).text).toBe('Bash')
-})
-
-test('an assignment whose name ends in Authorization ends the search', () => {
-  expect(toolDetail('Bash', { command: 'X_AUTHORIZATION=token abc123def curl x' }).text).toBe('Bash')
 })
 
 test('a tool detail with a long tool name is cut to 64 characters in all', () => {
