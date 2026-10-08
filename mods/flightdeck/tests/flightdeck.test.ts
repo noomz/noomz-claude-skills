@@ -65,6 +65,9 @@ test('a Bash detail keeps only the program the command runs', () => {
   expect(toolDetail('Bash', { command: "passwd:'Qa y'" }).text).toBe('Bash → passwd:[masked]')
   expect(toolDetail('Bash', { command: 'Qa==\u3164passwd: \u1160Qb9Lm2Pz7\uffa0Qcwordyfoo\u2800 npm run deploy' }).text).toBe('Bash')
   expect(toolDetail('Bash', { command: '"DB_PASSWORD="my secret pass" ./deploy.sh"' }).text).toBe('Bash → DB_PASSWORD=[masked]')
+  expect(toolDetail('Bash', { command: 'pass"word=hunter2"' }).text).toBe('Bash → password=[masked]')
+  expect(toolDetail('Bash', { command: 'p\\assword=hunter2 x' }).text).toBe('Bash → password=[masked]')
+  expect(toolDetail('Bash', { command: '"ghp_"abcdefghijklmnopqrstuvwxyz0123456789 x' }).text).toBe('Bash → [masked]')
 })
 
 test('a file tool detail keeps the last two path segments and drops the pattern', () => {

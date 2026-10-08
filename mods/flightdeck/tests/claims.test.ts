@@ -214,6 +214,32 @@ describe("an architect's advice", () => {
   test('skips a line that is only marks', async ($, on) => {
     expect(await advise($, on, '---\n**\nShip it')).toBe('Ship it')
   })
+
+  test('masks a key that Markdown marks wrap or split, after the marks come off', async ($, on) => {
+    expect(await advise($, on, '**Password**: hunter2zz')).toBe('Password: [masked]')
+    expect(adviceLine('- **DB password**: Pa55w0rd!').text).toBe('DB password: [masked]')
+    expect(adviceLine('**api_key**: abc123def456').text).toBe('api_key: [masked]')
+    expect(adviceLine('__token__: abc123def456').text).toBe('token: [masked]')
+    expect(adviceLine('**DB_PASSWORD**=hunter2zz').text).toBe('DB_PASSWORD=[masked]')
+    expect(adviceLine('The **password** is Pa55w0rd!').text).toBe('The password is [masked]')
+    expect(adviceLine('pass**word=hunter2').text).toBe('password=[masked]')
+    expect(adviceLine('Password**: hunter2xyz').text).toBe('Password: [masked]')
+    expect(adviceLine('**Authorization**: Bearer abcdefgh123').text).toBe('Authorization: Bearer [masked]')
+  })
+
+  test('masks a bold key mid-sentence, after the marks come off', async ($, on) => {
+    expect(await advise($, on, 'Set **PGPASSWORD**=Vckbf2lyk and rerun the migration')).toBe('Set PGPASSWORD=[masked] and rerun the migration')
+  })
+
+  test('drawn on a terminal or the desktop, a key that Markdown marks wrapped shows masked', async ($, on) => {
+    await advise($, on, '**Password**: hunter2zz is hardcoded in config.ts')
+    for (const view of [pane(64), { ...pane(80), surface: 'desktop' as const }]) {
+      const ui = await $.ui.mount(view)
+      expect(await ui.find({ text: /hunter2zz/ }), view.surface).toBeUndefined()
+      expect(await ui.find({ text: /Password: \[masked\]/ }), view.surface).toBeDefined()
+      await ui.unmount()
+    }
+  })
 })
 
 describe('the hooks hand on what the next handler returns', () => {
@@ -298,6 +324,17 @@ describe('the masked count adds the masks scrub() finds each time flightdeck rea
     await $.tool.call({ tool: 'SubagentHandback', message: 'rotate password=hunter2 first', agentId: 'hb1', tool_use_id: 'hb-1' } as never)
     const s = state(values)
     expect([s.architect.lastAdvice, s.hygiene.masked]).toEqual(['rotate password=[masked] first', 1])
+  })
+
+  test("an architect's hand-back counts the mask found once its Markdown marks come off", async ($, on) => {
+    const values = engine(on)
+    on('agent.spawn', () => ({ model: 'claude-fable-5-1', agentId: 'hb2' }))
+    on('tool.call', () => ({ result: {}, text: 'ok' }))
+    await $.turn.start({ text: 'go', turnId: 'M6' })
+    await $.agent.spawn(spawn('architect', 'review'))
+    await $.tool.call({ tool: 'SubagentHandback', message: '**Password**: hunter2zz', agentId: 'hb2', tool_use_id: 'hb-2' } as never)
+    const s = state(values)
+    expect([s.architect.lastAdvice, s.hygiene.masked]).toEqual(['Password: [masked]', 1])
   })
 
   test("an architect's advice line counts its masks", async ($, on) => {
