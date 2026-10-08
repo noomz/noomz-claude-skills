@@ -143,6 +143,8 @@ Each field is cut to its cap at the longest start that does not end inside a mas
 - an input `•` or `[masked]` in some places where `redact()` would hide a value, which stays as the same glyph, so `https://u:•@h then password=x` reads `https://u:•@h then password=[masked]`
 - the words after the first of a value in brackets, such as `password: (correct horse9)`, which shows `horse9)`
 - a value after a symbol that reads as letters, such as `password: ⒜ hunter2`: compatibility reading turns `⒜` into `(a)`, which is masked as the value. The same reading catches key names spelled in such letters, such as `ⓟⓐⓢⓢⓦⓞⓡⓓ=hunter2`.
+- a key in single-star emphasis in an architect's report, which keeps its closing star, so `*Password*: hunter2xyz` reads `Password*: hunter2xyz`
+- a key split by a quote inside a path segment, such as `/a/"pass"word=hunter2`, since a path's quotes stay as written
 - a key in backticks, such as ``Use `password`: hunter2zz``, or in brackets and quotes, such as `config['password']='hunter2'`. Upstream `redact()` does not mask these either.
 - a key and value inside JSON that is escaped as a string, such as `{\"password\":\"hunter2\"}`. Upstream `redact()` does not mask these either.
 - the part of a URL password after a second `@`, so `https://app:p@ssw0rd9@db` reads `https://app:[masked]@ssw0rd9@db` and shows `@ssw0rd9`, and a URL password with a space, so `https://app:correct horse9@db` stays as written. Upstream `redact()` leaves the same text visible.
