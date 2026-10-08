@@ -534,6 +534,31 @@ test("a typed prompt shaped as a live architect's hand-back is still its length 
   await ui.unmount()
 })
 
+test('a prompt typed while a turn runs stays typed when the engine delivers a message into that turn', async ($, on) => {
+  engine(on)
+  const values = stateStore(on)
+  on('classic.UserPromptSubmit', () => ({}))
+  on('agent.spawn', () => ({ model: 'claude-fable-5-1', agentId: 'arch1' }))
+  await $.turn.start({ text: 'go', turnId: 'H7' })
+  await $.agent.spawn(spawn('architect', 'review'))
+  const text = '<agent-message from="arch1">\nThe report follows:\nmy deploy plan for friday\n</agent-message>'
+  await $.classic.UserPromptSubmit({ prompt: text, source: 'user' })
+  await $.classic.UserPromptSubmit({ prompt: 'a peer session says hello', source: 'system' })
+  await $.turn.start({ text, turnId: 'H8' })
+  const s = flightdeck(values) as { log: LogLine[]; architect: { lastAdvice: string } }
+  expect([s.log.map(l => [l.who, l.text]).at(-1), s.architect.lastAdvice]).toEqual([['you', `new turn · ${[...text].length} chars`], ''])
+})
+
+test('a prompt submitted from two sources with the same text is typed', async ($, on) => {
+  engine(on)
+  const values = stateStore(on)
+  on('classic.UserPromptSubmit', () => ({}))
+  await $.classic.UserPromptSubmit({ prompt: 'same words', source: 'user' })
+  await $.classic.UserPromptSubmit({ prompt: 'same words', source: 'system' })
+  await $.turn.start({ text: 'same words', turnId: 'H9' })
+  expect((flightdeck(values).log as LogLine[]).map(l => [l.who, l.text])).toEqual([['you', 'new turn · 10 chars']])
+})
+
 test('a typed prompt shows in the log as its length alone', async ($, on) => {
   engine(on)
   await $.turn.start({ text: 'password=hunter2 rotate the API keys', turnId: 'P1' })
