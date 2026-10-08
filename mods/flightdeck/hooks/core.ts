@@ -288,14 +288,19 @@ export const bucketOf = (tool: string): Bucket =>
 const lastSegments = (path: string, n: number) => path.split(/[\\/]/).filter(Boolean).slice(-n).join('/')
 
 const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/
-const SHELL_WORD = /\s*((?:[^\s"'\\]+|"(?:[^"\\]|\\[\s\S])*"?|'[^']*'?|\\[\s\S]?)+)/y
+const SHELL_WORD = /\s*((?:(?:[^\s"'\\`($]|\$(?!\())+|\$\([^)]*\)?|`[^`]*`?|"(?:[^"\\]|\\[\s\S])*"?|'[^']*'?|\\[\s\S]?)+)/y
 const QUOTING = /"((?:[^"\\]|\\[\s\S])*)"?|'([^']*)'?|\\([\s\S])/g
 
 const unquoted = (word: string) => word.replace(QUOTING, (_, d: string | undefined, s: string | undefined, e: string | undefined) => d ?? s ?? e ?? '')
 
 const RUNS_ON = /^(?:[^A-Za-z0-9]*|is|[\s\S]*(?:[=:]|--[^\s=]*))$/i
-const valueRunsOn = (name: string, value: string) => RUNS_ON.test(value) || /^authorization$/i.test(name)
+const valueRunsOn = (name: string, value: string) => RUNS_ON.test(value) || /^(?:bearer|basic)$/i.test(value) || /authorization$/i.test(name)
 
+/**
+ * The first word that is not an assignment: a `$(…)` or backtick group is one word, and an unquoted
+ * `(` ends a word. A value `Bearer` or `Basic`, or a name ending `authorization`, ends the search the
+ * way scrub() reads on past it.
+ */
 const programOf = (command: string) => {
   SHELL_WORD.lastIndex = 0
   for (let word = SHELL_WORD.exec(command)?.[1]; word; word = SHELL_WORD.exec(command)?.[1]) {
@@ -312,10 +317,12 @@ const HOST = /^[a-z0-9._-]+$|^\[[0-9a-f:.]+\]$/i
 /**
  * A URL's parsed host, when its authority reads as `host` or `user:pass@host`: a user name or
  * password with a percent-encoded character (a space, a quote, an `=`, a second `@`) is prose
- * the parser split at an `@`, and a host outside the DNS or IP shape is not a host.
+ * the parser split at an `@`, and a host outside the DNS or IP shape is not a host. A URL holding a
+ * tab or a line break has no host, since the parser drops those and can glue a credential into one.
  */
 const hostOf = (url: string) => {
   try {
+    if (/[\t\n\r]/.test(url)) return ''
     const u = new URL(url)
     if (u.username.includes('%') || u.password.includes('%') || !HOST.test(u.hostname)) return ''
     const at = url.toLowerCase().indexOf(u.hostname)
