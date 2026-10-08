@@ -58,7 +58,7 @@
     {
       "name": "flightdeck",
       "source": "./mods/flightdeck",
-      "description": "Claude Code mod: a live agent dashboard pane (model vitals, architect timeline, permission gate, subagent cards and swimlanes, turn receipt, session log). Hardened port of scasella/claude-flightdeck: prompts and answers are never kept, tool details are derived and masked, and /flightdeck audit shows what is held."
+      "description": "Claude Code mod: a live agent dashboard pane (model vitals, architect timeline, permission gate, subagent cards and swimlanes, turn receipt, session log). Hardened port of scasella/claude-flightdeck: prompts are never kept, and of an answer only one masked architect line, tool details are derived and masked, and /flightdeck audit shows what is held."
     }
   ]
 }

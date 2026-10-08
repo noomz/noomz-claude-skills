@@ -688,7 +688,7 @@ test('/flightdeck audit lists each stored text field by path and length, never a
   const masked = (flightdeck(values).hygiene as { masked: number }).masked
   expect(masked).toBe(1)
   expect(logged).toEqual([
-    `flightdeck audit · 6 stored text fields · ${masked} masked · lengths in chars`,
+    `flightdeck audit · 6 stored text fields · ${masked} masked · lengths in UTF-16 units`,
     'log: 0.who 3, 0.text 19, 1.who 12, 1.text 25',
     'agents: 0.type 15, 0.description 28',
   ])
@@ -699,7 +699,7 @@ test('/flightdeck audit after /flightdeck reset reports 0 stored text fields', a
   const { logged } = await auditSession($, on)
   await $.command.run({ command: 'flightdeck', args: 'reset' } as never)
   await $.command.run({ command: 'flightdeck', args: 'audit' } as never)
-  expect(logged).toEqual(['flightdeck audit · 0 stored text fields · 0 masked · lengths in chars'])
+  expect(logged).toEqual(['flightdeck audit · 0 stored text fields · 0 masked · lengths in UTF-16 units'])
 })
 
 for (const placement of ['dock', 'inline'] as const) {

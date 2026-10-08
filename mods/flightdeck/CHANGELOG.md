@@ -7,11 +7,11 @@ Hardened port of scasella/claude-flightdeck 0.3.2, published in noomz/noomz-clau
 - Session text reaches state or the pane only through `scrub()` in `hooks/hygiene.ts`, which masks secrets, removes ESC, control, bidi and zero-width characters, and cuts each field to a fixed cap. `redact()` is gone.
 - The log no longer keeps your prompts: a typed turn reads `you · new turn · <n> chars`.
 - Agent cards no longer keep a subagent's answer. The expanded card shows its status and duration in place of the answer.
-- The tool detail on cards, in the log and in the gate drill-down is derived: a command's first shell word that is not an assignment, a file's last two path segments, or a URL's host, each masked before any cut. Patterns, queries and descriptions are dropped.
-- A turn's log row comes from who started it (`UserPromptSubmit`'s `source`), never from its text: a typed prompt is its length alone, and an engine-started turn is a fixed label.
-- A session start resets state unless its `meta` names this schema version, so state upstream flightdeck wrote (it stored no `meta`) is never drawn.
-- Architect advice, agent descriptions, names and types, and the architect roster are masked and cut before they are kept.
-- New `/flightdeck audit` lists each stored text field by state path with its length, and the masked count, without printing a value. The receipt panel and the mini layout show a `hygiene · <n> masked` cell.
+- The tool detail on cards, in the log and in the gate drill-down is derived: a command's first shell word that is not an assignment, a file's last two path segments, or a URL's host, each masked before any cut. A `$(…)` or backtick group is one word, and the program word is masked again when its quotes come off. Patterns, queries and descriptions are dropped.
+- A turn's log row comes from who started it (`UserPromptSubmit`'s `source`), never from its text: a typed prompt is its length alone, and an engine-started turn is a fixed label. The text of a turn is read only when the engine started it and it opens as the hand-back of an architect agent the session spawned.
+- A session start resets state unless its `meta` names this schema version, so state upstream flightdeck wrote (it stored no `meta`) is never drawn. The reset also empties the model, mode, cost and rate limits.
+- Architect advice, agent descriptions, names and types, and the architect roster are masked and cut before they are kept. Advice is masked again after its Markdown marks come off, so a bold key no longer unmasks.
+- New `/flightdeck audit` lists each stored text field by state path with its length in UTF-16 units, and the masked count, without printing a value. The receipt panel and the mini layout show a `hygiene · <n> masked` cell.
 - `/flightdeck reset`, `/clear` and a resume also empty the architect roster and the masked count. State saved by an older version is reset when a session starts.
 - An agent description holding an escape sequence no longer blanks the pane.
 

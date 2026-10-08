@@ -134,7 +134,7 @@ async function audit($: EngineInterface) {
     const [key = '', ...rest] = f.path.split('.')
     rows.set(key, [...(rows.get(key) ?? []), `${rest.join('.')} ${f.length}`])
   }
-  $.ui.log(`flightdeck audit · ${plural(fields.length, 'stored text field')} · ${h.masked} masked · lengths in chars`)
+  $.ui.log(`flightdeck audit · ${plural(fields.length, 'stored text field')} · ${h.masked} masked · lengths in UTF-16 units`)
   for (const [key, entries] of rows) $.ui.log(`${key}: ${entries.join(', ')}`)
 }
 
