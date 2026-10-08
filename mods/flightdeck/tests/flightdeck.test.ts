@@ -86,6 +86,15 @@ test('a Bash detail keeps only the program the command runs', () => {
   expect(toolDetail('PowerShell', { command: '[Environment]::SetEnvironmentVariable("API_KEY", "abc123def456", "User")' }).text).toBe('PowerShell → [Environment]::SetEnvironmentVariable')
 })
 
+test('an assignment whose name ends in Authorization ends the search', () => {
+  expect(toolDetail('Bash', { command: 'X_AUTHORIZATION=token abc123def curl x' }).text).toBe('Bash')
+})
+
+test('a tool detail with a long tool name is cut to 64 characters in all', () => {
+  const shown = toolDetail('mcp__deploy_server__run_command', { command: 'x'.repeat(100) }).text
+  expect([shown.length, shown.startsWith('mcp__deploy_server__run_command → x'), shown.endsWith('…')]).toEqual([64, true, true])
+})
+
 test("a Bash or PowerShell detail drops a value with a nested substitution or set through $env:", () => {
   expect(toolDetail('Bash', { command: 'PGPASSWORD=$(printf %s $(printf pre) hunter2) psql' }).text).toBe('Bash')
   expect(toolDetail('Bash', { command: 'PGPASSWORD=$(a $(b) c $(d) hunter2) psql' }).text).toBe('Bash')
@@ -524,6 +533,20 @@ test('a hand-back turn is read only when the engine started it', async ($, on) =
   await $.turn.start({ text: handback, turnId: 'H4' })
   const s = flightdeck(values) as { log: LogLine[]; architect: { lastAdvice: string } }
   expect([s.log.map(l => [l.who, l.text]).at(-1), s.architect.lastAdvice]).toEqual([['you', `new turn · ${[...handback].length} chars`], ''])
+})
+
+test("a hand-back from an agent that is not an architect is not advice", async ($, on) => {
+  engine(on)
+  const values = stateStore(on)
+  on('classic.UserPromptSubmit', () => ({}))
+  on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: 'gp1' }))
+  await $.turn.start({ text: 'go', turnId: 'H10' })
+  await $.agent.spawn(spawn('general-purpose', 'count lines'))
+  const text = '<agent-message from="gp1">\nThe report follows:\nThere are 42 lines.\n</agent-message>'
+  await $.classic.UserPromptSubmit({ prompt: text, source: 'system' })
+  await $.turn.start({ text, turnId: 'H11' })
+  const s = flightdeck(values) as { log: LogLine[]; architect?: { lastAdvice: string } }
+  expect([s.log.map(l => [l.who, l.text]).at(-1), s.architect?.lastAdvice ?? '']).toEqual([['engine', 'message delivered'], ''])
 })
 
 test("a typed prompt shaped as a live architect's hand-back is still its length alone", async ($, on) => {
