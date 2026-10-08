@@ -75,6 +75,15 @@ describe('scrub misses a key in backticks, brackets or escaped JSON, and a URL p
   ])
 })
 
+describe('scrub misses a --pass= flag mid-line and a PowerShell variable with a braced name or +=', () => {
+  rows([
+    ['mysqldump --pass=S3cretPass99 db', 'mysqldump --pass=S3cretPass99 db', 0],
+    ['run -pass=S3cretPass99 now', 'run -pass=S3cretPass99 now', 0],
+    ['${env:API_KEY}="abc123def456"', '${env:API_KEY}="abc123def456"', 0],
+    ["$env:PGPASSWORD+='hunter2x'", "$env:PGPASSWORD+='hunter2x'", 0],
+  ])
+})
+
 describe('scrub leaves an Azure connection string, an ApiKey, Digest or Negotiate credential, a table row, a bold label and a JWT glued after an underscore or a hyphen', () => {
   rows([
     ['DefaultEndpointsProtocol=https;AccountName=acct;AccountKey=ZHVtbXlkdW1teQ==', 'DefaultEndpointsProtocol=https;AccountName=acct;AccountKey=ZHVtbXlkdW1teQ==', 0],
