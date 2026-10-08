@@ -84,6 +84,15 @@ describe('scrub misses a --pass= flag mid-line and a PowerShell variable with a 
   ])
 })
 
+describe('scrub leaves a bare glpat- or npm_ token, a PowerShell Set-Item and an unquoted scheme word before a value', () => {
+  rows([
+    ['glpat-dummyDUMMYdummy1234', 'glpat-dummyDUMMYdummy1234', 0],
+    ['npm_dummyDUMMYdummyDUMMYdummy12345678', 'npm_dummyDUMMYdummyDUMMYdummy12345678', 0],
+    ['Set-Item -Path env:API_KEY -Value dummySecret123', 'Set-Item -Path env:API_KEY -Value dummySecret123', 0],
+    ['AUTH_HEADER=token abc123def456hunter2', 'AUTH_HEADER=token abc123def456hunter2', 0],
+  ])
+})
+
 describe('scrub leaves an Azure connection string, an ApiKey, Digest or Negotiate credential, a table row, a bold label and a JWT glued after an underscore or a hyphen', () => {
   rows([
     ['DefaultEndpointsProtocol=https;AccountName=acct;AccountKey=ZHVtbXlkdW1teQ==', 'DefaultEndpointsProtocol=https;AccountName=acct;AccountKey=ZHVtbXlkdW1teQ==', 0],
