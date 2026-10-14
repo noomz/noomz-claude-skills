@@ -41,6 +41,8 @@ type EngineOptions = {
   rejects?: string[]
   // How long every permission check takes, on the mocked clock.
   checkDelayMs?: number
+  // The path the askpass install prints; absent, the install fails.
+  askpass?: string | null
 }
 
 // Stands in for the engine beneath the plugin: the clock, answers, its own
@@ -48,10 +50,13 @@ type EngineOptions = {
 // fills and toasts. `press` presses a command button once the debounce window
 // since the previous press has passed.
 function engine(on: On, {
-  exitCode = 0, stdout = 'hello\n', drop, deny = [], denyCalls = [], rejects = [], checkDelayMs = 0,
+  exitCode = 0, stdout = 'hello\n', drop, deny = [], denyCalls = [], rejects = [], checkDelayMs = 0, askpass = '/tmp/x/askpass',
 }: EngineOptions = {}) {
   const clock = mock.clock(on)
   const runs: (readonly string[])[] = []
+  const envs: (Record<string, string> | undefined)[] = []
+  const installs: (readonly string[])[] = []
+  const wrappers: string[] = []
   const submitted: { text: string; origin: unknown }[] = []
   const filled: string[] = []
   const toasts: string[] = []
@@ -72,7 +77,14 @@ function engine(on: On, {
     return { decision: denied ? 'deny' : 'allow' }
   })
   on('process.run', (_$, e) => {
-    runs.push(e.argv)
+    if (e.argv[3] === 'askpass') {
+      installs.push(e.argv)
+      return { value: { exitCode: askpass === null ? 1 : 0, stdout: askpass ?? '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    }
+    // A run is `/bin/sh -c <detach> bang-actions /bin/bash -c <cmd>`.
+    wrappers.push(e.argv.slice(0, 4).join(' ').replace(/-c [\s\S]* bang-actions$/, '-c … bang-actions'))
+    runs.push(e.argv.slice(4))
+    envs.push(e.init?.env)
     return { value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on('prompt.fill', (_$, e) => { filled.push(e.text); return { isFilled: true } })
@@ -80,7 +92,7 @@ function engine(on: On, {
     await clock.advance(DEBOUNCE_MS)
     await ui.press({ key })
   }
-  return { runs, submitted, filled, toasts, deny, rejects, clock, press }
+  return { runs, envs, installs, wrappers, submitted, filled, toasts, deny, rejects, clock, press }
 }
 
 type Found = { text?: string }
@@ -133,6 +145,58 @@ for (const surface of SURFACES) {
     expect(await rows(ui)).toEqual([])
   })
 }
+
+test('every run starts through the detach wrapper, so no command reaches the terminal', async ($, on) => {
+  const { runs, wrappers, press } = engine(on)
+
+  await $.turn.complete(turnDone('Run `! ls` then `! sudo -v`.'))
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  await press(ui, `run-${commandKey('ls')}`)
+  await press(ui, `run-${commandKey('sudo -v')}`)
+
+  expect(runs).toEqual([['/bin/bash', '-c', 'ls'], ['/bin/bash', '-c', 'sudo -v']])
+  expect(wrappers).toEqual(['/bin/sh -c … bang-actions', '/bin/sh -c … bang-actions'])
+})
+
+test('a sudo command runs with SUDO_ASKPASS naming the dialog helper, written once and reused', async ($, on) => {
+  const { runs, envs, installs, press } = engine(on)
+
+  await $.turn.complete(turnDone('Run `! sudo -v` then `! sudo ls /var/root`.'))
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  await press(ui, `run-${commandKey('sudo -v')}`)
+  await press(ui, `run-${commandKey('sudo ls /var/root')}`)
+
+  expect(runs).toEqual([['/bin/bash', '-c', 'sudo -v'], ['/bin/bash', '-c', 'sudo ls /var/root']])
+  expect(envs).toEqual([{ SUDO_ASKPASS: '/tmp/x/askpass' }, { SUDO_ASKPASS: '/tmp/x/askpass' }])
+  expect(installs).toHaveLength(2)
+  expect(installs[0]?.[4]).toContain('with hidden answer')
+  expect(installs[1]?.[5]).toBe('/tmp/x/askpass')
+})
+
+test('a command without sudo writes no helper and sets no SUDO_ASKPASS', async ($, on) => {
+  const { runs, envs, installs } = engine(on)
+
+  await $.turn.complete(turnDone(ANSWER))
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  await ui.press({ key: RUN_LOGIN })
+
+  expect(runs).toEqual([['/bin/bash', '-c', 'gcloud auth login']])
+  expect(envs).toEqual([undefined])
+  expect(installs).toEqual([])
+})
+
+test('a sudo command still runs, without SUDO_ASKPASS, when the helper cannot be written', async ($, on) => {
+  const { runs, envs, submitted } = engine(on, { askpass: null })
+  const cmd = 'sudo -v'
+
+  await $.turn.complete(turnDone(`Run \`! ${cmd}\`.`))
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  await ui.press({ key: `run-${commandKey(cmd)}` })
+
+  expect(runs).toEqual([['/bin/bash', '-c', cmd]])
+  expect(envs).toEqual([undefined])
+  expect(submitted).toHaveLength(1)
+})
 
 test('a suggestion the rules deny draws the two-press button from the start', async ($, on) => {
   const { runs } = engine(on, { deny: ['gcloud auth login'] })

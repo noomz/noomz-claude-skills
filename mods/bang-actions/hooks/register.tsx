@@ -4,6 +4,7 @@ import type { EngineInterface, Register } from 'claude-code'
 import type { Gate, Suggestion } from '../types'
 
 import { buttonLabel, commandKey, displayCommand, drawnRows, extractBangCommands, formatRunMessage, mergeCommands } from './parse'
+import { askpassEnv, detached } from './terminal'
 
 const TIMEOUT_MS = 5 * 60 * 1000
 
@@ -77,9 +78,10 @@ async function gateOf($: EngineInterface, cmd: string): Promise<Gate> {
   return $.tool.check({ tool: 'Bash', input: { command: cmd } }).then(r => (r.decision === 'deny' ? 'confirm' : 'run'), () => 'confirm')
 }
 
-// Runs a command as the person's own `! cmd` would, in the session's cwd,
-// then submits the output as this plugin's prompt: Claude's next turn starts
-// on it, and the transcript keeps it as a row.
+// Runs a command as the person's own `! cmd` would, in the session's cwd
+// but away from the terminal, with any `sudo` password asked in a desktop
+// dialog, then submits the output as this plugin's prompt: Claude's next turn starts on it, and the
+// transcript keeps it as a row.
 async function run($: EngineInterface, cmd: string) {
   if (running.has(cmd)) {
     return
@@ -87,7 +89,8 @@ async function run($: EngineInterface, cmd: string) {
   running.add(cmd)
   try {
     $.ui.status(`running: ${buttonLabel(cmd)}`)
-    const r = await $.process.run(['/bin/bash', '-c', cmd], { stdin: '', timeoutMs: TIMEOUT_MS })
+    const env = await askpassEnv($, cmd)
+    const r = await $.process.run(detached(['/bin/bash', '-c', cmd]), { stdin: '', env, timeoutMs: TIMEOUT_MS })
     await update($, commands, forget(cmd))
     if (r.exitCode === 0) {
       await update($, succeeded, prev => [...prev, cmd])
