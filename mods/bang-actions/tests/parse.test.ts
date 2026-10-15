@@ -2,13 +2,13 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import {
   buttonLabel, commandKey, displayCommand, drawnRows, extractBangCommands, formatRunMessage, MAX_COMMANDS,
-  MAX_SHOWN_CHARS, mergeCommands,
+  keepTail, MAX_SHOWN_CHARS, mergeCommands, outputTail,
 } from '../hooks/parse'
 
 const run = (cmd: string) => ({ cmd, gate: 'run' as const })
 const confirm = (cmd: string) => ({ cmd, gate: 'confirm' as const })
 const result = (over: Partial<Parameters<typeof formatRunMessage>[1]> = {}) => ({
-  exitCode: 0, stdout: 'hello\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false, ...over,
+  ending: 'exit 0', stdout: 'hello\n', stderr: '', isCut: false, ...over,
 })
 
 describe('extractBangCommands', () => {
@@ -120,11 +120,40 @@ describe('run message', () => {
   })
 
   test('keeps both streams and the exit code, and says when the output was cut', () => {
-    const r = result({ exitCode: 3, stdout: 'a\nb\n', stderr: 'warn\n', isStdoutTruncated: true })
+    const r = result({ ending: 'exit 3', stdout: 'a\nb\n', stderr: 'warn\n', isCut: true })
     const text = formatRunMessage('make', r)
     expect(text).toContain('(exit 3)')
     expect(text).toContain('[cut:')
     expect(text).toContain('[stdout]\na\nb\n[stderr]\nwarn')
+  })
+
+  test('says when the person cancelled the run', () => {
+    expect(formatRunMessage('gh auth refresh', result({ ending: 'it ran until the person cancelled it' })).split('\n')[0]).toContain('(it ran until the person cancelled it)')
+  })
+
+  test('keepTail keeps the last 20000 characters of a stream and says when it dropped some', () => {
+    expect(keepTail('ab', 'cd')).toEqual({ text: 'abcd', isCut: false })
+    const kept = keepTail('x'.repeat(19_999), 'yz')
+    expect(kept.isCut).toBe(true)
+    expect(kept.text).toHaveLength(20_000)
+    expect(kept.text.endsWith('yz')).toBe(true)
+  })
+})
+
+describe('outputTail', () => {
+  test('shows the last lines, without trailing blank ones', () => {
+    expect(outputTail('1\n2\n3\n4\n\n', 2)).toBe('3\n4')
+  })
+
+  test('drops terminal escapes and controls, so output can neither restyle the terminal nor hide text', () => {
+    const esc = String.fromCharCode(27)
+    const bel = String.fromCharCode(7)
+    const text = `${esc}[1;32mok${esc}[0m ${esc}]0;title${bel}done${String.fromCharCode(0x202e)}!`
+    expect(outputTail(text, 5)).toBe('ok done!')
+  })
+
+  test('shows a line a carriage return rewrote as last written, and CRLF as one break', () => {
+    expect(outputTail('10%\r50%\r100%\r\nnext\r\n', 5)).toBe('100%\nnext')
   })
 })
 
