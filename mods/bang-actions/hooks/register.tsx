@@ -104,7 +104,7 @@ async function run($: EngineInterface, cmd: string) {
   })
   try {
     await update($, commands, forget(cmd))
-    await update($, runs, prev => [...prev, { cmd, output: '' }])
+    await update($, runs, prev => [...prev.filter(r => r.cmd !== cmd), { cmd, output: '' }])
     $.ui.status(`running: ${buttonLabel(cmd)}`)
     const env = await askpassEnv($, cmd)
     const out: RunOutput = { ending: 'it ran until the person cancelled it', stdout: '', stderr: '', isCut: false }
@@ -115,7 +115,8 @@ async function run($: EngineInterface, cmd: string) {
         for (;;) {
           const step = await child.next()
           if (step.done) {
-            if (!isStopped) {
+            // An exit of its own counts even when Cancel landed just after.
+            if (!isStopped || step.value.code !== null) {
               out.ending = step.value.signal !== null ? `killed by ${step.value.signal}` : `exit ${step.value.code}`
             }
             break
@@ -134,6 +135,10 @@ async function run($: EngineInterface, cmd: string) {
       }
     }
 
+    // Cancelled before it started: nothing ran, so there is nothing to tell.
+    if (child === undefined) {
+      return
+    }
     if (out.ending === 'exit 0') {
       await update($, succeeded, prev => [...prev, cmd])
     }
@@ -221,7 +226,7 @@ async function press($: EngineInterface, cmd: string, drawn: Gate) {
   const decision = deciding.then(() => decide($, cmd, drawn))
   deciding = decision.catch(() => undefined)
   if (await decision) {
-    void run($, cmd)
+    void run($, cmd).catch(() => undefined)
   }
 }
 
@@ -305,7 +310,7 @@ export const register: Register = on => {
               </Box>
             </Box>
             <Box key={`output-${commandKey(r.cmd)}`} borderStyle="round" borderDimColor paddingX={1}>
-              <Text dimColor={r.output === ''}>{r.output === '' ? 'running…' : r.output}</Text>
+              <Text dimColor={r.output === ''} wrap="truncate-end">{r.output === '' ? 'running…' : r.output}</Text>
             </Box>
           </Box>
         ))}
