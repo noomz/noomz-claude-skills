@@ -43,6 +43,8 @@ type EngineOptions = {
   checkDelayMs?: number
   // The path the askpass install prints; absent, the install fails.
   askpass?: string | null
+  // When given, a run writes its stdout, then waits on this before it exits.
+  hold?: Promise<void>
 }
 
 // Stands in for the engine beneath the plugin: the clock, answers, its own
@@ -50,13 +52,15 @@ type EngineOptions = {
 // fills and toasts. `press` presses a command button once the debounce window
 // since the previous press has passed.
 function engine(on: On, {
-  exitCode = 0, stdout = 'hello\n', drop, deny = [], denyCalls = [], rejects = [], checkDelayMs = 0, askpass = '/tmp/x/askpass',
+  exitCode = 0, stdout = 'hello\n', drop, deny = [], denyCalls = [], rejects = [], checkDelayMs = 0, askpass = '/tmp/x/askpass', hold,
 }: EngineOptions = {}) {
   const clock = mock.clock(on)
   const runs: (readonly string[])[] = []
   const envs: (Record<string, string> | undefined)[] = []
   const installs: (readonly string[])[] = []
   const wrappers: string[] = []
+  // Runs whose child was stopped before it exited, by their command.
+  const killed: string[] = []
   const submitted: { text: string; origin: unknown }[] = []
   const filled: string[] = []
   const toasts: string[] = []
@@ -81,18 +85,32 @@ function engine(on: On, {
       installs.push(e.argv)
       return { value: { exitCode: askpass === null ? 1 : 0, stdout: askpass ?? '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     }
-    // A run is `/bin/sh -c <detach> bang-actions /bin/bash -c <cmd>`.
+    throw new Error(`unexpected process.run: ${e.argv.join(' ')}`)
+  })
+  // A run is `/bin/sh -c <detach> bang-actions /bin/bash -c <cmd>`.
+  on('process.spawn', async function* (_$, e, next) {
     wrappers.push(e.argv.slice(0, 4).join(' ').replace(/-c [\s\S]* bang-actions$/, '-c … bang-actions'))
     runs.push(e.argv.slice(4))
-    envs.push(e.init?.env)
-    return { value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    envs.push(e.env)
+    let hasExited = false
+    try {
+      if (stdout !== '') yield { stream: 'stdout' as const, text: stdout }
+      // A real child dies when the stream is closed; this one stops waiting.
+      const closed = new Promise<void>(resolve => next.signal.addEventListener('abort', () => resolve()))
+      if (hold) await Promise.race([hold, closed])
+      if (next.signal.aborted) return { value: { code: null, signal: 'SIGTERM' } }
+      hasExited = true
+      return { value: { code: exitCode, signal: null } }
+    } finally {
+      if (!hasExited) killed.push(e.argv[6] ?? '')
+    }
   })
   on('prompt.fill', (_$, e) => { filled.push(e.text); return { isFilled: true } })
   const press = async (ui: Pressable, key: string) => {
     await clock.advance(DEBOUNCE_MS)
     await ui.press({ key })
   }
-  return { runs, envs, installs, wrappers, submitted, filled, toasts, deny, rejects, clock, press }
+  return { runs, envs, installs, wrappers, killed, submitted, filled, toasts, deny, rejects, clock, press }
 }
 
 type Found = { text?: string }
@@ -666,5 +684,52 @@ test('a long chained command shows one step per line beside a short Run button',
   expect((await ui.findAll({ type: 'Code' })).map(c => c.text)).toEqual([
     'export T=$(gh auth token --user a);\n  gh pr ready 1 -R o/r &&\n  gh pr merge 1 -R o/r --merge',
   ])
+  expect(await rows(ui)).toEqual([`${RUN}  ${cmd}`, 'Dismiss'])
+})
+
+test('a running command shows its output live under a Cancel button, and its prompt goes once it exits', async ($, on) => {
+  let exit = () => {}
+  const hold = new Promise<void>(resolve => { exit = resolve })
+  const { submitted, killed, clock } = engine(on, { stdout: 'First copy your one-time code: ABCD-1234\n', hold })
+  const cmd = 'gh auth refresh -h github.com -s admin:org'
+
+  await $.turn.complete(turnDone(`Run \`! ${cmd}\`.`))
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  const pressed = ui.press({ key: `run-${commandKey(cmd)}` })
+  await clock.settle()
+  expect(await rows(ui)).toEqual([`■ Cancel  ${cmd}`])
+  expect((await ui.find({ key: `output-${commandKey(cmd)}` }))?.text).toBe('First copy your one-time code: ABCD-1234')
+  expect(submitted).toEqual([])
+
+  exit()
+  await pressed
+  await clock.settle()
+  expect(killed).toEqual([])
+  expect(submitted[0]?.text).toContain('(exit 0)')
+  expect(submitted[0]?.text).toContain('ABCD-1234')
+  expect(await rows(ui)).toEqual([])
+})
+
+test('Cancel stops a running command and hands Claude what it wrote, marked cancelled and not as a success', async ($, on) => {
+  const { submitted, killed, toasts, clock } = engine(on, { stdout: 'waiting for browser\n', hold: new Promise<void>(() => {}) })
+  const cmd = 'gh auth refresh -h github.com -s admin:org'
+
+  await $.turn.complete(turnDone(`Run \`! ${cmd}\`.`))
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  const pressed = ui.press({ key: `run-${commandKey(cmd)}` })
+  await clock.settle()
+  await ui.press({ key: `cancel-${commandKey(cmd)}` })
+  await pressed
+  await clock.settle()
+
+  expect(killed).toEqual([cmd])
+  expect(toasts).toEqual([])
+  expect(submitted).toHaveLength(1)
+  expect(submitted[0]?.text.split('\n')[0]).toContain('(it ran until the person cancelled it)')
+  expect(submitted[0]?.text).toContain('waiting for browser')
+  expect(await rows(ui)).toEqual([])
+
+  // Not a success: the next answer quoting it lists it again.
+  await $.turn.complete(turnDone(`Try \`! ${cmd}\` again.`))
   expect(await rows(ui)).toEqual([`${RUN}  ${cmd}`, 'Dismiss'])
 })

@@ -1,12 +1,16 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Gate, Suggestion } from '../types'
+import type { Gate, Run, Suggestion } from '../types'
 
-import { buttonLabel, commandKey, displayCommand, drawnRows, extractBangCommands, formatRunMessage, mergeCommands } from './parse'
+import { buttonLabel, commandKey, displayCommand, drawnRows, extractBangCommands, formatRunMessage, keepTail, mergeCommands, outputTail } from './parse'
+import type { RunOutput } from './parse'
 import { askpassEnv, detached } from './terminal'
 
-const TIMEOUT_MS = 5 * 60 * 1000
+// Lines of a running command's output the band shows under it.
+const OUTPUT_ROWS = 6
+// Characters of the combined output kept to cut those lines from.
+const OUTPUT_KEPT_CHARS = 4_000
 
 // A command button ignores a press this soon after the previous one started
 // or finished, accepted or ignored. After a press the focus ring stays in the
@@ -29,6 +33,7 @@ const MAX_SHOWN_LINES = 8
 const commands = atom({ plugin: 'bang-actions', key: 'commands' } as const, [])
 const succeeded = atom({ plugin: 'bang-actions', key: 'succeeded' } as const, [] as string[])
 const denied = atom({ plugin: 'bang-actions', key: 'denied' } as const, [] as string[])
+const runs = atom({ plugin: 'bang-actions', key: 'runs' } as const, [] as Run[])
 
 // The button beside a command: by its gate, and for the one two-press
 // command the person armed. No hotkeys: while the band holds the focus every
@@ -53,7 +58,9 @@ let band = { columns: 50, rows: MAX_SHOWN_LINES }
 // show the whole command.
 const bandGate = (s: Suggestion): Gate => (s.gate === 'confirm' || drawnRows(s.cmd, band.columns) > band.rows ? 'confirm' : 'run')
 
-const running = new Set<string>()
+// What stops each running command, by command. A module variable: a reload
+// kills the children, so `session.start` clears their rows.
+const stops = new Map<string, () => void>()
 let lastPressAt = Number.NEGATIVE_INFINITY
 // Presses are decided one at a time, so a burst of them reads the time the
 // first one wrote.
@@ -80,31 +87,77 @@ async function gateOf($: EngineInterface, cmd: string): Promise<Gate> {
 
 // Runs a command as the person's own `! cmd` would, in the session's cwd
 // but away from the terminal, with any `sudo` password asked in a desktop
-// dialog, then submits the output as this plugin's prompt: Claude's next turn starts on it, and the
-// transcript keeps it as a row.
+// dialog. While it runs, the band shows the last lines it wrote and a Cancel
+// button; when it ends or is cancelled, the output is submitted as this
+// plugin's prompt: Claude's next turn starts on it, and the transcript keeps
+// it as a row. No time limit: a command that waits on the person (a browser
+// login) runs until it ends or they cancel it.
 async function run($: EngineInterface, cmd: string) {
-  if (running.has(cmd)) {
+  if (stops.has(cmd)) {
     return
   }
-  running.add(cmd)
+  let isStopped = false
+  let child: ReturnType<typeof $.process.spawn> | undefined
+  stops.set(cmd, () => {
+    isStopped = true
+    void child?.return({ code: null, signal: null }).catch(() => undefined)
+  })
   try {
+    await update($, commands, forget(cmd))
+    await update($, runs, prev => [...prev, { cmd, output: '' }])
     $.ui.status(`running: ${buttonLabel(cmd)}`)
     const env = await askpassEnv($, cmd)
-    const r = await $.process.run(detached(['/bin/bash', '-c', cmd]), { stdin: '', env, timeoutMs: TIMEOUT_MS })
-    await update($, commands, forget(cmd))
-    if (r.exitCode === 0) {
-      await update($, succeeded, prev => [...prev, cmd])
+    const out: RunOutput = { ending: 'it ran until the person cancelled it', stdout: '', stderr: '', isCut: false }
+    let shown = ''
+    if (!isStopped) {
+      child = $.process.spawn({ argv: detached(['/bin/bash', '-c', cmd]), env })
+      try {
+        for (;;) {
+          const step = await child.next()
+          if (step.done) {
+            if (!isStopped) {
+              out.ending = step.value.signal !== null ? `killed by ${step.value.signal}` : `exit ${step.value.code}`
+            }
+            break
+          }
+          const kept = keepTail(out[step.value.stream], step.value.text)
+          out[step.value.stream] = kept.text
+          out.isCut ||= kept.isCut
+          shown = (shown + step.value.text).slice(-OUTPUT_KEPT_CHARS)
+          const output = outputTail(shown, OUTPUT_ROWS)
+          await update($, runs, prev => prev.map(r => (r.cmd === cmd ? { cmd, output } : r)))
+        }
+      } catch (err) {
+        if (!isStopped) {
+          throw err
+        }
+      }
     }
 
-    const sent = await $.prompt.submit({ text: formatRunMessage(cmd, r) }).catch(() => undefined)
+    if (out.ending === 'exit 0') {
+      await update($, succeeded, prev => [...prev, cmd])
+    }
+    const sent = await $.prompt.submit({ text: formatRunMessage(cmd, out) }).catch(() => undefined)
     if (!sent || sent.drop !== undefined) {
       $.ui.toast('Ran, but the output did not reach Claude')
     }
   } catch (err) {
     $.ui.toast(`Could not run: ${err instanceof Error ? err.message : String(err)}`)
   } finally {
-    running.delete(cmd)
+    stops.delete(cmd)
+    await update($, runs, prev => prev.filter(r => r.cmd !== cmd)).catch(() => undefined)
     $.ui.status(undefined)
+  }
+}
+
+// Stops a running command: its child and everything it started get TERM. A
+// row with nothing behind it (left from before a reload) just goes.
+async function cancel($: EngineInterface, cmd: string) {
+  const stop = stops.get(cmd)
+  if (stop !== undefined) {
+    stop()
+  } else {
+    await update($, runs, prev => prev.filter(r => r.cmd !== cmd))
   }
 }
 
@@ -162,15 +215,23 @@ async function decide($: EngineInterface, cmd: string, drawn: Gate): Promise<boo
   }
 }
 
+// The run goes on after the press returns: a press hook has a budget of
+// seconds, and a run may wait on the person for minutes.
 async function press($: EngineInterface, cmd: string, drawn: Gate) {
   const decision = deciding.then(() => decide($, cmd, drawn))
   deciding = decision.catch(() => undefined)
   if (await decision) {
-    await run($, cmd)
+    void run($, cmd)
   }
 }
 
 export const register: Register = on => {
+  // A reload ends the children of the copy before, so their rows go too.
+  on('session.start', async ($, e, next) => {
+    await update($, runs, () => [])
+    return next(e)
+  })
+
   // Each suggestion is listed with the rules' verdict on it, so a denied one
   // draws the two-press button from the start. A command that ran with exit 0
   // since the last answer is not listed: Claude's reply to a run usually
@@ -226,14 +287,28 @@ export const register: Register = on => {
     // is never wholly on screen, however far the person scrolls.
     band = { columns: e.props.bodyColumns - BUTTON_COLUMNS, rows: Math.min(MAX_SHOWN_LINES, e.props.maxRows - 1) }
     const list = await read($, commands)
-    if (e.props.hasSurvey || list.length === 0) {
+    const live = await read($, runs)
+    if (e.props.hasSurvey || (list.length === 0 && live.length === 0)) {
       return next(e)
     }
 
-    const { Box, Button, Code } = $.ui.resolve(e)
+    const { Box, Button, Code, Text } = $.ui.resolve(e)
 
     return (
       <Box flexDirection="column">
+        {live.map(r => (
+          <Box key={`live-${commandKey(r.cmd)}`} flexDirection="column">
+            <Box flexDirection="row" columnGap={1}>
+              <Button key={`cancel-${commandKey(r.cmd)}`} label="■ Cancel" onPress={() => cancel($, r.cmd)} />
+              <Box flexGrow={1} flexShrink={1}>
+                <Code source={displayCommand(r.cmd)} language="bash" />
+              </Box>
+            </Box>
+            <Box key={`output-${commandKey(r.cmd)}`} borderStyle="round" borderDimColor paddingX={1}>
+              <Text dimColor={r.output === ''}>{r.output === '' ? 'running…' : r.output}</Text>
+            </Box>
+          </Box>
+        ))}
         {list.map(s => {
           const drawn = bandGate(s)
           return (
@@ -245,7 +320,7 @@ export const register: Register = on => {
             </Box>
           )
         })}
-        <Box flexDirection="row" justifyContent="flex-end">
+        {list.length > 0 && <Box flexDirection="row" justifyContent="flex-end">
           <Button
             key="dismiss"
             label="Dismiss"
@@ -254,7 +329,7 @@ export const register: Register = on => {
             dimColor
             onPress={() => update($, commands, () => [])}
           />
-        </Box>
+        </Box>}
       </Box>
     )
   })
