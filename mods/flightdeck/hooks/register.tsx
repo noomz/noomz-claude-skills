@@ -379,6 +379,8 @@ export const register: Register = (on, options) => {
       let firstAt: number | null = null
       let stopAt: number | null = null
       const s = next(e)
+      // The loop above this hook owns a failed or abandoned request; this stream only watches it.
+      s.result.catch(() => undefined)
       for await (const c of s) {
         if (c.kind === 'stop') stopAt = await $.clock.now()
         else if (firstAt === null && c.kind !== 'engine') firstAt = await $.clock.now()
@@ -386,7 +388,8 @@ export const register: Register = (on, options) => {
       }
       const result = await s.result
       const speed = result.usage && stopAt !== null ? stepSpeed(sentAt, firstAt, stopAt, result.usage.output_tokens) : null
-      if (speed) await update($, main, m => ({ ...normalize(DEFAULT_MAIN, m), speed }))
+      // The speed is a pane reading: failing to keep it must not fail the request.
+      if (speed) await update($, main, m => ({ ...normalize(DEFAULT_MAIN, m), speed })).catch(() => undefined)
       return result
     }
     const result = yield* next(e)
