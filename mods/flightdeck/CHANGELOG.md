@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.1
+
+- A failure to store the last request's speed no longer fails the request: the main loop still gets its answer.
+- The main loop's request stream marks its result as observed, so a request that errors or is abandoned partway leaves no unhandled rejection behind.
+
 ## 0.5.0
 
 Ports the three changes of upstream scasella/claude-flightdeck 0.4.0.
