@@ -10,9 +10,12 @@ import {
   consultTimeline,
   endConsult,
   fitLegend,
+  fmtResetIn,
+  fmtSpeed,
   gateSummary,
   lanes,
   limitLabel,
+  limitOf,
   logRows,
   momentOf,
   normalizeCard,
@@ -29,6 +32,8 @@ import {
   settleCheck,
   trimRecent,
   startConsult,
+  speedOf,
+  stepSpeed,
   toolDetail,
 } from '../hooks/core'
 import type { Check, LogLine } from '../types'
@@ -308,13 +313,37 @@ test('a source named after an object property is a typed prompt', () => {
   }
 })
 
+test('a request\'s speed: time to its first piece, then output tokens per second to the stop', () => {
+  expect(stepSpeed(1000, 1800, 3800, 120)).toEqual({ ttftMs: 800, tokPerS: 60 })
+  expect(stepSpeed(1000, null, 3800, 120)).toBe(null) // no response arrived
+  expect(stepSpeed(1000, 1800, 1800, 120)?.tokPerS).toBe(null) // nothing to divide by
+  expect(stepSpeed(1000, 1800, 3800, null)?.tokPerS).toBe(null)
+  expect(fmtSpeed({ ttftMs: 800, tokPerS: 60.4 })).toBe('ttft 0.8s · 60 tok/s')
+  expect(fmtSpeed({ ttftMs: 1250, tokPerS: null })).toBe('ttft 1.3s')
+})
+
+test('a stored speed is drawn only when it holds numbers', () => {
+  expect(speedOf({ ttftMs: 800, tokPerS: 60 })).toEqual({ ttftMs: 800, tokPerS: 60 })
+  expect(speedOf({ ttftMs: 800, tokPerS: 'fast' })).toEqual({ ttftMs: 800, tokPerS: null })
+  expect([speedOf(null), speedOf(undefined), speedOf({ ttftMs: 'sk-live-zz9' }), speedOf('ttft 1s')]).toEqual([null, null, null, null])
+})
+
+test('a window keeps its reset time, drawn as the time left', () => {
+  expect(limitOf({ kind: 'five_hour', percentUsed: 19, resetsAt: '1970-01-01T03:10:00.000Z' })).toEqual({ kind: 'five_hour', pct: 19, resetsAt: 11_400_000 })
+  expect(limitOf({ kind: 'seven_day', percentUsed: 3 }).resetsAt).toBe(null)
+  expect(limitOf({ kind: 'spend_limit', percentUsed: 1, resetsAt: 'soon' }).resetsAt).toBe(null)
+  expect([fmtResetIn(11_400_000, 0), fmtResetIn(25 * 60_000 + 5_000, 0), fmtResetIn(4 * 86_400_000 + 2 * 3_600_000, 0)]).toEqual(['3h10m', '25m', '4d2h'])
+  expect([fmtResetIn(null, 0), fmtResetIn(undefined, 0), fmtResetIn(5, 10), fmtResetIn('9999999999999', 0)]).toEqual(['', '', '', ''])
+})
+
 // ---------------------------------------------------------------- drawing
 
 const engine = (on: On) => {
-  mock.clock(on)
+  const clock = mock.clock(on)
   on('ui.status', () => ({ value: undefined }))
   on('turn.start', (_$, e) => ({ turnId: e.turnId }))
   on('turn.complete', () => ({ text: '' }))
+  return clock
 }
 
 const pane = (bodyColumns: number) => ({
@@ -872,4 +901,58 @@ test('a count of one reads singular: 1 check, 1 step, +1 more agent, 1 agent on 
   const mini = await $.ui.mount({ ...pane(80), props: { ...pane(80).props, placement: 'inline' as const }, surface: 'terminal' })
   expect(await mini.find({ text: /^\+1 more agent · / })).toBeDefined()
   await mini.unmount()
+})
+
+test('each rate-limit window shows the time to its reset where the main panel has room', async ($, on) => {
+  engine(on)
+  on('session.measure', (_$, e) => ({ changed: e.changed }))
+  const at = (ms: number) => new Date(ms).toISOString()
+  await $.session.measure({
+    context: { window: 200_000 },
+    rateLimits: [
+      { kind: 'five_hour', percentUsed: 19, resetsAt: at(3 * 3_600_000 + 10 * 60_000) },
+      { kind: 'seven_day', percentUsed: 3, resetsAt: at(4 * 86_400_000 + 2 * 3_600_000) },
+    ],
+    changed: ['rateLimits'],
+  })
+  for (const cols of [64, 120]) {
+    const ui = await $.ui.mount({ ...pane(cols), surface: 'terminal' })
+    expect(await ui.find({ text: /19% ↻3h10m/ })).toBeDefined()
+    expect(await ui.find({ text: /3% ↻4d2h/ })).toBeDefined()
+    await ui.unmount()
+  }
+  const narrow = await $.ui.mount({ ...pane(40), surface: 'terminal' })
+  expect(await narrow.find({ text: /19%/ })).toBeDefined()
+  expect(await narrow.find({ text: /↻/ })).toBeUndefined() // no room: the gauges stay whole
+  await narrow.unmount()
+})
+
+test("the main box shows the last request's time to first token and decode speed", async ($, on) => {
+  const clock = engine(on)
+  // The model beneath: 800 ms to its first words, then 2 s more to stop after 120 tokens.
+  on('turn.step', async function* () {
+    await clock.sleep(800)
+    yield { kind: 'text' as const, index: 0, text: 'hello' }
+    await clock.sleep(2000)
+    const usage = { input_tokens: 10, output_tokens: 120, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, model: 'claude-opus-5-5' }
+    yield { kind: 'stop' as const, stopReason: 'end_turn' as const, usage }
+    return { turnId: 'S1', index: 0, answer: 'hello', toolUses: [], stopReason: 'end_turn' as const, usage }
+  })
+  const before = await $.ui.mount({ ...pane(40), surface: 'terminal' })
+  expect(await before.find({ text: /ttft/ })).toBeUndefined() // nothing measured yet: no line
+  await before.unmount()
+  const s = $.turn.step({ turnId: 'S1', index: 0, model: 'claude-opus-5-5', messageCount: 1 })
+  const first = s.next()
+  await clock.advance(800)
+  expect((await first).value).toEqual({ kind: 'text', index: 0, text: 'hello' })
+  const stop = s.next()
+  await clock.advance(2000)
+  await stop
+  for await (const _ of s) void _
+  await s.result
+  for (const cols of [40, 64, 120]) {
+    const ui = await $.ui.mount({ ...pane(cols), surface: 'terminal' })
+    expect(await ui.find({ text: /ttft 0\.8s · 60 tok\/s/ })).toBeDefined()
+    await ui.unmount()
+  }
 })

@@ -5,7 +5,7 @@
 
 **A Claude Code mod that puts a live agent dashboard in your terminal**: context and cost, an advisor timeline, your permission checks, and your subagents as cards or swimlanes. Its numbers come from session events, and nothing leaves your machine.
 
-This is a hardened port of [scasella/claude-flightdeck](https://github.com/scasella/claude-flightdeck) v0.3.2. It keeps the upstream panels and adds one rule: session text reaches state or the pane only through `scrub()` in [`hooks/hygiene.ts`](hooks/hygiene.ts), and a canary test feeds secrets through each place the port's audit found flightdeck reading text. It keeps derived fields in place of your prompts, your subagents' answers and your tool arguments.
+This is a hardened port of [scasella/claude-flightdeck](https://github.com/scasella/claude-flightdeck) v0.3.2, with the main box and session log changes from upstream v0.4.0. It keeps the upstream panels and adds one rule: session text reaches state or the pane only through `scrub()` in [`hooks/hygiene.ts`](hooks/hygiene.ts), and a canary test feeds secrets through each place the port's audit found flightdeck reading text. It keeps derived fields in place of your prompts, your subagents' answers and your tool arguments.
 
 ![flightdeck demo: the pane tracks vitals, permission checks and a subagent card while Claude works](../../docs/media/flightdeck.gif)
 
@@ -32,7 +32,7 @@ Mods are an early-access Claude Code feature and their API can change between re
 
 | Panel | Shows | From |
 | --- | --- | --- |
-| **main** | model, effort, permission mode, request count; a context gauge with compactions (⟲); cost and the first two rate-limit windows when your plan reports them | `turn.step`, `session.measure`, `session.compact`, `$.session.usage()` |
+| **main** | model, effort, permission mode, request count; a context gauge with compactions (⟲); cost and the first two rate-limit windows when your plan reports them, with the time to each reset (↻) from 56 columns; the last main-loop request's time to first token and output tokens per second | `turn.step`, `session.measure`, `session.compact`, `$.session.usage()` |
 | **architect** | consults on a timeline, whether one is running, how long the last took; optionally the moment of each consult; one line of a subagent architect's advice, masked, picked as [What it keeps](#what-it-keeps) says | a spawn of a matching agent type, or a matching server tool in the assistant's rows |
 | **gate** | one cell per recent permission check: green allowed without asking, blue decided by the auto-mode classifier or you and then run, amber pending, red ✗ denied, dim if made inside a subagent. Totals, and a drill-down per tool family that shows its last 5 checks: the tool name and its program word, file or host, masked | `tool.check`, settled by the `tool.call` around it |
 | **agents** | cards side by side while they fit: the task, type, live context and output tokens, steps, a running clock, `max_tokens` in red. Beyond that, swimlanes on one time axis | `agent.spawn`, `turn.step`, `tool.call`, `turn.complete` |
@@ -173,6 +173,7 @@ The `hygiene · <n> masked` cell and `/flightdeck audit` show the masked count. 
 - **Per-agent context is the latest request's whole input** (uncached + cache read + cache write). It is labelled `ctx`, not cost: the API has no per-agent cost.
 - **Other loops** can't tell a workflow agent from a compaction fork; both are model loops no card claims.
 - **A background agent's first step** can arrive before its card exists, so its usage may show one step late.
+- **Request speed.** `ttft` and `tok/s` are timed at Flightdeck's own `turn.step` hook, so they include everything beneath it: other plugins' hooks, the engine, the network and any retry. `tok/s` divides the reported `output_tokens` (thinking included) by the time from the first piece of response to the stop. Measured, not inferred, but not the API's own figures.
 
 ## Configure
 
