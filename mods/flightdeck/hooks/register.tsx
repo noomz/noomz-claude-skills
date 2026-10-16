@@ -31,6 +31,8 @@ import {
   fmtDuration,
   fmtTimer,
   fmtUsd,
+  fmtResetIn,
+  fmtSpeed,
   plural,
   gateSummary,
   gauge,
@@ -39,6 +41,7 @@ import {
   kTokens,
   lanes,
   limitLabel,
+  limitOf,
   listOf,
   logRows,
   momentOf,
@@ -60,7 +63,9 @@ import {
   recordCheck,
   settleCheck,
   shorten,
+  speedOf,
   startConsult,
+  stepSpeed,
   stepLoop,
   textFields,
   toolDetail,
@@ -279,7 +284,7 @@ export const register: Register = (on, options) => {
         tokens: u.context.tokens ?? null,
         window: u.context.window,
         costUsd: u.cost?.usd ?? null,
-        limits: u.rateLimits.map(r => ({ kind: r.kind, pct: r.percentUsed })),
+        limits: u.rateLimits.map(limitOf),
       }))
     }
     if (cfg.openOnStart) void openPane($).catch(() => undefined)
@@ -368,7 +373,21 @@ export const register: Register = (on, options) => {
         const x = normalize(DEFAULT_MAIN, m)
         return { ...x, model: e.model, effort: String(e.effort ?? x.effort), steps: x.steps + 1 }
       })
-      return yield* next(e)
+      // Time the response as it passes: the first piece that is not the engine's envelope, then the
+      // stop chunk. Two clock reads in the stream and nothing stored until it has ended.
+      const sentAt = await $.clock.now()
+      let firstAt: number | null = null
+      let stopAt: number | null = null
+      const s = next(e)
+      for await (const c of s) {
+        if (c.kind === 'stop') stopAt = await $.clock.now()
+        else if (firstAt === null && c.kind !== 'engine') firstAt = await $.clock.now()
+        yield c
+      }
+      const result = await s.result
+      const speed = result.usage && stopAt !== null ? stepSpeed(sentAt, firstAt, stopAt, result.usage.output_tokens) : null
+      if (speed) await update($, main, m => ({ ...normalize(DEFAULT_MAIN, m), speed }))
+      return result
     }
     const result = yield* next(e)
     const id = e.agentId
@@ -391,7 +410,7 @@ export const register: Register = (on, options) => {
       tokens: e.context.tokens ?? null,
       window: e.context.window,
       costUsd: e.cost?.usd ?? null,
-      limits: e.rateLimits.map(r => ({ kind: r.kind, pct: r.percentUsed })),
+      limits: e.rateLimits.map(limitOf),
     }))
     if (e.changed.includes('context')) await refreshStatus($, cfg)
     return next(e)
@@ -597,6 +616,7 @@ export const register: Register = (on, options) => {
     const isWide = layout === 'wide' || (layout === 'auto' && W >= 110)
     const colW = isWide ? Math.floor((W - 2) / 2) : W
     const modelName = prettyModel(m.model)
+    const speed = speedOf(m.speed)
     const viewed = e.props.view?.agentId ?? null
     const advising = isAdvising(a)
     const running = cards.filter(c => c.status === 'running')
@@ -674,17 +694,21 @@ export const register: Register = (on, options) => {
             {u.costUsd !== null ? <Text color={C.text}>{`${fmtUsd(u.costUsd)}   `}</Text> : null}
             {u.limits.slice(0, 2).map(l => {
               const lg = gauge(l.pct, 5)
+              // The time to each reset where the line has room for it: both windows fit from 56 columns,
+              // so a wide pane's half column (59 at 120) has them and a 40-column pane keeps its gauges.
+              const resetIn = w >= 56 ? fmtResetIn(l.resetsAt, now) : ''
               return (
                 <Text wrap="truncate">
                   <Text dimColor>{`${limitLabel(l.kind)} `}</Text>
                   <Text color={l.pct >= 80 ? C.warn : C.main}>{lg.on}</Text>
                   <Text color={C.faint}>{lg.off}</Text>
-                  <Text dimColor>{` ${Math.round(l.pct)}%  `}</Text>
+                  <Text dimColor>{` ${Math.round(l.pct)}%${resetIn ? ` ↻${resetIn}` : ''}  `}</Text>
                 </Text>
               )
             })}
           </Text>
         ) : null}
+        {speed ? <Text dimColor wrap="truncate">{`last req  ${fmtSpeed(speed)}`}</Text> : null}
       </Box>
     )
 
@@ -959,14 +983,15 @@ export const register: Register = (on, options) => {
     }
 
     // ---- log: whatever rows the other panels leave, 4 to 8
-    const used = 2 + 5 + (showArchitect ? 6 : 0) + 6 + (v.gateOpen ? 5 : 0) + (cards.length > cfg.maxCards ? 3 + Math.min(6, cards.length) : 8) + (expandedCard ? 8 : 0) + (lp.length ? 1 : 0) + 3
+    // The main box's speed line and the gap above the log are a row each.
+    const used = 2 + 5 + (speed ? 1 : 0) + 1 + (showArchitect ? 6 : 0) + 6 + (v.gateOpen ? 5 : 0) + (cards.length > cfg.maxCards ? 3 + Math.min(6, cards.length) : 8) + (expandedCard ? 8 : 0) + (lp.length ? 1 : 0) + 3
     const bodyRows = e.props.scroll?.bodyRows ?? e.viewport?.rows ?? 40
     const nLog = logRows(bodyRows, used)
     const shownLines = (viewed ? lines.filter(l => l.agentId === viewed) : lines).slice(-nLog)
     const colorOf = (l: LogLine) =>
       l.kind === 'error' ? C.warn : l.kind === 'consult' ? C.arch : l.who === 'main' ? C.main : l.who === 'gate' ? C.gate : l.who === 'you' ? C.text : C.agent
     const logPanel = (w: number) => (
-      <Box flexDirection="column" borderStyle="round" borderColor={C.faint} paddingX={1} width={w}>
+      <Box flexDirection="column" borderStyle="round" borderColor={C.faint} paddingX={1} marginTop={1} width={w}>
         <Text dimColor>{viewed ? 'session log · this agent' : 'session log'}</Text>
         {shownLines.length === 0 ? <Text color={C.faint}>nothing yet</Text> : null}
         {shownLines.map(l => (

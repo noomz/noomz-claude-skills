@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.0
+
+Ports the three changes of upstream scasella/claude-flightdeck 0.4.0.
+
+- The main box shows the time left until each rate-limit window resets (`5h ▰▱▱▱▱ 19% ↻3h10m`), from the `resetsAt` the session already reports. Below 56 columns the gauges stay as they were.
+- The main box shows the last main-loop request's time to first token and decode speed (`last req  ttft 0.8s · 60 tok/s`), timed as its response streams past. Only numbers are kept, and the pane draws a stored speed only when it holds numbers.
+- The session log has a one-row gap above it, in both layouts.
+
 ## 0.4.1
 
 - The README shows a recorded demo of the pane in place of a pointer to the upstream screenshots.

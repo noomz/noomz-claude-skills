@@ -46,7 +46,7 @@ export const kept = (raw: unknown, cap: number, derive: (masked: SafeText) => st
 
 // ---------------------------------------------------------------- defaults
 
-export const DEFAULT_MAIN: Main = { model: '', effort: '', mode: '', steps: 0, isRunning: false }
+export const DEFAULT_MAIN: Main = { model: '', effort: '', mode: '', steps: 0, isRunning: false, speed: null }
 export const DEFAULT_USAGE: Usage = {
   pct: null,
   tokens: null,
@@ -257,10 +257,51 @@ export const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' :
 
 export const fmtUsd = (n: number) => (n >= 100 ? `$${Math.round(n)}` : `$${n.toFixed(2)}`)
 
+/**
+ * How fast a request answered, from three readings of the clock: when it was sent, when its first
+ * piece of response arrived, and when it stopped. Null when no response came. `tokPerS` is null
+ * when there is no usage or no time between the first piece and the stop to divide by.
+ */
+export const stepSpeed = (sentAt: number, firstAt: number | null, stopAt: number, outTokens: number | null) => {
+  if (firstAt === null) return null
+  const decodeMs = stopAt - firstAt
+  return {
+    ttftMs: Math.max(0, firstAt - sentAt),
+    tokPerS: outTokens !== null && outTokens > 0 && decodeMs > 0 ? (outTokens * 1000) / decodeMs : null,
+  }
+}
+
+/** A stored speed, or null when what is stored is not one: the pane draws only numbers from state. */
+export const speedOf = (stored: unknown): NonNullable<Main['speed']> | null => {
+  if (!isObject(stored) || !Number.isFinite(stored.ttftMs)) return null
+  const tokPerS = Number.isFinite(stored.tokPerS) ? (stored.tokPerS as number) : null
+  return { ttftMs: stored.ttftMs as number, tokPerS }
+}
+
+/** `ttft 0.8s · 42 tok/s`; the rate is left off when it is unknown. */
+export const fmtSpeed = (s: { ttftMs: number; tokPerS: number | null }) =>
+  `ttft ${(s.ttftMs / 1000).toFixed(1)}s` + (s.tokPerS !== null ? ` · ${Math.round(s.tokPerS)} tok/s` : '')
+
 /** A gauge of `width` cells: ▰ filled, ▱ empty. */
 export const gauge = (pct: number, width: number) => {
   const full = Math.max(0, Math.min(width, Math.round((pct / 100) * width)))
   return { on: '▰'.repeat(full), off: '▱'.repeat(width - full) }
+}
+
+/** A rate-limit reading as the pane keeps it, its ISO reset time turned into ms since the epoch. */
+export const limitOf = (r: { kind: string; percentUsed: number; resetsAt?: string }) => {
+  const at = r.resetsAt ? Date.parse(r.resetsAt) : NaN
+  return { kind: r.kind, pct: r.percentUsed, resetsAt: Number.isFinite(at) ? at : null }
+}
+
+/** Time left until a window resets, its two largest units: `25m`, `3h10m`, `4d2h`; empty when unknown or past. */
+export const fmtResetIn = (resetsAt: unknown, now: number) => {
+  if (typeof resetsAt !== 'number' || !Number.isFinite(resetsAt) || resetsAt <= now) return ''
+  const m = Math.max(1, Math.floor((resetsAt - now) / 60_000))
+  const d = Math.floor(m / 1440)
+  const h = Math.floor((m % 1440) / 60)
+  if (d > 0) return `${d}d${h}h`
+  return h > 0 ? `${h}h${String(m % 60).padStart(2, '0')}m` : `${m}m`
 }
 
 /** A rate-limit window's short name: `five_hour` → `5h`, `seven_day_opus` → `7d opus`. */
