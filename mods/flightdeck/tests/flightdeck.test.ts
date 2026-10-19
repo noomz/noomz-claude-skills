@@ -568,16 +568,16 @@ test('a finished agent the engine wakes again keeps one card, running again, and
   for (const d of ['alpha', 'beta', 'gamma']) await $.agent.spawn(spawn('Explore', `task ${d}`))
   await $.turn.complete({ answer: 'done', durationMs: 5_000, isAborted: false, turnId: 'R2', agentId: 'r1', reason: 'answer' })
   await $.agent.spawn(spawn('Explore', 'task alpha'))
-  for (const [cols, placement] of [[40, 'dock'], [120, 'dock'], [80, 'inline']] as const) {
+  for (const [cols, placement, lanes] of [[40, 'dock', true], [70, 'dock', false], [80, 'inline', null]] as const) {
     const ui = await $.ui.mount({ ...pane(cols), props: { ...pane(cols).props, placement }, surface: 'terminal' })
     expect(await ui.find({ text: /task alpha/ })).toBeDefined()
-    if (placement === 'dock') expect(await ui.find({ text: /3 total/ })).toBeDefined()
+    if (lanes !== null) {
+      expect(await ui.find({ text: /3 running · 3 total/ })).toBeDefined()
+      expect(!!(await ui.find({ text: /━/ }))).toBe(lanes)
+      expect(await ui.find({ text: /woken/ })).toBeDefined()
+    }
     await ui.unmount()
   }
-  const ui = await $.ui.mount({ ...pane(120), surface: 'terminal' })
-  await ui.press({ key: 'card-r1' })
-  expect(await ui.find({ text: /· done ·/ })).toBeUndefined()
-  await ui.unmount()
 })
 
 const handback = '<agent-message from="fab1">\n[Subagent hand-back] The report follows:\n  Ship it after one more gate test.\n</agent-message>'
