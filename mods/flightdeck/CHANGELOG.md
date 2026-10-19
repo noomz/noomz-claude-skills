@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.2
+
+- An agent the engine wakes again under its own id, such as when its background task ends after it handed back, revives its card instead of adding a second one. Two cards with one id drew two clocks under one key, and the engine refused the whole pane, which stayed blank until `/flightdeck reset` or `/clear`. The log shows the wakeup as `woken`.
+
 ## 0.5.1
 
 - A failure to store the last request's speed no longer fails the request: the main loop still gets its answer.

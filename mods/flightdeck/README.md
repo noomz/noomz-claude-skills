@@ -38,7 +38,7 @@ Mods are an early-access Claude Code feature and their API can change between re
 | **agents** | cards side by side while they fit: the task, type, live context and output tokens, steps, a running clock, `max_tokens` in red. Beyond that, swimlanes on one time axis | `agent.spawn`, `turn.step`, `tool.call`, `turn.complete` |
 | **loops** | model loops that match no card: workflow agents, compactions, memory forks | `turn.step` ids no card claims |
 | **receipt** | the running turn, or the last one: duration, agents, edits, errors, cost added; and a dim `hygiene · <n> masked` cell | `turn.start`, `turn.complete` |
-| **log** | each turn you type as `you · new turn · <n> chars`, a turn the engine started as `engine` and a fixed label, spawns, completions, consults, edits, errors and denials; filtered to one agent while you view its transcript | all of the above |
+| **log** | each turn you type as `you · new turn · <n> chars`, a turn the engine started as `engine` and a fixed label, spawns, an agent the engine wakes again (`woken`), completions, consults, edits, errors and denials; filtered to one agent while you view its transcript | all of the above |
 
 Connectors animate only while work flows: a turn is running, an agent is running, or a consult is open. Panels with nothing to show take no room, so a session without subagents shows just the main box and the log.
 
