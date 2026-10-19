@@ -539,6 +539,17 @@ export const register: Register = (on, options) => {
       await consultStarted($, cfg, id, consultVia(e.subagentType))
       return started
     }
+    // The engine wakes a finished agent under its own id, e.g. when its background task ends: revive the card, never draw a second
+    if ((await getCards($)).some(c => c.id === id)) {
+      await update($, agents, list =>
+        listOf<unknown>(list)
+          .map(normalizeCard)
+          .map(c => (c.id === id ? { ...c, status: 'running', endedAt: null, durationMs: null } : c)),
+      )
+      await say($, await whoIs($, id), 'woken', 'info', id)
+      await refreshStatus($, cfg)
+      return started
+    }
     const [type, description] = await Promise.all([scrubAndTally($, e.name ?? e.subagentType, CAP.name), scrubAndTally($, e.description, CAP.description)])
     const card: AgentCard = {
       ...normalizeCard({}),
