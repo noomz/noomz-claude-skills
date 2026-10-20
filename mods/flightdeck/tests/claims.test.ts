@@ -414,6 +414,21 @@ describe("flightdeck's tool.check answer", () => {
     expect((await ask($)).decision).toBe('allow')
   })
 
+  test('a press the gate refuses leaves no grant in memory either, so nothing is allowed that the pane does not show', async ($, on) => {
+    const { values } = gateEngine(on)
+    const id = await refuse($)
+    const ui = await $.ui.mount(pane())
+    await ui.press({ key: 'gate-denied' })
+    await ui.redraw()
+    expect(await ui.find({ key: `ok-${id}` })).toBeDefined()
+    const stored = values.get('flightdeck/gate/') as { value: Gate; version: number }
+    values.set('flightdeck/gate/', { value: { ...stored.value, recent: [] }, version: stored.version + 1 })
+    await ui.press({ key: `ok-${id}` })
+    await ui.unmount()
+    expect([state(values).gate.grants, await ask($)]).toEqual([[], { decision: 'ask' }])
+    expect(state(values).log.map(l => l.text).at(-1)).toBe('not approvable now · Bash → git')
+  })
+
   const ends: [label: string, end: ($: Engine) => Promise<unknown>][] = [
     ['session.start', $ => $.session.start({ cwd: '/w', surface: null, isInteractive: false })],
     ['/flightdeck reset', $ => $.command.run({ command: 'flightdeck', args: 'reset' } as never)],

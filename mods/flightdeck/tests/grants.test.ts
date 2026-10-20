@@ -2,7 +2,7 @@ import type { AgentStatus } from 'claude-code'
 import { describe, expect, test } from 'claude-code/testing'
 
 import { DEFAULT_GATE, recordCheck, settleCheck } from '../hooks/core'
-import { approve, askSubject, clearGrants, DENIED_ROWS, denialRows, grantMemory, grantedVerdict, identityOf, isPlainAsk, markRetried, retryPlan, retryText, unmarkRetried, useGrant } from '../hooks/grants'
+import { approve, askSubject, clearGrants, dropGrant, DENIED_ROWS, denialRows, grantMemory, grantedVerdict, identityOf, isPlainAsk, markRetried, retryPlan, retryText, unmarkRetried, useGrant } from '../hooks/grants'
 import type { DenialRow, RetryPlan, Subject } from '../hooks/grants'
 import { scrub } from '../hooks/hygiene'
 import type { Check, Gate, Refuser } from '../types'
@@ -22,7 +22,7 @@ const granted = () => {
   const subject = identityOf(call.tool, call.input) as Subject
   memory.hold('d1', subject)
   expect(memory.settle('d1', false)).toBe(true)
-  expect(memory.approve('d1').isApproved).toBe(true)
+  expect(memory.approve('d1', memory.epoch)).toBe(true)
   return memory
 }
 
@@ -80,7 +80,7 @@ describe('a grant never changes a verdict but a plain ask outside plan mode', ()
     const memory = grantMemory()
     memory.hold('m1', identityOf('mcp__s__post', { channel: 'c', description: 'hello' }) as Subject)
     memory.settle('m1', false)
-    memory.approve('m1')
+    memory.approve('m1', memory.epoch)
     expect(answer(memory, { decision: 'ask' }, 'mcp__s__post', { channel: 'c', description: 'hello' }).decision).toBe('allow')
     expect(answer(memory, { decision: 'ask' }, 'mcp__s__post', { channel: 'c', description: 'rm -rf' })).toEqual({ decision: 'ask' })
   })
@@ -123,18 +123,18 @@ describe('the memory', () => {
     const memory = grantMemory()
     memory.hold('c1', identityOf(call.tool, call.input) as Subject)
     expect(memory.settle('c1', true)).toBe(false)
-    expect(memory.approve('c1').isApproved).toBe(false)
+    expect(memory.approve('c1', memory.epoch)).toBe(false)
   })
 
   test('a refusal with no held identity cannot be approved', () => {
     const memory = grantMemory()
     expect(memory.settle('c2', false)).toBe(false)
-    expect(memory.approve('c2').isApproved).toBe(false)
+    expect(memory.approve('c2', memory.epoch)).toBe(false)
   })
 
   test('approving twice keeps one grant', () => {
     const memory = granted()
-    expect(memory.approve('d1')).toEqual({ isApproved: true, evicted: [] })
+    expect(memory.approve('d1', memory.epoch)).toBe(true)
     expect(memory.allows(identityOf(call.tool, call.input) as Subject)).toBe('d1')
   })
 
@@ -143,23 +143,30 @@ describe('the memory', () => {
     const subject = identityOf(call.tool, call.input) as Subject
     memory.forgetGrants()
     expect(memory.allows(subject)).toBeNull()
-    expect(memory.approve('d1').isApproved).toBe(true)
+    expect(memory.approve('d1', memory.epoch)).toBe(true)
     const before = memory.epoch
     memory.reset()
-    expect([memory.allows(subject), memory.approve('d1').isApproved, memory.epoch === before]).toEqual([null, false, false])
+    expect([memory.allows(subject), memory.approve('d1', memory.epoch), memory.epoch === before]).toEqual([null, false, false])
     expect(answer(memory, { decision: 'ask' }, call.tool, call.input)).toEqual({ decision: 'ask' })
   })
 
-  test('past 32 grants the oldest is dropped and named', () => {
+  test('past 32 grants the oldest is dropped', () => {
     const memory = grantMemory()
     const subject = (i: number) => identityOf('Bash', { command: `echo ${i}` }) as Subject
-    const evicted = Array.from({ length: 33 }, (_, i) => {
+    for (let i = 0; i < 33; i++) {
       memory.hold(`d${i}`, subject(i))
       memory.settle(`d${i}`, false)
-      return memory.approve(`d${i}`).evicted
-    })
-    expect([evicted.slice(0, 32).flat(), evicted[32]]).toEqual([[], ['d0']])
+      memory.approve(`d${i}`, memory.epoch)
+    }
     expect([memory.allows(subject(0)), memory.allows(subject(1))]).toEqual([null, 'd1'])
+  })
+
+  test('an approval for an earlier epoch is not granted', () => {
+    const memory = grantMemory()
+    memory.hold('d1', identityOf(call.tool, call.input) as Subject)
+    memory.settle('d1', false)
+    expect([memory.holds('d1', 'stale'), memory.approve('d1', 'stale')]).toEqual([false, false])
+    expect(memory.allows(identityOf(call.tool, call.input) as Subject)).toBeNull()
   })
 })
 
@@ -177,9 +184,9 @@ describe('a refusal in the denied list', () => {
   test('a plain ask refused with its identity held is approvable; approving it records one grant, twice still one', () => {
     const g = refusedGate('d1')
     expect(rowOf(g).status).toBe('approvable')
-    const once = approve(g, 'd1', 5, EPOCH, [])
+    const once = approve(g, 'd1', 5, EPOCH)
     expect([rowOf(once).status, once.grants]).toEqual(['approved', [{ denialId: 'd1', bucket: 'shell', detail: DETAIL, at: 5, uses: 0, epoch: EPOCH }]])
-    expect(approve(once, 'd1', 6, EPOCH, [])).toBe(once)
+    expect(approve(once, 'd1', 6, EPOCH)).toBe(once)
   })
 
   const blocked: [label: string, g: Gate][] = [
@@ -193,19 +200,19 @@ describe('a refusal in the denied list', () => {
   for (const [label, g] of blocked) {
     test(`${label} is blocked, and approve leaves the gate as it was`, () => {
       expect(rowOf(g).status).toBe('blocked')
-      expect(approve(g, 'd1', 5, EPOCH, [])).toBe(g)
+      expect(approve(g, 'd1', 5, EPOCH)).toBe(g)
     })
   }
 
   test('a refusal or a grant from another epoch reads as expired and cannot be approved or retried', () => {
-    const g = approve(refusedGate('d1'), 'd1', 5, EPOCH, [])
+    const g = approve(refusedGate('d1'), 'd1', 5, EPOCH)
     expect(rowOf(g, 'e2').status).toBe('expired')
-    expect(approve(refusedGate('d1'), 'd1', 5, 'e2', [])).toEqual(refusedGate('d1'))
+    expect(approve(refusedGate('d1'), 'd1', 5, 'e2')).toEqual(refusedGate('d1'))
     expect(markRetried(g, 'd1', 9, 'e2')).toBe(g)
   })
 
   test('a retry is marked once: the second press finds it retried', () => {
-    const g = approve(refusedGate('d1'), 'd1', 5, EPOCH, [])
+    const g = approve(refusedGate('d1'), 'd1', 5, EPOCH)
     const once = markRetried(g, 'd1', 9, EPOCH)
     expect(rowOf(once).status).toBe('retried')
     expect(markRetried(once, 'd1', 10, EPOCH)).toBe(once)
@@ -213,30 +220,51 @@ describe('a refusal in the denied list', () => {
   })
 
   test('a failed delivery unmarks only its own press, never a later one', () => {
-    const g0 = approve(refusedGate('d1'), 'd1', 5, EPOCH, [])
+    const g0 = approve(refusedGate('d1'), 'd1', 5, EPOCH)
     const later = markRetried(g0, 'd1', 9, EPOCH)
     expect(unmarkRetried(later, 'd1', 7)).toBe(later)
     expect(unmarkRetried(later, 'd1', 9)).toEqual(g0)
   })
 
-  test('a grant the memory evicted is dropped, uses count up, and clearing empties them', () => {
-    let g = approve(refusedGate('d1'), 'd1', 5, EPOCH, [])
+  test('uses count up, a dropped grant is gone, and clearing empties them', () => {
+    let g = approve(refusedGate('d1'), 'd1', 5, EPOCH)
     g = useGrant(useGrant(g, 'd1'), 'd1')
     expect(g.grants.map(x => x.uses)).toEqual([2])
-    const two = settleCheck(recordCheck(g, { id: 'd2', bucket: 'shell', detail: DETAIL, agentId: null, at: 2, verdict: 'ask', approvable: true }), 'd2', { didRun: false, isHeld: true, epoch: EPOCH, refuser: 'person' })
-    expect(approve(two, 'd2', 6, EPOCH, ['d1']).grants.map(x => x.denialId)).toEqual(['d2'])
-    expect(clearGrants(g).grants).toEqual([])
+    expect([dropGrant(g, 'd1').grants, clearGrants(g).grants]).toEqual([[], []])
+  })
+
+  test('the memory and the gate keep the same grants, so every grant the memory acts on is drawn', () => {
+    const memory = grantMemory()
+    let g: Gate = DEFAULT_GATE
+    const commands = Array.from({ length: 45 }, (_, i) => `echo ${i % 30}`)
+    commands.forEach((command, i) => {
+      const id = `d${i}`
+      memory.hold(id, identityOf('Bash', { command }) as Subject)
+      memory.settle(id, false)
+      const ask: Check = { id, bucket: 'shell', detail: DETAIL, agentId: null, at: i, verdict: 'ask', approvable: true }
+      g = settleCheck(recordCheck(g, ask), id, { didRun: false, isHeld: true, epoch: memory.epoch, refuser: 'person' })
+      const after = approve(g, id, i, memory.epoch)
+      if (after !== g) memory.approve(id, memory.epoch)
+      g = after
+    })
+    const unique = [...new Set(commands)]
+    const allowed = unique.map(command => memory.allows(identityOf('Bash', { command }) as Subject)).filter(id => id !== null)
+    const drawn = new Set(g.grants.map(x => x.denialId))
+    expect(allowed.length).toBeGreaterThan(0)
+    expect(allowed.filter(id => !drawn.has(id))).toEqual([])
+    memory.forgetGrants()
+    expect(unique.some(command => memory.allows(identityOf('Bash', { command }) as Subject) !== null)).toBe(false)
   })
 })
 
 describe('a retry', () => {
-  const approved = (agentId: string | null) => rowOf(approve(refusedGate('d1', { agentId }), 'd1', 5, EPOCH, []))
+  const approved = (agentId: string | null) => rowOf(approve(refusedGate('d1', { agentId }), 'd1', 5, EPOCH))
   type Plan = [label: string, row: DenialRow, status: AgentStatus | undefined, plan: RetryPlan]
   const plans: Plan[] = [
     ['not approved', rowOf(refusedGate('d1')), undefined, { kind: 'none', why: 'not approved' }],
     ['blocked', rowOf(refusedGate('d1', { isPlain: false })), undefined, { kind: 'none', why: 'not approved' }],
-    ['expired', rowOf(approve(refusedGate('d1'), 'd1', 5, EPOCH, []), 'e2'), undefined, { kind: 'none', why: 'not approved' }],
-    ['already retried', rowOf(markRetried(approve(refusedGate('d1'), 'd1', 5, EPOCH, []), 'd1', 9, EPOCH)), undefined, { kind: 'none', why: 'already retried' }],
+    ['expired', rowOf(approve(refusedGate('d1'), 'd1', 5, EPOCH), 'e2'), undefined, { kind: 'none', why: 'not approved' }],
+    ['already retried', rowOf(markRetried(approve(refusedGate('d1'), 'd1', 5, EPOCH), 'd1', 9, EPOCH)), undefined, { kind: 'none', why: 'already retried' }],
     ['the main loop', approved(null), undefined, { kind: 'main' }],
     ['an agent not listed', approved('a1'), undefined, { kind: 'none', why: 'agent gone' }],
     ...(['pending', 'running', 'waiting', 'idle', 'completed', 'failed', 'killed'] as const).map((s): Plan => {

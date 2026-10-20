@@ -73,14 +73,18 @@ export const denialRows = (g: Gate, n: number, epoch: string): DenialRow[] =>
     .reverse()
     .map(c => rowOf(g, c, epoch))
 
-const GRANT_ROWS_MAX = 32
+// The memory and the gate keep the same grants, one per approved refusal, in approval order under this
+// one cap, so both drop the same oldest one and every grant the memory acts on is drawn and forgettable.
+const GRANTS_MAX = 32
 
-export const approve = (g: Gate, id: string, at: number, epoch: string, evicted: readonly string[]): Gate => {
+export const approve = (g: Gate, id: string, at: number, epoch: string): Gate => {
   const c = g.recent.find((r): r is Denial => r.id === id && r.verdict === 'deny')
   if (!c || rowOf(g, c, epoch).status !== 'approvable') return g
   const grant: Grant = { denialId: id, bucket: c.bucket, detail: c.detail, at, uses: 0, epoch }
-  return { ...g, grants: [...g.grants.filter(x => !evicted.includes(x.denialId)), grant].slice(-GRANT_ROWS_MAX) }
+  return { ...g, grants: [...g.grants.filter(x => x.epoch === epoch), grant].slice(-GRANTS_MAX) }
 }
+
+export const dropGrant = (g: Gate, id: string): Gate => ({ ...g, grants: g.grants.filter(x => x.denialId !== id) })
 
 export const markRetried = (g: Gate, id: string, at: number, epoch: string): Gate => {
   const c = g.recent.find((r): r is Denial => r.id === id && r.verdict === 'deny')
@@ -119,7 +123,6 @@ export const retryPlan = (row: DenialRow, status: AgentStatus | undefined): Retr
 
 const PENDING_MAX = 64
 const REFUSED_MAX = 16
-const GRANTS_MAX = 32
 
 const capped = <K, V>(m: Map<K, V>, max: number) => {
   while (m.size > max) m.delete(m.keys().next().value as K)
@@ -130,7 +133,7 @@ const newEpoch = () => Math.random().toString(36).slice(2, 10)
 export const grantMemory = () => {
   const pending = new Map<string, Subject>()
   const refused = new Map<string, Subject>()
-  const grants = new Map<Subject, string[]>()
+  const grants = new Map<string, Subject>()
   let epoch = newEpoch()
   return {
     get epoch() {
@@ -149,21 +152,19 @@ export const grantMemory = () => {
       return true
     },
     allows(subject: Subject): string | null {
-      return grants.get(subject)?.at(-1) ?? null
+      let id: string | null = null
+      for (const [denialId, s] of grants) if (s === subject) id = denialId
+      return id
     },
-    approve(denialId: string): { isApproved: boolean; evicted: string[] } {
+    holds(denialId: string, at: string): boolean {
+      return at === epoch && refused.has(denialId)
+    },
+    approve(denialId: string, at: string): boolean {
       const subject = refused.get(denialId)
-      if (subject === undefined) return { isApproved: false, evicted: [] }
-      const ids = grants.get(subject) ?? []
-      grants.delete(subject)
-      grants.set(subject, ids.includes(denialId) ? ids : [...ids, denialId])
-      const evicted: string[] = []
-      while (grants.size > GRANTS_MAX) {
-        const oldest = grants.keys().next().value as Subject
-        evicted.push(...(grants.get(oldest) ?? []))
-        grants.delete(oldest)
-      }
-      return { isApproved: true, evicted }
+      if (at !== epoch || subject === undefined) return false
+      if (!grants.has(denialId)) grants.set(denialId, subject)
+      capped(grants, GRANTS_MAX)
+      return true
     },
     forgetGrants() {
       grants.clear()

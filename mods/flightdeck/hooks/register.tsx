@@ -75,7 +75,7 @@ import {
   toolDetail,
 } from './core'
 import type { Config, Panel, Settle } from './core'
-import { approve, askSubject, clearGrants, DENIED_ROWS, denialRows, grantMemory, grantedVerdict, markRetried, retryPlan, retryText, unmarkRetried, useGrant } from './grants'
+import { approve, askSubject, clearGrants, dropGrant, DENIED_ROWS, denialRows, grantMemory, grantedVerdict, markRetried, retryPlan, retryText, unmarkRetried, useGrant } from './grants'
 import type { DenialRow, GrantMemory } from './grants'
 
 const PANE = 'flightdeck'
@@ -285,11 +285,24 @@ async function settleCalls($: EngineInterface, memory: GrantMemory, ids: readonl
 }
 
 async function approveDenial($: EngineInterface, memory: GrantMemory, row: DenialRow) {
-  const granted = memory.approve(row.check.id)
-  if (!granted.isApproved) return say($, 'gate', `cannot approve, call forgotten · ${row.check.detail}`, 'error')
+  const { id, detail } = row.check
+  const epoch = memory.epoch
+  const forgotten = () => say($, 'gate', `cannot approve, call forgotten · ${detail}`, 'error')
+  if (!memory.holds(id, epoch)) return forgotten()
   const at = await $.clock.now()
-  await update($, gate, g => approve(normalizeGate(g), row.check.id, at, memory.epoch, granted.evicted))
-  await say($, 'gate', `approved for this session · ${row.check.detail}`)
+  let isShown = false
+  await update($, gate, g => {
+    const before = normalizeGate(g)
+    const after = approve(before, id, at, epoch)
+    isShown = after !== before
+    return after
+  })
+  if (!isShown) return say($, 'gate', `not approvable now · ${detail}`, 'error')
+  if (!memory.approve(id, epoch)) {
+    await update($, gate, g => dropGrant(normalizeGate(g), id))
+    return forgotten()
+  }
+  await say($, 'gate', `approved for this session · ${detail}`)
 }
 
 async function retryDenial($: EngineInterface, memory: GrantMemory, row: DenialRow) {
