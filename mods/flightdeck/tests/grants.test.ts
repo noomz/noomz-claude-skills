@@ -2,7 +2,7 @@ import type { AgentStatus } from 'claude-code'
 import { describe, expect, test } from 'claude-code/testing'
 
 import { DEFAULT_GATE, recordCheck, settleCheck } from '../hooks/core'
-import { approve, askSubject, clearGrants, DENIED_ROWS, denialRows, grantMemory, grantedVerdict, identityOf, isPlainAsk, markRetried, retryPlan, retryText, useGrant } from '../hooks/grants'
+import { approve, askSubject, clearGrants, DENIED_ROWS, denialRows, grantMemory, grantedVerdict, identityOf, isPlainAsk, markRetried, retryPlan, retryText, unmarkRetried, useGrant } from '../hooks/grants'
 import type { DenialRow, RetryPlan, Subject } from '../hooks/grants'
 import { scrub } from '../hooks/hygiene'
 import type { Check, Gate, Refuser } from '../types'
@@ -210,6 +210,13 @@ describe('a refusal in the denied list', () => {
     expect(rowOf(once).status).toBe('retried')
     expect(markRetried(once, 'd1', 10, EPOCH)).toBe(once)
     expect(markRetried(refusedGate('d1'), 'd1', 9, EPOCH)).toEqual(refusedGate('d1'))
+  })
+
+  test('a failed delivery unmarks only its own press, never a later one', () => {
+    const g0 = approve(refusedGate('d1'), 'd1', 5, EPOCH, [])
+    const later = markRetried(g0, 'd1', 9, EPOCH)
+    expect(unmarkRetried(later, 'd1', 7)).toBe(later)
+    expect(unmarkRetried(later, 'd1', 9)).toEqual(g0)
   })
 
   test('a grant the memory evicted is dropped, uses count up, and clearing empties them', () => {

@@ -88,6 +88,12 @@ export const markRetried = (g: Gate, id: string, at: number, epoch: string): Gat
   return { ...g, recent: g.recent.map(r => (r === c ? { ...c, retriedAt: at } : r)) }
 }
 
+export const unmarkRetried = (g: Gate, id: string, at: number): Gate => {
+  const c = g.recent.find((r): r is Denial => r.id === id && r.verdict === 'deny')
+  if (!c || c.by !== 'refused' || c.retriedAt !== at) return g
+  return { ...g, recent: g.recent.map(r => (r === c ? { ...c, retriedAt: null } : r)) }
+}
+
 export const useGrant = (g: Gate, denialId: string): Gate => ({
   ...g,
   grants: g.grants.map(x => (x.denialId === denialId ? { ...x, uses: x.uses + 1 } : x)),

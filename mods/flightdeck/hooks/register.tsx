@@ -75,7 +75,7 @@ import {
   toolDetail,
 } from './core'
 import type { Config, Panel, Settle } from './core'
-import { approve, askSubject, clearGrants, DENIED_ROWS, denialRows, grantMemory, grantedVerdict, markRetried, retryPlan, retryText, useGrant } from './grants'
+import { approve, askSubject, clearGrants, DENIED_ROWS, denialRows, grantMemory, grantedVerdict, markRetried, retryPlan, retryText, unmarkRetried, useGrant } from './grants'
 import type { DenialRow, GrantMemory } from './grants'
 
 const PANE = 'flightdeck'
@@ -306,14 +306,18 @@ async function retryDenial($: EngineInterface, memory: GrantMemory, row: DenialR
     return after
   })
   if (!isMarked) return
+  const undo = async (why: string) => {
+    await update($, gate, g => unmarkRetried(normalizeGate(g), row.check.id, at))
+    await say($, 'gate', `retry not delivered, press again · ${why}`, 'error', row.check.agentId)
+  }
   const text = retryText(row.check.detail)
   if (plan.kind === 'main') {
     // It resolves only when that turn starts; a press must return well before.
-    void $.prompt.submit({ text }).catch(() => undefined)
+    void $.prompt.submit({ text }).catch(() => undo(row.check.detail))
     return say($, 'gate', `retry queued for main · ${row.check.detail}`)
   }
-  const sent = await $.session.send({ to: { agentId: plan.agentId }, text })
-  if (!sent.isDelivered) return say($, 'gate', `retry not delivered · ${sent.reason}`, 'error', plan.agentId)
+  const sent = await $.session.send({ to: { agentId: plan.agentId }, text }).catch(() => ({ isDelivered: false as const, reason: 'send failed' }))
+  if (!sent.isDelivered) return undo(sent.reason)
   await say($, 'gate', `${plan.resumes ? 'retry resumes agent' : 'retry sent'} · ${row.check.detail}`, 'info', plan.agentId)
 }
 

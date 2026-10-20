@@ -467,6 +467,48 @@ describe('a retry', () => {
   })
 })
 
+const retryShown = async ($: Engine, id: string) => {
+  const ui = await $.ui.mount(pane())
+  if (!(await ui.find({ key: 'gate-denied', text: /▾/ }))) await ui.press({ key: 'gate-denied' })
+  await ui.redraw()
+  const has = Boolean(await ui.find({ key: `re-${id}` }))
+  await ui.unmount()
+  return has
+}
+
+describe('a retry that is not delivered', () => {
+  test('to the main loop is unmarked and logged, so a second press submits again', async ($, on) => {
+    const { values } = gateEngine(on)
+    const sent: string[] = []
+    on('prompt.submit', (_$, e) => {
+      sent.push(e.text)
+      if (sent.length === 1) throw new Error('queue full')
+      return { text: e.text }
+    })
+    const id = await refuse($)
+    await pressDenied($, `ok-${id}`)
+    await pressDenied($, `re-${id}`)
+    const lastLog = () => state(values).log.map(l => l.text).at(-1)
+    for (let i = 0; i < 200 && !lastLog()?.startsWith('retry not delivered'); i++) await Promise.resolve()
+    expect(lastLog()).toBe('retry not delivered, press again · Bash → git')
+    expect(await retryShown($, id)).toBe(true)
+    await pressDenied($, `re-${id}`)
+    expect([sent.length, await retryShown($, id)]).toEqual([2, false])
+  })
+
+  test('to a subagent is unmarked and logged with the reason', async ($, on) => {
+    const { values } = gateEngine(on)
+    on('agent.list', () => ({ value: [{ id: 'ra1', description: 'go', type: 'general-purpose', status: 'running' }] }) as never)
+    on('session.send', () => ({ isDelivered: false, reason: 'recipient gone' }))
+    const id = await refuse($, PUSH, 'ra1')
+    await pressDenied($, `ok-${id}`)
+    await pressDenied($, `re-${id}`)
+    expect(state(values).log.map(l => l.text).at(-1)).toBe('retry not delivered, press again · recipient gone')
+    expect(state(values).gate.recent.find(c => c.id === id)).toMatchObject({ retriedAt: null })
+    expect(await retryShown($, id)).toBe(true)
+  })
+})
+
 const PERSON_NO =
   "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed."
 const DONT_ASK = "Permission to use Bash has been denied because Claude Code is running in don't ask mode."
