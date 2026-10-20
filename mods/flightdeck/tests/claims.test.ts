@@ -2,6 +2,7 @@ import type { On } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 
 import { DEFAULT_GATE, DEFAULT_MAIN, DEFAULT_TURN, DEFAULT_USAGE, adviceLine, refuserOf, consultVia, toolDetail } from '../hooks/core'
+import { CAP, subjectLine } from '../hooks/core'
 import { identityOf, markOf } from '../hooks/grants'
 import type { Subject } from '../hooks/grants'
 import { scrub } from '../hooks/hygiene'
@@ -492,16 +493,33 @@ describe('what an approve press acts on', () => {
 
   test('two refusals of one program read apart in the denied list, by the masked command and its mark', async ($, on) => {
     gateEngine(on)
-    await refuse($)
+    const first = await refuse($)
     await refuse($, `${PUSH} --force`)
     const mark = (command: string) => markOf(identityOf('Bash', { command }) as Subject)
     expect(mark(PUSH)).not.toBe(mark(`${PUSH} --force`))
     const ui = await $.ui.mount(pane())
     await ui.press({ key: 'gate-denied' })
     await ui.redraw()
-    for (const command of [PUSH, `${PUSH} --force`]) expect(await ui.find({ text: `Bash ${mark(command)} → ${command}` }), command).toBeDefined()
-    expect(await ui.findAll({ text: /^Bash → git$/ })).toHaveLength(0)
+    const line = (command: string) => ui.find({ text: `  Bash ${mark(command)} → ${command}` })
+    expect(await line(`${PUSH} --force`), 'the newest refusal, which a press arms').toBeDefined()
+    expect(await line(PUSH), 'one subject line at a time').toBeUndefined()
+    await ui.press({ key: `ok-${first}` })
+    await ui.redraw()
+    expect(await line(PUSH), 'arming the older row shows its own line').toBeDefined()
+    expect(await line(`${PUSH} --force`)).toBeUndefined()
     await ui.unmount()
+  })
+})
+
+describe('a subject line', () => {
+  test('keeps both ends of a long command inside its cap, and masks a secret the cut falls beside', () => {
+    const command = `PGPASSWORD=hunter2hunter2 psql -h db ${'/very/long/segment'.repeat(12)}/dump-final.sql`
+    const line = subjectLine('Bash', { command }, '#ab12').text
+    expect(line.length).toBeLessThanOrEqual(CAP.subject)
+    expect(line.startsWith('Bash #ab12 → PGPASSWORD=[masked]'), line).toBe(true)
+    expect(line.endsWith('/dump-final.sql'), line).toBe(true)
+    expect(line).toContain('...')
+    expect(line).not.toContain('hunter2')
   })
 })
 

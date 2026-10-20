@@ -403,7 +403,10 @@ export const subjectLine = (tool: string, input: unknown, mark: string): Scrubbe
   const raw = str('command') || str('file_path') || str('notebook_path') || search || str('url') || JSON.stringify(i)
   const name = toolName(tool)
   const head = `${name.text} ${mark}`
-  const shown = kept(raw, Math.max(1, CAP.subject - head.length - FRAME.length))
+  const room = Math.max(5, CAP.subject - head.length - FRAME.length)
+  // Cut the masked text in the middle: a file name or a command's last argument tells two calls apart.
+  const middle = (s: string) => (s.length <= room ? s : `${s.slice(0, Math.ceil((room - 3) / 2))}...${s.slice(s.length - Math.floor((room - 3) / 2))}`)
+  const shown = kept(raw, room, middle)
   return { text: `${head}${FRAME}${shown.text}` as SafeText, masked: name.masked + shown.masked }
 }
 

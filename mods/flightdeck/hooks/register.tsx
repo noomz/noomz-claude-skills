@@ -914,6 +914,8 @@ export const register: Register = (on, options) => {
       const armed = rows.find(r => r.status === 'approvable' && r.check.id === v.armed)
       const approveKey = armed ?? rows.find(r => r.status === 'approvable')
       const newestRetryable = rows.find(r => r.status === 'approved')
+      // One wrapped subject line, under only the row a press would act on, bounds the list's height.
+      const lineRow = approveKey ?? rows.find(r => r.status === 'approved' || r.status === 'retried')
       const live = g.grants.filter(x => x.epoch === memory.epoch).length
       return (
         <Box flexDirection="column">
@@ -922,23 +924,26 @@ export const register: Register = (on, options) => {
             const card = r.check.agentId === null ? undefined : cards.find(c => c.id === r.check.agentId)
             const where = r.check.agentId === null ? '' : ` · ${card ? shorten(cardTitle(card), 12) : 'agent'}`
             const label = rowLabel(r)
-            const line = r.status === 'approvable' || r.status === 'approved' || r.status === 'retried' ? memory.lineOf(r.check.id) : null
+            const line = r === lineRow ? memory.lineOf(r.check.id) : null
             return (
-              <Box columnGap={1}>
-                <Box flexShrink={1}>
-                  <Text wrap="truncate">
-                    <Text color={C.warn}>✗ </Text>
-                    <Text color={C.dim}>{`${shorten(causeLabel(r.check), 18)} `}</Text>
-                    <Text dimColor={r.check.agentId !== null}>{`${line ?? r.check.detail}${where}`}</Text>
-                  </Text>
+              <Box key={`row-${r.check.id}`} flexDirection="column">
+                <Box columnGap={1}>
+                  <Box flexShrink={1}>
+                    <Text wrap="truncate">
+                      <Text color={C.warn}>✗ </Text>
+                      <Text color={C.dim}>{`${shorten(causeLabel(r.check), 18)} `}</Text>
+                      <Text dimColor={r.check.agentId !== null}>{`${r.check.detail}${where}`}</Text>
+                    </Text>
+                  </Box>
+                  {label ? <Text color={r.status === 'expired' ? C.faint : C.main}>{label}</Text> : null}
+                  {r.status === 'approvable' ? (
+                    <Button key={`ok-${r.check.id}`} plain label={r === armed ? 'confirm' : 'approve'} hotkey={r === approveKey ? 'a' : undefined} onPress={() => pressApprove($, memory, r)} />
+                  ) : null}
+                  {r.status === 'approved' ? (
+                    <Button key={`re-${r.check.id}`} plain label="retry" hotkey={r === newestRetryable ? 'r' : undefined} onPress={() => retryDenial($, memory, r)} />
+                  ) : null}
                 </Box>
-                {label ? <Text color={r.status === 'expired' ? C.faint : C.main}>{label}</Text> : null}
-                {r.status === 'approvable' ? (
-                  <Button key={`ok-${r.check.id}`} plain label={r === armed ? 'confirm' : 'approve'} hotkey={r === approveKey ? 'a' : undefined} onPress={() => pressApprove($, memory, r)} />
-                ) : null}
-                {r.status === 'approved' ? (
-                  <Button key={`re-${r.check.id}`} plain label="retry" hotkey={r === newestRetryable ? 'r' : undefined} onPress={() => retryDenial($, memory, r)} />
-                ) : null}
+                {line ? <Text wrap="wrap" color={C.main}>{`  ${line}`}</Text> : null}
               </Box>
             )
           })}
@@ -1171,7 +1176,7 @@ export const register: Register = (on, options) => {
 
     // ---- log: whatever rows the other panels leave, 4 to 8
     // The main box's speed line and the gap above the log are a row each.
-    const used = 2 + 5 + (speed ? 1 : 0) + 1 + (showArchitect ? 6 : 0) + 6 + (v.gateOpen ? 5 : 0) + (cards.length > cfg.maxCards ? 3 + Math.min(6, cards.length) : 8) + (expandedCard ? 9 : 0) + (lp.length ? 1 : 0) + 3
+    const used = 2 + 5 + (speed ? 1 : 0) + 1 + (showArchitect ? 6 : 0) + 6 + (v.gateOpen === 'denied' ? 8 : v.gateOpen ? 5 : 0) + (cards.length > cfg.maxCards ? 3 + Math.min(6, cards.length) : 8) + (expandedCard ? 9 : 0) + (lp.length ? 1 : 0) + 3
     const bodyRows = e.props.scroll?.bodyRows ?? e.viewport?.rows ?? 40
     const nLog = logRows(bodyRows, used)
     const shownLines = (viewed ? lines.filter(l => l.agentId === viewed) : lines).slice(-nLog)
