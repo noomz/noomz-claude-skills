@@ -23,6 +23,9 @@ const CAPS: [path: RegExp, cap: number][] = [
   [/^agents\.\d+\.type$/, 40],
   [/^agents\.\d+\.tools\.\d+\.text$/, 64],
   [/^gate\.recent\.\d+\.detail$/, 64],
+  [/^gate\.recent\.\d+\.cause$/, 40],
+  [/^gate\.grants\.\d+\.detail$/, 64],
+  [/^view\.viewDeny$/, 64],
   [/^architect\.lastAdvice$/, 160],
   [/^architect\.consults\.\d+\.via$/, 40],
   [/^roster\.architectTypes\.\d+$/, 40],
@@ -42,8 +45,20 @@ const spawnArgs = (n: number, subagentType: string, description: string, name?: 
   fork: false,
 })
 
+/** What a retry sent: the main loop's prompt and the agent's message. */
+const RETRIES: string[] = []
+
+const pane = (surface: (typeof SURFACES)[number], placement: 'dock' | 'inline' = 'dock') => ({
+  plugin: 'flightdeck',
+  component: 'Pane' as const,
+  requestId: 'flightdeck',
+  surface,
+  props: { title: 'Flightdeck', isFocused: true, bodyColumns: 120, placement, scroll: { offset: 0, bodyRows: 70 }, view: {} },
+})
+
 async function seed($: Engine, on: On) {
   const values = stateStore(on)
+  RETRIES.length = 0
   mock.clock(on)
   on('ui.status', () => ({ value: undefined }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
@@ -51,8 +66,21 @@ async function seed($: Engine, on: On) {
   on('turn.complete', () => ({ text: '' }))
   on('agent.offer', () => ({ isOffered: true }) as never)
   on('ui.view', () => ({ value: { deny: `no agent holds password=hunter2 ${ESC}[31m` } }))
-  on('tool.check', () => ({ decision: 'deny' as const, reason: 'rule' }) as never)
-  on('tool.call', () => ({ result: { stdout: '', stderr: 'boom', interrupted: false }, text: 'boom', isError: true }) as never)
+  // k9 and k10 are plain asks that are then refused: the calls a person approves and retries.
+  const asked = new Set(['k9', 'k10'])
+  on('tool.check', (_$, e) => (asked.has(e.tool_use_id ?? '') ? { decision: 'ask' as const } : ({ decision: 'deny' as const, reason: 'rule', rule: 'Bash(password=hunter2)' }) as never))
+  on('tool.call', (_$, e) =>
+    (asked.has(e.tool_use_id) ? { deny: `refused ${COMMAND}` } : { result: { stdout: '', stderr: 'boom', interrupted: false }, text: 'boom', isError: true }) as never,
+  )
+  on('agent.list', () => ({ value: [{ id: 'ag1', description: 'deploy', type: 'general-purpose', status: 'completed' }] }) as never)
+  on('prompt.submit', (_$, e) => {
+    RETRIES.push(e.text)
+    return { text: e.text }
+  })
+  on('session.send', (_$, e) => {
+    RETRIES.push(e.text)
+    return { isDelivered: true }
+  })
   let n = 0
   on('agent.spawn', (_$, e) => ({ model: 'claude-sonnet-5-5', agentId: e.subagentType === 'architect' ? 'arch1' : `ag${++n}` }) as never)
 
@@ -71,7 +99,20 @@ async function seed($: Engine, on: On) {
   await $.tool.call({ tool: 'SubagentHandback', message: ADVICE, agentId: 'arch1', tool_use_id: 'c2' } as never)
   await $.turn.start({ text: `<agent-message from="arch1">\nThe report follows:\n${ADVICE} two\n</agent-message>`, turnId: 'T4' })
   await $.turn.complete({ answer: `${ADVICE} three`, durationMs: 900, isAborted: false, turnId: 'T5', agentId: 'arch1', reason: 'answer' } as never)
+  await $.tool.check({ tool: 'Bash', input: { command: COMMAND }, tool_use_id: 'k9' })
+  await $.tool.call({ tool: 'Bash', command: COMMAND, tool_use_id: 'k9' } as never)
+  await $.tool.check({ tool: 'Bash', input: { command: COMMAND }, tool_use_id: 'k10', agentId: 'ag1' })
+  await $.tool.call({ tool: 'Bash', command: COMMAND, agentId: 'ag1', tool_use_id: 'k10' } as never)
   await $.command.run({ command: 'flightdeck', args: 'open' } as never)
+  const ui = await $.ui.mount(pane('terminal'))
+  await ui.press({ key: 'card-ag1' })
+  await ui.press({ key: 'gate-denied' })
+  // The test's own state store raises no redraw: draw again after each press that changes the list.
+  for (const key of ['ok-k9', 're-k9', 'ok-k10', 're-k10']) {
+    await ui.redraw()
+    await ui.press({ key })
+  }
+  await ui.unmount()
   return values
 }
 
@@ -82,19 +123,16 @@ const panes = async ($: Engine, surface: (typeof SURFACES)[number]) => {
   for (const layout of LAYOUTS) {
     await $.command.run({ command: 'flightdeck', args: `layout ${layout}` } as never)
     for (const placement of ['dock', 'inline'] as const) {
-      const ui = await $.ui.mount({
-        plugin: 'flightdeck',
-        component: 'Pane',
-        requestId: 'flightdeck',
-        surface,
-        props: { title: 'Flightdeck', isFocused: true, bodyColumns: 120, placement, scroll: { offset: 0, bodyRows: 70 }, view: {} },
-      })
+      const ui = await $.ui.mount(pane(surface, placement))
       const hasButtons = layout !== 'mini' && !(layout === 'auto' && placement === 'inline')
-      for (const key of ['card-ag1', 'gate-shell', 'gate-other']) {
+      for (const key of ['card-ag1', 'gate-shell', 'gate-other', 'gate-denied']) {
         expect(Boolean(await ui.find({ key })), `${layout}.${placement} draws ${key}`).toBe(hasButtons)
         if (hasButtons) await ui.press({ key })
       }
       if (hasButtons) expect(await ui.find({ text: /no tool calls yet/ }), `${layout}.${placement} expands the card`).toBeUndefined()
+      await ui.redraw()
+      if (hasButtons) expect(await ui.find({ key: 'ok-k9' }), `${layout}.${placement} draws the denied list`).toBeUndefined()
+      if (hasButtons) expect(await ui.find({ text: /refused/ }), `${layout}.${placement} draws the denied list`).toBeDefined()
       leaves(await ui.drawn(), `${layout}.${placement}`, out)
       await ui.unmount()
     }
@@ -115,6 +153,16 @@ test('state holds no canary secret, no prompt or answer text, and no ESC or bidi
   const strings = stored(values)
   expect(strings.length).toBeGreaterThan(0)
   expectClean(strings)
+})
+
+test('a denied command approved and retried reaches neither state nor the retry text', async ($, on) => {
+  const values = await seed($, on)
+  const s = flightdeck(values) as { gate: { grants: unknown[]; recent: { id: string; retriedAt?: number | null }[] } }
+  expect(s.gate.grants.length).toBe(2)
+  expect(s.gate.recent.filter(c => c.retriedAt != null).map(c => c.id)).toEqual(['k9', 'k10'])
+  expect(JSON.stringify(flightdeck(values)).includes(COMMAND)).toBe(false)
+  expect(RETRIES.length).toBe(2)
+  expectClean(RETRIES.map((text, i) => [`retry.${i}`, text]))
 })
 
 test('every stored text field stays inside its cap', async ($, on) => {

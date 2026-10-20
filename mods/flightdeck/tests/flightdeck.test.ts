@@ -445,6 +445,89 @@ test('pastel keeps the fixed dark-terminal colours', { options: { palette: 'past
   await ui.unmount()
 })
 
+test("a card press shows that agent's transcript in the main view; pressing it again, or m, returns", async ($, on) => {
+  mock.clock(on)
+  on('ui.status', () => ({ value: undefined }))
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  const asked: unknown[] = []
+  on('ui.view', (_$, e) => {
+    asked.push(e)
+    return { value: {} }
+  })
+  on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: 'tv1' }))
+  await $.turn.start({ text: 'go', turnId: 'V1' })
+  await $.agent.spawn(spawn('general-purpose', 'Write the parser tests'))
+  const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  expect(await ui.find({ key: 'view-main' })).toBeUndefined()
+  await ui.press({ key: 'card-tv1' })
+  await ui.redraw({ ...pane(64).props, view: { agentId: 'tv1' } })
+  expect(await ui.find({ text: /transcript in main view/ })).toBeDefined()
+  await ui.press({ key: 'card-tv1' })
+  await ui.press({ key: 'view-main' })
+  expect(asked).toEqual([{ agentId: 'tv1' }, {}, {}])
+  await ui.unmount()
+})
+
+test('a card Claude Code cannot show opens its summary with the reason, masked; a second press closes it', async ($, on) => {
+  engine(on)
+  on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: 'td1' }))
+  await $.turn.start({ text: 'go', turnId: 'V2' })
+  await $.agent.spawn(spawn('general-purpose', 'Write the parser tests'))
+  const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  await ui.press({ key: 'card-td1' })
+  expect(await ui.find({ text: /^not shown: no agent holds the id$/ })).toBeDefined()
+  expect(await ui.find({ text: /^Write the parser tests$/ })).toBeDefined()
+  await ui.press({ key: 'card-td1' })
+  expect(await ui.find({ text: /not shown/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('the denied list names who refused each call and offers approve only where it may', async ($, on) => {
+  engine(on)
+  const verdicts: Record<string, unknown> = {
+    r1: { decision: 'deny', rule: 'Bash(rm:*)' },
+    h1: { decision: 'deny', hook: 'PreToolUse' },
+    p1: { decision: 'deny' },
+    a1: { decision: 'ask' },
+    s1: { decision: 'ask', rule: 'Bash(git push:*)' },
+  }
+  on('tool.check', (_$, e) => (verdicts[e.tool_use_id ?? ''] ?? { decision: 'ask' }) as never)
+  on('tool.call', () => ({ deny: 'refused' }) as never)
+  for (const id of Object.keys(verdicts)) {
+    await $.tool.check({ tool: 'Bash', input: { command: `${id} x` }, tool_use_id: id })
+    if (id === 'a1' || id === 's1') await $.tool.call({ tool: 'Bash', command: `${id} x`, tool_use_id: id } as never)
+  }
+  const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  await ui.press({ key: 'gate-denied' })
+  expect(await ui.find({ text: /^rule Bash\(rm:\*\) $/ })).toBeUndefined() // only 4 rows: the oldest is out
+  for (const label of [/^hook PreToolUse $/, /^policy $/, /^refused $/]) expect(await ui.find({ text: label }), String(label)).toBeDefined()
+  expect((await ui.findAll({ type: 'Button' })).map(b => b.props.key).filter(k => String(k).startsWith('ok-'))).toEqual(['ok-a1'])
+  expect((await ui.find({ key: 'ok-a1' }))?.props.hotkey).toBe('a')
+  await ui.press({ key: 'ok-a1' })
+  expect(await ui.find({ text: /^approved · not used yet$/ })).toBeDefined()
+  expect((await ui.find({ key: 're-a1' }))?.props.hotkey).toBe('r')
+  await $.tool.check({ tool: 'Bash', input: { command: 'a1 x' }, tool_use_id: 'a2' })
+  await ui.redraw()
+  expect(await ui.find({ text: /^approved · used 1×$/ })).toBeDefined()
+  expect(await ui.find({ text: /1 approved this session/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a refusal recorded under another load reads as expired, with nothing to press', async ($, on) => {
+  engine(on)
+  on('tool.check', () => ({ decision: 'ask' as const }))
+  on('tool.call', () => ({ deny: 'refused' }) as never)
+  on('session.end', (_$, e) => ({ sessionId: e.sessionId }) as never)
+  await $.tool.check({ tool: 'Bash', input: { command: 'ls' }, tool_use_id: 'e1' })
+  await $.tool.call({ tool: 'Bash', command: 'ls', tool_use_id: 'e1' } as never)
+  await $.session.end({ reason: 'other', sessionId: 's' } as never)
+  const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  await ui.press({ key: 'gate-denied' })
+  expect(await ui.find({ text: /^expired$/ })).toBeDefined()
+  expect(await ui.find({ key: 'ok-e1' })).toBeUndefined()
+  await ui.unmount()
+})
+
 test('subagents become cards, then swimlanes past the card limit; a card expands on its hotkey', async ($, on) => {
   engine(on)
   let n = 0

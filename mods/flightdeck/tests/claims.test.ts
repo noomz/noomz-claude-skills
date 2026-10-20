@@ -304,19 +304,170 @@ describe("an architect's advice", () => {
 })
 
 describe('the hooks hand on what the next handler returns', () => {
-  test('tool.check, tool.call, turn.start, turn.complete and agent.spawn', async ($, on) => {
+  test('tool.call, turn.start, turn.complete and agent.spawn', async ($, on) => {
     engine(on)
-    const verdict = { decision: 'ask' as const, reason: 'rule' }
     const ran = { result: { stdout: 'x', stderr: '', interrupted: false }, text: 'x', isError: true as const }
     const started = { model: 'claude-sonnet-5-5', agentId: 'pt1' }
-    on('tool.check', () => verdict)
     on('tool.call', () => ran)
     on('agent.spawn', () => started)
     expect(await $.turn.start({ text: 'password=hunter2', turnId: 'P1' })).toEqual({ turnId: 'P1' })
-    expect(await $.tool.check({ tool: 'Bash', input: { command: 'ls' }, tool_use_id: 'pk1' })).toEqual(verdict)
     expect(await $.tool.call({ tool: 'Bash', command: 'ls', tool_use_id: 'pk1' })).toEqual(ran)
     expect(await $.agent.spawn(spawn('general-purpose', 'go'))).toEqual(started)
     expect(await $.turn.complete({ answer: 'done', durationMs: 5, isAborted: false, turnId: 'P1', reason: 'answer' })).toEqual({ text: '' })
+  })
+})
+
+type CheckVerdict = Awaited<ReturnType<Engine['tool']['check']>>
+
+const PUSH = 'git push origin main'
+
+/** Core's verdict is whatever `core.verdict` holds; every call is refused when it runs. */
+const gateEngine = (on: On) => {
+  const values = engine(on)
+  const core: { verdict: CheckVerdict } = { verdict: { decision: 'ask' } }
+  on('tool.check', () => core.verdict)
+  on('tool.call', () => ({ deny: 'refused' }) as never)
+  return { values, core }
+}
+
+let callN = 0
+/** A Bash call checked and then refused; its id is the denial's. */
+const refuse = async ($: Engine, command = PUSH, agentId?: string) => {
+  const id = `rf${++callN}`
+  await $.tool.check({ tool: 'Bash', input: { command }, tool_use_id: id, ...(agentId ? { agentId } : {}) })
+  await $.tool.call({ tool: 'Bash', command, tool_use_id: id, ...(agentId ? { agentId } : {}) } as never)
+  return id
+}
+
+/** Presses one of the denied list's buttons, opening the list first when it is closed. */
+const pressDenied = async ($: Engine, key: string) => {
+  const ui = await $.ui.mount(pane())
+  if (!(await ui.find({ key: 'gate-denied', text: /▾/ }))) {
+    await ui.press({ key: 'gate-denied' })
+    // The test's own state store raises no redraw: draw again to read the open list.
+    await ui.redraw()
+  }
+  await ui.press({ key })
+  await ui.unmount()
+}
+
+const ask = ($: Engine, command = PUSH, ceiling?: 'ask') => $.tool.check({ tool: 'Bash', input: { command }, tool_use_id: `q${++callN}`, ...(ceiling ? { ceiling } : {}) })
+
+describe("flightdeck's tool.check answer", () => {
+  test('is unchanged when no grant matches', async ($, on) => {
+    gateEngine(on)
+    await refuse($)
+    expect(await ask($)).toEqual({ decision: 'ask' })
+  })
+
+  const denies: [label: string, verdict: CheckVerdict][] = [
+    ['a deny with no rule', { decision: 'deny', reason: 'refused' }],
+    ['a deny from a settings rule', { decision: 'deny', rule: `Bash(${PUSH})` }],
+    ['a deny from a hook', { decision: 'deny', hook: 'PreToolUse' }],
+  ]
+  const nonPlain: [label: string, verdict: CheckVerdict][] = [
+    ['an ask from a settings rule', { decision: 'ask', rule: 'Bash(git push:*)' }],
+    ['an ask under a hook', { decision: 'ask', hook: 'PreToolUse' }],
+    ["an ask from an option's own check", { decision: 'ask', setting: 'permissions.blockReadsOutsideWorkingDirectories' }],
+    ['an ask a hook puts to the person', { decision: 'ask', decider: 'person' }],
+    ['an ask under an organization ceiling', { decision: 'ask', ceiling: 'ask' }],
+  ]
+  for (const [label, verdict] of [...denies, ...nonPlain]) {
+    test(`is unchanged for ${label}, though you approved that exact call`, async ($, on) => {
+      const { core } = gateEngine(on)
+        const id = await refuse($)
+      await pressDenied($, `ok-${id}`)
+      core.verdict = verdict
+      // The engine pins a ceiling to the question's own: the call carries it.
+      expect(await ask($, PUSH, verdict.ceiling === 'ask' ? 'ask' : undefined)).toEqual(verdict)
+    })
+  }
+
+  test('is allow for a plain ask of the exact call you approved, and ask again for one character more', async ($, on) => {
+    const { values } = gateEngine(on)
+    const id = await refuse($)
+    await pressDenied($, `ok-${id}`)
+    expect((await ask($)).decision).toBe('allow')
+    expect(await ask($, `${PUSH} --force`)).toEqual({ decision: 'ask' })
+    expect(state(values).gate.grants.map(g => [g.denialId, g.uses])).toEqual([[id, 1]])
+  })
+
+  test('is unchanged in plan mode, though you approved that exact call', async ($, on) => {
+    const { values } = gateEngine(on)
+    const id = await refuse($)
+    await pressDenied($, `ok-${id}`)
+    values.set('flightdeck/main/', { value: { ...DEFAULT_MAIN, mode: 'plan' }, version: 9 })
+    expect(await ask($)).toEqual({ decision: 'ask' })
+  })
+
+  test('no grant exists without a press: a refused call asked again stays an ask', async ($, on) => {
+    const { values } = gateEngine(on)
+    await refuse($)
+    await refuse($)
+    expect(await ask($)).toEqual({ decision: 'ask' })
+    expect(state(values).gate.grants).toEqual([])
+  })
+
+  test('x forgets every approval; the refusal can be approved again', async ($, on) => {
+    const { values } = gateEngine(on)
+    const id = await refuse($)
+    await pressDenied($, `ok-${id}`)
+    await pressDenied($, 'gate-forget')
+    expect([state(values).gate.grants, await ask($)]).toEqual([[], { decision: 'ask' }])
+    await pressDenied($, `ok-${id}`)
+    expect((await ask($)).decision).toBe('allow')
+  })
+
+  const ends: [label: string, end: ($: Engine) => Promise<unknown>][] = [
+    ['session.start', $ => $.session.start({ cwd: '/w', surface: null, isInteractive: false })],
+    ['/flightdeck reset', $ => $.command.run({ command: 'flightdeck', args: 'reset' } as never)],
+    ...(['clear', 'resume', 'logout', 'prompt_input_exit', 'other'] as const).map(
+      (reason): [string, ($: Engine) => Promise<unknown>] => [`session.end (${reason})`, $ => $.session.end({ reason, sessionId: 's' } as never)],
+    ),
+  ]
+  for (const [label, end] of ends) {
+    test(`after ${label} no grant is left, in state or in memory`, async ($, on) => {
+      const { values } = gateEngine(on)
+      on('command.register', (_$, e) => ({ value: { command: e.name } }))
+      on('session.start', (_$, e) => ({ cwd: e.cwd }))
+        const id = await refuse($)
+      await pressDenied($, `ok-${id}`)
+      await end($)
+      expect([state(values).gate.grants, await ask($)]).toEqual([[], { decision: 'ask' }])
+    })
+  }
+})
+
+describe('a retry', () => {
+  test('of a main-loop refusal submits one fixed prompt, and a second press sends nothing', async ($, on) => {
+    gateEngine(on)
+    const sent: string[] = []
+    on('prompt.submit', (_$, e) => {
+      sent.push(e.text)
+      return { text: e.text }
+    })
+    const id = await refuse($)
+    await pressDenied($, `ok-${id}`)
+    const ui = await $.ui.mount(pane())
+    await Promise.all([ui.press({ key: `re-${id}` }), ui.press({ key: `re-${id}` }).catch(() => undefined)])
+    await ui.unmount()
+    await pressDenied($, `re-${id}`).catch(() => undefined)
+    expect(sent).toEqual(['flightdeck: the person approved Bash → git for this session after it was refused. If that call is still needed, make it again now, unchanged.'])
+  })
+
+  test("of a finished subagent's refusal messages that agent, which resumes it", async ($, on) => {
+    const { values } = gateEngine(on)
+    const sent: { to: unknown; text: string }[] = []
+    on('agent.list', () => ({ value: [{ id: 'ra1', description: 'go', type: 'general-purpose', status: 'completed' }] }) as never)
+    on('session.send', (_$, e) => {
+      sent.push({ to: e.to, text: e.text })
+      return { isDelivered: true }
+    })
+    const id = await refuse($, PUSH, 'ra1')
+    await pressDenied($, `ok-${id}`)
+    await pressDenied($, `re-${id}`)
+    expect(sent.map(m => m.to)).toEqual(['ra1'])
+    expect(state(values).log.map(l => l.text).at(-1)).toBe('retry resumes agent · Bash → git')
   })
 })
 
