@@ -1,7 +1,7 @@
 import type { On } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 
-import { DEFAULT_GATE, DEFAULT_MAIN, DEFAULT_TURN, DEFAULT_USAGE, adviceLine, consultVia, toolDetail } from '../hooks/core'
+import { DEFAULT_GATE, DEFAULT_MAIN, DEFAULT_TURN, DEFAULT_USAGE, adviceLine, isRefusal, consultVia, toolDetail } from '../hooks/core'
 import { scrub } from '../hooks/hygiene'
 import { flightdeck, stateStore } from './store'
 import type { AgentCard, Architect, Gate, Hygiene, LogLine, Main, Turn, Usage } from '../types'
@@ -468,6 +468,102 @@ describe('a retry', () => {
     await pressDenied($, `re-${id}`)
     expect(sent.map(m => m.to)).toEqual(['ra1'])
     expect(state(values).log.map(l => l.text).at(-1)).toBe('retry resumes agent · Bash → git')
+  })
+})
+
+const PERSON_NO =
+  "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed."
+const DONT_ASK = "Permission to use Bash has been denied because Claude Code is running in don't ask mode."
+
+describe('isRefusal reads a result as never ran', () => {
+  const cases: [label: string, result: Parameters<typeof isRefusal>[0], expected: boolean][] = [
+    ["a hook's deny", { deny: 'refused' }, true],
+    ["dontAsk mode's error", { text: DONT_ASK, isError: true }, true],
+    ["a person's No", { text: PERSON_NO, isError: true }, true],
+    ["a person's No sentence on a result that is not an error", { text: PERSON_NO, isError: false }, false],
+    ['the shorter engine sentence', { text: 'Permission to use Write denied.', isError: true }, true],
+    ['a command that ran and failed', { text: 'Exit code 1\nls: x: No such file or directory', isError: true }, false],
+    ['the sentence on a result that is not an error', { text: DONT_ASK }, false],
+    ['the sentence quoted inside other output', { text: `Exit code 1\n${DONT_ASK}`, isError: true }, false],
+    ['an error with no text', { isError: true }, false],
+  ]
+  for (const [label, result, expected] of cases) test(label, () => expect(isRefusal(result)).toBe(expected))
+})
+
+/** Core asks for every call and returns `ran` for one; `null` leaves the call unanswered, as a person's No does. */
+const askEngine = (on: On, ran: () => unknown) => {
+  const values = engine(on)
+  on('tool.check', () => ({ decision: 'ask' as const }))
+  on('tool.call', () => ran() as never)
+  return values
+}
+
+/** Checks a call, then starts it; the call's own promise comes back unawaited, since a No never settles it. */
+const askAndCall = async ($: Engine, id: string, agentId?: string) => {
+  const who = agentId ? { agentId } : {}
+  await $.tool.check({ tool: 'Bash', input: { command: PUSH }, tool_use_id: id, ...who })
+  return { call: $.tool.call({ tool: 'Bash', command: PUSH, tool_use_id: id, ...who } as never) }
+}
+
+const turnEnd = ($: Engine, agentId?: string) =>
+  $.turn.complete({ answer: '', durationMs: 5, isAborted: true, turnId: `te${++callN}`, reason: 'aborted', ...(agentId ? { agentId } : {}) } as never)
+
+const deniedKeys = async ($: Engine) => {
+  const ui = await $.ui.mount(pane())
+  await ui.press({ key: 'gate-denied' })
+  await ui.redraw()
+  const keys = await Promise.all(['ok-n1', 'ok-n2', 'ok-d1', 'ok-f1', 'ok-p1'].map(async k => ((await ui.find({ key: k })) ? k : null)))
+  await ui.unmount()
+  return keys.filter(k => k !== null)
+}
+
+describe('an ask settles as refused', () => {
+  test('when its loop ends with the call unanswered; approved, the same plain ask is allowed', async ($, on) => {
+    const values = askEngine(on, () => new Promise(() => undefined))
+    await askAndCall($, 'n1')
+    await turnEnd($)
+    expect(state(values).gate.recent.map(c => [c.id, c.verdict])).toEqual([['n1', 'deny']])
+    expect(await deniedKeys($)).toEqual(['ok-n1'])
+    await pressDenied($, 'ok-n1')
+    const again = await $.tool.check({ tool: 'Bash', input: { command: PUSH }, tool_use_id: 'n9' })
+    expect(again.decision).toBe('allow')
+  })
+
+  test("when dontAsk mode answers with the engine's refusal", async ($, on) => {
+    const values = askEngine(on, () => ({ result: `Error: ${DONT_ASK}`, text: DONT_ASK, isError: true }))
+    await (await askAndCall($, 'd1')).call
+    expect(state(values).gate.recent.map(c => [c.id, c.verdict])).toEqual([['d1', 'deny']])
+    expect(await deniedKeys($)).toEqual(['ok-d1'])
+  })
+
+  test("when a person's No answers the call, with no turn.complete", async ($, on) => {
+    const values = askEngine(on, () => ({ result: `Error: ${PERSON_NO}`, text: PERSON_NO, isError: true }))
+    await (await askAndCall($, 'p1')).call
+    expect(state(values).gate.recent.map(c => [c.id, c.verdict])).toEqual([['p1', 'deny']])
+    expect(await deniedKeys($)).toEqual(['ok-p1'])
+  })
+
+  test('never for a call that ran and failed: it is cleared and stays out of the denied list', async ($, on) => {
+    const values = askEngine(on, () => ({ result: { stdout: '', stderr: 'ls: x', interrupted: false }, text: 'Exit code 1\nls: x: No such file or directory', isError: true }))
+    await (await askAndCall($, 'f1')).call
+    await turnEnd($)
+    expect(state(values).gate.recent.map(c => [c.id, c.verdict])).toEqual([['f1', 'cleared']])
+    expect(await deniedKeys($)).toEqual([])
+  })
+
+  test("never by another loop's end: agent A ending leaves agent B's ask open", async ($, on) => {
+    const values = askEngine(on, () => new Promise(() => undefined))
+    await askAndCall($, 'n1', 'agA')
+    await askAndCall($, 'n2', 'agB')
+    await turnEnd($, 'agA')
+    await turnEnd($)
+    expect(state(values).gate.recent.map(c => [c.id, c.verdict])).toEqual([
+      ['n1', 'deny'],
+      ['n2', 'ask'],
+    ])
+    await turnEnd($, 'agB')
+    await turnEnd($, 'agB')
+    expect(state(values).gate.totals.shell).toMatchObject({ ask: 0, deny: 2 })
   })
 })
 

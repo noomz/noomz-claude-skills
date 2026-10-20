@@ -66,8 +66,9 @@ async function seed($: Engine, on: On) {
   on('turn.complete', () => ({ text: '' }))
   on('agent.offer', () => ({ isOffered: true }) as never)
   on('ui.view', () => ({ value: { deny: `no agent holds password=hunter2 ${ESC}[31m` } }))
-  // k9 and k10 are plain asks that are then refused: the calls a person approves and retries.
-  const asked = new Set(['k9', 'k10'])
+  // k9, k10 and k11 are plain asks that are then refused: the calls a person approves and retries.
+  // k11 gets no answer, as a person's No; the main loop's end settles it.
+  const asked = new Set(['k9', 'k10', 'k11'])
   on('tool.check', (_$, e) => (asked.has(e.tool_use_id ?? '') ? { decision: 'ask' as const } : ({ decision: 'deny' as const, reason: 'rule', rule: 'Bash(password=hunter2)' }) as never))
   on('tool.call', (_$, e) =>
     (asked.has(e.tool_use_id) ? { deny: `refused ${COMMAND}` } : { result: { stdout: '', stderr: 'boom', interrupted: false }, text: 'boom', isError: true }) as never,
@@ -103,12 +104,14 @@ async function seed($: Engine, on: On) {
   await $.tool.call({ tool: 'Bash', command: COMMAND, tool_use_id: 'k9' } as never)
   await $.tool.check({ tool: 'Bash', input: { command: COMMAND }, tool_use_id: 'k10', agentId: 'ag1' })
   await $.tool.call({ tool: 'Bash', command: COMMAND, agentId: 'ag1', tool_use_id: 'k10' } as never)
+  await $.tool.check({ tool: 'Bash', input: { command: COMMAND }, tool_use_id: 'k11' })
+  await $.turn.complete({ answer: ANSWER, durationMs: 300, isAborted: true, turnId: 'T6', reason: 'aborted' } as never)
   await $.command.run({ command: 'flightdeck', args: 'open' } as never)
   const ui = await $.ui.mount(pane('terminal'))
   await ui.press({ key: 'card-ag1' })
   await ui.press({ key: 'gate-denied' })
   // The test's own state store raises no redraw: draw again after each press that changes the list.
-  for (const key of ['ok-k9', 're-k9', 'ok-k10', 're-k10']) {
+  for (const key of ['ok-k9', 're-k9', 'ok-k10', 're-k10', 'ok-k11', 're-k11']) {
     await ui.redraw()
     await ui.press({ key })
   }
@@ -158,10 +161,10 @@ test('state holds no canary secret, no prompt or answer text, and no ESC or bidi
 test('a denied command approved and retried reaches neither state nor the retry text', async ($, on) => {
   const values = await seed($, on)
   const s = flightdeck(values) as { gate: { grants: unknown[]; recent: { id: string; retriedAt?: number | null }[] } }
-  expect(s.gate.grants.length).toBe(2)
-  expect(s.gate.recent.filter(c => c.retriedAt != null).map(c => c.id)).toEqual(['k9', 'k10'])
+  expect(s.gate.grants.length).toBe(3)
+  expect(s.gate.recent.filter(c => c.retriedAt != null).map(c => c.id)).toEqual(['k9', 'k10', 'k11'])
   expect(JSON.stringify(flightdeck(values)).includes(COMMAND)).toBe(false)
-  expect(RETRIES.length).toBe(2)
+  expect(RETRIES.length).toBe(3)
   expectClean(RETRIES.map((text, i) => [`retry.${i}`, text]))
 })
 

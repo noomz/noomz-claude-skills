@@ -444,7 +444,23 @@ export const checkOf = (
 /** How a call settled: it ran, or it was refused, with its identity held in `epoch` or not. */
 export type Settle = { didRun: true } | { didRun: false; isHeld: boolean; epoch: string }
 
-/** An `ask` settled by the call that followed it: it ran (cleared) or was refused (deny refused). */
+// The engine's two sentences for a call nobody let run, as Claude Code 2.1.304 words them: dontAsk's
+// "Permission to use <tool> denied" and a person's No, "The user doesn't want to proceed". A rewording
+// fails safe: the call reads as ran, so its row is cleared and never approvable.
+const ENGINE_REFUSAL = /^(?:Permission to use \S+ (?:has been )?denied|The user doesn't want to proceed with this tool use)/
+
+/** Whether a call's result says it never ran: a hook's `deny`, or the engine's refusal as an error. */
+export const isRefusal = (r: { deny?: string; isError?: boolean; text?: string }) =>
+  r.deny !== undefined || (r.isError === true && ENGINE_REFUSAL.test(r.text ?? ''))
+
+/**
+ * The asks still open in one loop (`null` for the main loop). A loop's turn cannot end while it has a
+ * dialog open or a tool running, so at its turn.complete each of these was refused: a backstop for a
+ * refusal whose text isRefusal does not match.
+ */
+export const pendingAsks = (g: Gate, agentId: string | null) => g.recent.filter(c => c.verdict === 'ask' && c.agentId === agentId)
+
+/** An `ask` settled by the call that followed it, or by its loop's end: it ran (cleared) or was refused (deny refused). */
 export const settleCheck = (g: Gate, id: string, s: Settle): Gate => {
   const c = g.recent.find(r => r.id === id && r.verdict === 'ask')
   if (!c || c.verdict !== 'ask') return g

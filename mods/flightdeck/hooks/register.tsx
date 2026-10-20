@@ -63,6 +63,8 @@ import {
   adviceLine,
   receiptOf,
   recordCheck,
+  isRefusal,
+  pendingAsks,
   settleCheck,
   shorten,
   speedOf,
@@ -268,6 +270,20 @@ async function noteMode($: EngineInterface, mode: string | undefined) {
 async function forgetSession($: EngineInterface, memory: GrantMemory) {
   memory.reset()
   await update($, gate, g => clearGrants(normalizeGate(g)))
+}
+
+/** Settles these calls' pending asks; true when any was still pending. Settling twice is a no-op. */
+async function settleCalls($: EngineInterface, memory: GrantMemory, ids: readonly string[], didRun: boolean) {
+  const settles = ids.map((id): [string, Settle] => {
+    const isHeld = memory.settle(id, didRun)
+    return [id, didRun ? { didRun } : { didRun, isHeld, epoch: memory.epoch }]
+  })
+  const settled = (g: Gate) => settles.reduce((x, [id, s]) => settleCheck(x, id, s), g)
+  const g0 = await getGate($)
+  // Skip the write (and the redraw) when no call here had an ask open.
+  if (settled(g0) === g0) return false
+  await update($, gate, g => settled(normalizeGate(g)))
+  return true
 }
 
 async function approveDenial($: EngineInterface, memory: GrantMemory, row: DenialRow) {
@@ -528,14 +544,10 @@ export const register: Register = (on, options) => {
   })
 
   on('tool.call', async ($, e, next) => {
+    // turn.complete settles any ask still open when its loop ends, as a backstop for a refusal worded some other way.
     const ran = await next(e)
-    const didRun = ran.deny === undefined
-    const isHeld = memory.settle(e.tool_use_id, didRun)
-    const settle: Settle = didRun ? { didRun } : { didRun, isHeld, epoch: memory.epoch }
-    // Settle this call's pending ask, if it had one; skip the write (and the redraw) otherwise.
-    const g0 = await getGate($)
-    const isSettled = settleCheck(g0, e.tool_use_id, settle) !== g0
-    if (isSettled) await update($, gate, g => settleCheck(normalizeGate(g), e.tool_use_id, settle))
+    const didRun = !isRefusal(ran)
+    const isSettled = await settleCalls($, memory, [e.tool_use_id], didRun)
     // A background agent hands its report back through this tool; an architect's report is its advice.
     if (String(e.tool) === 'SubagentHandback') {
       const message = (e as unknown as { message?: unknown }).message
@@ -554,18 +566,18 @@ export const register: Register = (on, options) => {
       await update($, turn, t => afterCall(normalize(DEFAULT_TURN, t), { inSubagent: Boolean(e.agentId), hasFailed, isEdit }))
     }
     const detail = toolDetail(e.tool, e)
-    if (e.agentId || ran.deny !== undefined || hasFailed || isEdit) await tally($, detail)
+    if (e.agentId || !didRun || hasFailed || isEdit) await tally($, detail)
     const text = detail.text
     if (e.agentId) {
       const id = e.agentId
       await update($, agents, list =>
         listOf<unknown>(list)
           .map(normalizeCard)
-          .map(c => (c.id === id ? noteTool(c, { text, isError: hasFailed || ran.deny !== undefined }) : c)),
+          .map(c => (c.id === id ? noteTool(c, { text, isError: hasFailed || !didRun }) : c)),
       )
     }
     // The log keeps what is worth a glance: refusals, errors and edits; the rest is on the cards.
-    if (ran.deny !== undefined) await say($, await whoIs($, e.agentId), `${text}  denied`, 'error', e.agentId ?? null)
+    if (!didRun) await say($, await whoIs($, e.agentId), `${text}  denied`, 'error', e.agentId ?? null)
     else if (hasFailed) await say($, await whoIs($, e.agentId), `${text}  ✗`, 'error', e.agentId ?? null)
     else if (isEdit) await say($, await whoIs($, e.agentId), text, 'info', e.agentId ?? null)
     if (isSettled || !didRun) await refreshStatus($, cfg)
@@ -642,6 +654,10 @@ export const register: Register = (on, options) => {
   on('turn.complete', async ($, e, next) => {
     const done = await next(e)
     const id = e.agentId
+    const open = pendingAsks(await getGate($), id ?? null)
+    if (await settleCalls($, memory, open.map(c => c.id), false)) {
+      for (const c of open) await say($, await whoIs($, id), `${c.detail}  denied`, 'error', id ?? null)
+    }
     const now = await $.clock.now()
     if (!id) {
       const [t, cards, cost] = await Promise.all([getTurn($), getCards($), costNow($)])
