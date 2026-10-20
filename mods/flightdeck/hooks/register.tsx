@@ -72,10 +72,11 @@ import {
   stepSpeed,
   stepLoop,
   textFields,
+  subjectLine,
   toolDetail,
 } from './core'
 import type { Config, Panel, Settle } from './core'
-import { approve, askSubject, clearGrants, dropGrant, DENIED_ROWS, denialRows, grantMemory, grantedVerdict, markRetried, retryPlan, retryText, unmarkRetried, useGrant } from './grants'
+import { approve, askSubject, clearGrants, dropGrant, DENIED_ROWS, denialRows, grantMemory, grantedVerdict, markOf, markRetried, retryPlan, retryText, unmarkRetried, useGrant } from './grants'
 import type { DenialRow, GrantMemory } from './grants'
 
 const PANE = 'flightdeck'
@@ -303,6 +304,18 @@ async function approveDenial($: EngineInterface, memory: GrantMemory, row: Denia
     return forgotten()
   }
   await say($, 'gate', `approved for this session · ${detail}`)
+}
+
+async function pressApprove($: EngineInterface, memory: GrantMemory, row: DenialRow) {
+  const id = row.check.id
+  let isArmed = false
+  await update($, view, x => {
+    const v = normalize(DEFAULT_VIEW, x)
+    isArmed = v.armed === id
+    return { ...v, armed: isArmed ? null : id }
+  })
+  if (isArmed) return approveDenial($, memory, row)
+  await say($, 'gate', `press again to approve · ${row.check.detail}`)
 }
 
 async function retryDenial($: EngineInterface, memory: GrantMemory, row: DenialRow) {
@@ -536,7 +549,11 @@ export const register: Register = (on, options) => {
     const answer = grantFrom === null ? verdict : grantedVerdict(detail.text)
     if (e.tool_use_id) {
       const isHeld = subject !== null && grantFrom === null
-      if (isHeld) memory.hold(e.tool_use_id, subject)
+      if (isHeld) {
+        const line = subjectLine(e.tool, e.input, markOf(subject))
+        await tally($, line)
+        memory.hold(e.tool_use_id, subject, line.text)
+      }
       const cause = kept(denyCause(verdict), CAP.cause)
       await tally($, detail, cause)
       const base = { id: e.tool_use_id, bucket: bucketOf(e.tool), detail: detail.text, agentId: e.agentId ?? null, at: await $.clock.now() }
@@ -894,7 +911,8 @@ export const register: Register = (on, options) => {
           : `${r.status} · ${r.grant.uses === 0 ? 'not used yet' : `used ${r.grant.uses}×`}`
     const deniedList = (w: number) => {
       const rows = denialRows(g, DENIED_ROWS, memory.epoch)
-      const newestApprovable = rows.find(r => r.status === 'approvable')
+      const armed = rows.find(r => r.status === 'approvable' && r.check.id === v.armed)
+      const approveKey = armed ?? rows.find(r => r.status === 'approvable')
       const newestRetryable = rows.find(r => r.status === 'approved')
       const live = g.grants.filter(x => x.epoch === memory.epoch).length
       return (
@@ -904,18 +922,19 @@ export const register: Register = (on, options) => {
             const card = r.check.agentId === null ? undefined : cards.find(c => c.id === r.check.agentId)
             const where = r.check.agentId === null ? '' : ` · ${card ? shorten(cardTitle(card), 12) : 'agent'}`
             const label = rowLabel(r)
+            const line = r.status === 'approvable' || r.status === 'approved' || r.status === 'retried' ? memory.lineOf(r.check.id) : null
             return (
               <Box columnGap={1}>
                 <Box flexShrink={1}>
                   <Text wrap="truncate">
                     <Text color={C.warn}>✗ </Text>
                     <Text color={C.dim}>{`${shorten(causeLabel(r.check), 18)} `}</Text>
-                    <Text dimColor={r.check.agentId !== null}>{`${r.check.detail}${where}`}</Text>
+                    <Text dimColor={r.check.agentId !== null}>{`${line ?? r.check.detail}${where}`}</Text>
                   </Text>
                 </Box>
                 {label ? <Text color={r.status === 'expired' ? C.faint : C.main}>{label}</Text> : null}
                 {r.status === 'approvable' ? (
-                  <Button key={`ok-${r.check.id}`} plain label="approve" hotkey={r === newestApprovable ? 'a' : undefined} onPress={() => approveDenial($, memory, r)} />
+                  <Button key={`ok-${r.check.id}`} plain label={r === armed ? 'confirm' : 'approve'} hotkey={r === approveKey ? 'a' : undefined} onPress={() => pressApprove($, memory, r)} />
                 ) : null}
                 {r.status === 'approved' ? (
                   <Button key={`re-${r.check.id}`} plain label="retry" hotkey={r === newestRetryable ? 'r' : undefined} onPress={() => retryDenial($, memory, r)} />

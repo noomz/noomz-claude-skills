@@ -35,7 +35,7 @@ const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'obj
 
 export const isCurrentSchema = (meta: unknown) => isObject(meta) && meta.schemaVersion === SCHEMA_VERSION
 
-export const CAP = { description: 80, name: 40, detail: 64, advice: 160, who: 40, line: 160, cause: 40, viewDeny: 64 } as const
+export const CAP = { description: 80, name: 40, detail: 64, advice: 160, who: 40, line: 160, cause: 40, viewDeny: 64, subject: 120 } as const
 
 export const NO_TEXT = '' as SafeText
 
@@ -65,7 +65,7 @@ export const DEFAULT_ARCHITECT: Architect = { consults: [], ids: [], seen: [], l
 const ZERO: Tally = { rule: 0, granted: 0, ask: 0, cleared: 0, deny: 0 }
 export const DEFAULT_GATE: Gate = { recent: [], totals: { file: ZERO, shell: ZERO, other: ZERO }, grants: [] }
 export const DEFAULT_TURN: Turn = { edits: 0, errorStreak: 0, errors: 0, isReviewing: false, startedAt: 0, costAtStart: null }
-export const DEFAULT_VIEW: View = { expanded: null, viewDeny: null, gateOpen: null, layout: null }
+export const DEFAULT_VIEW: View = { expanded: null, viewDeny: null, gateOpen: null, layout: null, armed: null }
 export const DEFAULT_ROSTER: Roster = { architectTypes: [] }
 export const DEFAULT_HYGIENE: Hygiene = { masked: 0, rejected: 0 }
 
@@ -389,6 +389,22 @@ export const toolDetail = (tool: string, input: unknown): Scrubbed => {
   if (!path) return detailOf(tool, hostOf(str('url')))
   const holdsKey = KEY_MARK.test(DRIVE.test(path) ? path.slice(2) : path)
   return holdsKey ? detailOf(tool, path, pathSegments) : detailOf(tool, lastSegments(path, 2))
+}
+
+/**
+ * What an approval would match, for the denied list: the tool, a mark of the call's identity so that
+ * two calls that differ only past the cut still read apart, and the masked head of the command, path,
+ * search, URL or input. Held in module memory beside the identity, never in state.
+ */
+export const subjectLine = (tool: string, input: unknown, mark: string): Scrubbed => {
+  const i = isObject(input) ? input : {}
+  const str = (k: string) => (typeof i[k] === 'string' ? (i[k] as string) : '')
+  const search = str('pattern') && `${str('pattern')} in ${str('path') || '.'}`
+  const raw = str('command') || str('file_path') || str('notebook_path') || search || str('url') || JSON.stringify(i)
+  const name = toolName(tool)
+  const head = `${name.text} ${mark}`
+  const shown = kept(raw, Math.max(1, CAP.subject - head.length - FRAME.length))
+  return { text: `${head}${FRAME}${shown.text}` as SafeText, masked: name.masked + shown.masked }
 }
 
 const isApprovable = (c: Check) => (c.verdict === 'ask' || (c.verdict === 'deny' && c.by === 'refused')) && c.approvable

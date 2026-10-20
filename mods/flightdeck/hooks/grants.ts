@@ -39,6 +39,12 @@ export const identityOf = (tool: string, input: unknown): Subject | null => {
   return of(stable(input))
 }
 
+export const markOf = (subject: Subject): string => {
+  let h = 0x811c9dc5
+  for (let i = 0; i < subject.length; i++) h = Math.imul(h ^ subject.charCodeAt(i), 0x01000193)
+  return `#${(h >>> 0).toString(36).padStart(7, '0').slice(-4)}`
+}
+
 export const askSubject = (v: ToolCheckResult, tool: string, input: unknown, mode: string): Subject | null =>
   isPlainAsk(v) && mode !== 'plan' ? identityOf(tool, input) : null
 
@@ -131,23 +137,24 @@ const capped = <K, V>(m: Map<K, V>, max: number) => {
 const newEpoch = () => Math.random().toString(36).slice(2, 10)
 
 export const grantMemory = () => {
-  const pending = new Map<string, Subject>()
-  const refused = new Map<string, Subject>()
+  type Held = { subject: Subject; line: SafeText }
+  const pending = new Map<string, Held>()
+  const refused = new Map<string, Held>()
   const grants = new Map<string, Subject>()
   let epoch = newEpoch()
   return {
     get epoch() {
       return epoch
     },
-    hold(callId: string, subject: Subject) {
-      pending.set(callId, subject)
+    hold(callId: string, subject: Subject, line: SafeText) {
+      pending.set(callId, { subject, line })
       capped(pending, PENDING_MAX)
     },
     settle(callId: string, didRun: boolean): boolean {
-      const subject = pending.get(callId)
+      const held = pending.get(callId)
       pending.delete(callId)
-      if (subject === undefined || didRun) return false
-      refused.set(callId, subject)
+      if (held === undefined || didRun) return false
+      refused.set(callId, held)
       capped(refused, REFUSED_MAX)
       return true
     },
@@ -156,13 +163,16 @@ export const grantMemory = () => {
       for (const [denialId, s] of grants) if (s === subject) id = denialId
       return id
     },
+    lineOf(denialId: string): SafeText | null {
+      return refused.get(denialId)?.line ?? null
+    },
     holds(denialId: string, at: string): boolean {
       return at === epoch && refused.has(denialId)
     },
     approve(denialId: string, at: string): boolean {
-      const subject = refused.get(denialId)
-      if (at !== epoch || subject === undefined) return false
-      if (!grants.has(denialId)) grants.set(denialId, subject)
+      const held = refused.get(denialId)
+      if (at !== epoch || held === undefined) return false
+      if (!grants.has(denialId)) grants.set(denialId, held.subject)
       capped(grants, GRANTS_MAX)
       return true
     },

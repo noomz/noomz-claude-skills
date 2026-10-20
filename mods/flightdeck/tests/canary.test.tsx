@@ -1,5 +1,8 @@
 import { expect, mock, test } from 'claude-code/testing'
 
+import { CAP, subjectLine } from '../hooks/core'
+import { identityOf, markOf } from '../hooks/grants'
+import type { Subject } from '../hooks/grants'
 import { flightdeck, leaves, stateStoreWithoutRedraw } from './store'
 import type { Engine, On } from './store'
 
@@ -16,6 +19,8 @@ const COMMAND = 'curl -u admin:s3cr3t https://h.example/x?sig=abc'
 
 const SECRETS = ['hunter2', 'ABCDEFGHIJKLMNOPQRST', 'eyJhbGciOiJIUzI1NiJ9', 'eyJzdWIiOiIxIn0', 'sk-ant-', 'ghp_', 's3cr3t', 'sig=abc', 'abcdefghijklmnop']
 const SESSION_TEXT = ['aws_secret_access_key', 'All set', 'ANSWERMARK', 'admin:', 'h.example/x']
+// The denied list draws what an approval would match: this masked line, from module memory, never state.
+const SUBJECT_LINE = subjectLine('Bash', { command: COMMAND }, markOf(identityOf('Bash', { command: COMMAND }) as Subject)).text
 const HIDDEN = /[\u001b\u009b\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/
 
 const CAPS: [path: RegExp, cap: number][] = [
@@ -107,7 +112,7 @@ async function seed($: Engine, on: On) {
   const ui = await $.ui.mount(pane('terminal'))
   await ui.press({ key: 'card-ag1' })
   await ui.press({ key: 'gate-denied' })
-  for (const key of ['ok-refusedMain', 're-refusedMain', 'ok-refusedAgent', 're-refusedAgent', 'ok-refusedLast', 're-refusedLast']) {
+  for (const key of ['ok-refusedMain', 'ok-refusedMain', 're-refusedMain', 'ok-refusedAgent', 'ok-refusedAgent', 're-refusedAgent', 'ok-refusedLast', 'ok-refusedLast', 're-refusedLast']) {
     await ui.redraw()
     await ui.press({ key })
   }
@@ -139,10 +144,11 @@ const panes = async ($: Engine, surface: (typeof SURFACES)[number]) => {
   return out
 }
 
-const expectClean = (strings: [string, string][]) => {
+const expectClean = (strings: [string, string][], drawnLine = '') => {
   for (const [path, text] of strings) {
     for (const secret of SECRETS) expect(text.includes(secret), `${path} holds ${secret}`).toBe(false)
-    for (const words of SESSION_TEXT) expect(text.includes(words), `${path} holds session text ${words}`).toBe(false)
+    const rest = drawnLine ? text.replaceAll(drawnLine, '') : text
+    for (const words of SESSION_TEXT) expect(rest.includes(words), `${path} holds session text ${words}`).toBe(false)
     expect(HIDDEN.test(text), `${path} holds an ESC or bidi character`).toBe(false)
   }
 }
@@ -179,6 +185,8 @@ for (const surface of SURFACES) {
     await seed($, on)
     const strings = await panes($, surface)
     expect(strings.length).toBeGreaterThan(0)
-    expectClean(strings)
+    expect(strings.some(([, text]) => text.includes(SUBJECT_LINE)), 'the denied list draws the masked subject line').toBe(true)
+    expect([SUBJECT_LINE.length <= CAP.subject, SUBJECT_LINE.includes('[masked]')]).toEqual([true, true])
+    expectClean(strings, SUBJECT_LINE)
   })
 }

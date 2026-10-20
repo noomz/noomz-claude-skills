@@ -120,8 +120,11 @@ export type Receipt = {
 
 export type Layout = 'auto' | 'compact' | 'wide' | 'mini'
 
-/** `expanded`: the card whose summary shows because Claude Code would not show its transcript, and why. */
-export type View = { expanded: string | null; viewDeny: SafeText | null; gateOpen: Bucket | 'denied' | null; layout: Layout | null }
+/**
+ * `expanded`: the card whose summary shows because Claude Code would not show its transcript, and why.
+ * `armed`: the refusal your last approve press picked; only a press on that same row approves.
+ */
+export type View = { expanded: string | null; viewDeny: SafeText | null; gateOpen: Bucket | 'denied' | null; layout: Layout | null; armed: string | null }
 
 export type Roster = { architectTypes: SafeText[] }
 

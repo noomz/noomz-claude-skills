@@ -10,6 +10,7 @@ import type { Check, Gate, Refuser } from '../types'
 type Verdict = Parameters<typeof isPlainAsk>[0]
 
 const COMMAND = 'git push origin main'
+const LINE = scrub('Bash #0000 → git push origin main', 120).text
 const call = { tool: 'Bash', input: { command: COMMAND } }
 
 const answer = (memory: ReturnType<typeof grantMemory>, v: Verdict, tool: string, input: unknown, mode = 'default'): Verdict => {
@@ -20,7 +21,7 @@ const answer = (memory: ReturnType<typeof grantMemory>, v: Verdict, tool: string
 const granted = () => {
   const memory = grantMemory()
   const subject = identityOf(call.tool, call.input) as Subject
-  memory.hold('d1', subject)
+  memory.hold('d1', subject, LINE)
   expect(memory.settle('d1', false)).toBe(true)
   expect(memory.approve('d1', memory.epoch)).toBe(true)
   return memory
@@ -78,7 +79,7 @@ describe('a grant never changes a verdict but a plain ask outside plan mode', ()
 
   test('an MCP call whose description differs is asked again', () => {
     const memory = grantMemory()
-    memory.hold('m1', identityOf('mcp__s__post', { channel: 'c', description: 'hello' }) as Subject)
+    memory.hold('m1', identityOf('mcp__s__post', { channel: 'c', description: 'hello' }) as Subject, LINE)
     memory.settle('m1', false)
     memory.approve('m1', memory.epoch)
     expect(answer(memory, { decision: 'ask' }, 'mcp__s__post', { channel: 'c', description: 'hello' }).decision).toBe('allow')
@@ -121,7 +122,7 @@ describe('which calls have an identity', () => {
 describe('the memory', () => {
   test('a plain ask that ran leaves nothing to approve', () => {
     const memory = grantMemory()
-    memory.hold('c1', identityOf(call.tool, call.input) as Subject)
+    memory.hold('c1', identityOf(call.tool, call.input) as Subject, LINE)
     expect(memory.settle('c1', true)).toBe(false)
     expect(memory.approve('c1', memory.epoch)).toBe(false)
   })
@@ -154,7 +155,7 @@ describe('the memory', () => {
     const memory = grantMemory()
     const subject = (i: number) => identityOf('Bash', { command: `echo ${i}` }) as Subject
     for (let i = 0; i < 33; i++) {
-      memory.hold(`d${i}`, subject(i))
+      memory.hold(`d${i}`, subject(i), LINE)
       memory.settle(`d${i}`, false)
       memory.approve(`d${i}`, memory.epoch)
     }
@@ -163,7 +164,7 @@ describe('the memory', () => {
 
   test('an approval for an earlier epoch is not granted', () => {
     const memory = grantMemory()
-    memory.hold('d1', identityOf(call.tool, call.input) as Subject)
+    memory.hold('d1', identityOf(call.tool, call.input) as Subject, LINE)
     memory.settle('d1', false)
     expect([memory.holds('d1', 'stale'), memory.approve('d1', 'stale')]).toEqual([false, false])
     expect(memory.allows(identityOf(call.tool, call.input) as Subject)).toBeNull()
@@ -239,7 +240,7 @@ describe('a refusal in the denied list', () => {
     const commands = Array.from({ length: 45 }, (_, i) => `echo ${i % 30}`)
     commands.forEach((command, i) => {
       const id = `d${i}`
-      memory.hold(id, identityOf('Bash', { command }) as Subject)
+      memory.hold(id, identityOf('Bash', { command }) as Subject, LINE)
       memory.settle(id, false)
       const ask: Check = { id, bucket: 'shell', detail: DETAIL, agentId: null, at: i, verdict: 'ask', approvable: true }
       g = settleCheck(recordCheck(g, ask), id, { didRun: false, isHeld: true, epoch: memory.epoch, refuser: 'person' })
