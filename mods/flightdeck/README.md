@@ -79,13 +79,16 @@ Press `d` in the gate panel to list the 4 latest refusals, newest first. Each ro
 | `rule <rule>` | a deny rule in your settings | No. Edit the settings. |
 | `hook <hook>` | a hook refused it | No. |
 | `policy` | the mode, the tool's own check, or your organization | No. |
-| `refused` | it was asked, then refused: by you, by the auto-mode classifier, or because nobody could be asked, as in a background agent | Yes, when the ask came from no settings rule, hook, setting, `decider` or organization ceiling. |
+| `refused · you` | it was asked and you pressed No | Yes, when the ask came from no settings rule, hook, setting, `decider` or organization ceiling. |
+| `refused · dontAsk` | it was asked and nobody could be asked, as in `dontAsk` mode or a background agent | Yes, on the same terms. |
+| `refused · hook` | it was asked, then a hook denied it as the call was made | No. |
+| `refused` | it was asked and still open when its loop's turn ended, so flightdeck cannot tell who refused it | Yes, on the same terms. |
 
 A call counts as refused in three cases:
 
 - You pressed No on its permission dialog. Claude Code answers that call with its own sentence, `The user doesn't want to proceed with this tool use`, and flightdeck matches it. As a backstop, an ask still open when that loop's turn ends counts as refused too, since a turn cannot end while a dialog is open or a tool runs.
-- Nobody could be asked, as in `dontAsk` mode or a background agent. Claude Code answers with its own sentence, `Permission to use <tool> has been denied`, and flightdeck matches that sentence.
-- A hook denied the call after it was asked.
+- Nobody could be asked, as in `dontAsk` mode or a background agent. Claude Code answers with its own sentence, `Permission to use <tool> has been denied`, and flightdeck matches that sentence only when `<tool>` is the call's own tool, so a tool's error text that names another tool is not a refusal.
+- A hook denied the call after it was asked. That row is blocked: approving would only meet the hook again.
 
 A call that ran and failed is not refused: its row is cleared, never in this list. If a later Claude Code words its refusal differently, such a call reads as cleared too, never as approvable.
 

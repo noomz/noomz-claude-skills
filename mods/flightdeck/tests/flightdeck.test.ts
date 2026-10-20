@@ -173,7 +173,7 @@ const check = (id: string, verdict: 'rule' | 'ask' | 'deny', bucket: Check['buck
 }
 
 const ran = { didRun: true } as const
-const refused = { didRun: false, isHeld: false, epoch: 'e1' } as const
+const refused = { didRun: false, isHeld: false, epoch: 'e1', refuser: 'person' } as const
 
 test('an ask is settled by the call that follows: cleared if it ran, deny if refused', () => {
   let g = recordCheck(DEFAULT_GATE, check('a', 'ask'))
@@ -221,7 +221,7 @@ test('a pending ask is never trimmed out before it settles', () => {
 })
 
 test('the newest 8 approvable refusals outlast a burst of other checks; older ones and blocked denials do not', () => {
-  const approvable = (id: string) => settleCheck(recordCheck(DEFAULT_GATE, check(id, 'ask', 'shell', true)), id, { didRun: false, isHeld: true, epoch: 'e1' }).recent
+  const approvable = (id: string) => settleCheck(recordCheck(DEFAULT_GATE, check(id, 'ask', 'shell', true)), id, { didRun: false, isHeld: true, epoch: 'e1', refuser: 'person' }).recent
   let g = DEFAULT_GATE
   for (let i = 0; i < 10; i += 1) g = { ...g, recent: [...g.recent, ...approvable(`ok${i}`)] }
   g = recordCheck(g, check('blocked', 'deny'))
@@ -482,6 +482,12 @@ test('a card Claude Code cannot show opens its summary with the reason, masked; 
   await ui.unmount()
 })
 
+const PERSON_NO_RESULT = {
+  result: "Error: The user doesn't want to proceed with this tool use.",
+  text: "The user doesn't want to proceed with this tool use.",
+  isError: true,
+}
+
 test('the denied list names who refused each call and offers approve only where it may', async ($, on) => {
   engine(on)
   const verdicts: Record<string, unknown> = {
@@ -492,7 +498,7 @@ test('the denied list names who refused each call and offers approve only where 
     s1: { decision: 'ask', rule: 'Bash(git push:*)' },
   }
   on('tool.check', (_$, e) => (verdicts[e.tool_use_id ?? ''] ?? { decision: 'ask' }) as never)
-  on('tool.call', () => ({ deny: 'refused' }) as never)
+  on('tool.call', () => PERSON_NO_RESULT as never)
   for (const id of Object.keys(verdicts)) {
     await $.tool.check({ tool: 'Bash', input: { command: `${id} x` }, tool_use_id: id })
     if (id === 'a1' || id === 's1') await $.tool.call({ tool: 'Bash', command: `${id} x`, tool_use_id: id } as never)
@@ -500,7 +506,7 @@ test('the denied list names who refused each call and offers approve only where 
   const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
   await ui.press({ key: 'gate-denied' })
   expect(await ui.find({ text: /^rule Bash\(rm:\*\) $/ })).toBeUndefined()
-  for (const label of [/^hook PreToolUse $/, /^policy $/, /^refused $/]) expect(await ui.find({ text: label }), String(label)).toBeDefined()
+  for (const label of [/^hook PreToolUse $/, /^policy $/, /^refused · you $/]) expect(await ui.find({ text: label }), String(label)).toBeDefined()
   expect((await ui.findAll({ type: 'Button' })).map(b => b.props.key).filter(k => String(k).startsWith('ok-'))).toEqual(['ok-a1'])
   expect((await ui.find({ key: 'ok-a1' }))?.props.hotkey).toBe('a')
   await ui.press({ key: 'ok-a1' })
@@ -516,7 +522,7 @@ test('the denied list names who refused each call and offers approve only where 
 test('a refusal recorded under another load reads as expired, with nothing to press', async ($, on) => {
   engine(on)
   on('tool.check', () => ({ decision: 'ask' as const }))
-  on('tool.call', () => ({ deny: 'refused' }) as never)
+  on('tool.call', () => PERSON_NO_RESULT as never)
   on('session.end', (_$, e) => ({ sessionId: e.sessionId }) as never)
   await $.tool.check({ tool: 'Bash', input: { command: 'ls' }, tool_use_id: 'e1' })
   await $.tool.call({ tool: 'Bash', command: 'ls', tool_use_id: 'e1' } as never)

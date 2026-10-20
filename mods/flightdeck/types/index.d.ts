@@ -7,6 +7,8 @@ export type Moment = 'before a plan' | 'error repeats' | 'before done'
 
 export type Bucket = 'file' | 'shell' | 'other'
 
+export type Refuser = 'person' | 'dontAsk' | 'hook'
+
 export type Main = {
   model: string
   effort: string
@@ -48,13 +50,14 @@ export type CheckBase = {
  * rule: core allowed it. granted: allowed because you approved it here. cleared: asked, then ran.
  * ask: put to the decider, pending; `approvable` when the ask was plain and its identity is held.
  * deny by rule, hook or policy: core refused it; `cause` names the rule or hook. deny refused: asked,
- * then refused; approvable only in the `epoch` (the memory generation) that holds its identity.
+ * then refused; approvable only in the `epoch` (the memory generation) that holds its identity and only
+ * when the refuser is not a hook. `refuser` is null when the loop's end settled it, with no sentence to read.
  */
 export type Check =
   | (CheckBase & { verdict: 'rule' | 'cleared' | 'granted' })
   | (CheckBase & { verdict: 'ask'; approvable: boolean })
   | (CheckBase & { verdict: 'deny'; by: 'rule' | 'hook' | 'policy'; cause: SafeText })
-  | (CheckBase & { verdict: 'deny'; by: 'refused'; approvable: boolean; epoch: string; retriedAt: number | null })
+  | (CheckBase & { verdict: 'deny'; by: 'refused'; refuser: Refuser | null; approvable: boolean; epoch: string; retriedAt: number | null })
 
 export type Verdict = Check['verdict']
 

@@ -5,7 +5,7 @@ import { DEFAULT_GATE, recordCheck, settleCheck } from '../hooks/core'
 import { approve, askSubject, clearGrants, DENIED_ROWS, denialRows, grantMemory, grantedVerdict, identityOf, isPlainAsk, markRetried, retryPlan, retryText, useGrant } from '../hooks/grants'
 import type { DenialRow, RetryPlan, Subject } from '../hooks/grants'
 import { scrub } from '../hooks/hygiene'
-import type { Check, Gate } from '../types'
+import type { Check, Gate, Refuser } from '../types'
 
 type Verdict = Parameters<typeof isPlainAsk>[0]
 
@@ -166,9 +166,9 @@ describe('the memory', () => {
 const EPOCH = 'e1'
 const DETAIL = scrub('Bash → git', 64).text
 
-const refusedGate = (id: string, o: { agentId?: string | null; isHeld?: boolean; isPlain?: boolean } = {}) => {
+const refusedGate = (id: string, o: { agentId?: string | null; isHeld?: boolean; isPlain?: boolean; refuser?: Refuser | null } = {}) => {
   const ask: Check = { id, bucket: 'shell', detail: DETAIL, agentId: o.agentId ?? null, at: 1, verdict: 'ask', approvable: o.isPlain ?? true }
-  return settleCheck(recordCheck(DEFAULT_GATE, ask), id, { didRun: false, isHeld: o.isHeld ?? true, epoch: EPOCH })
+  return settleCheck(recordCheck(DEFAULT_GATE, ask), id, { didRun: false, isHeld: o.isHeld ?? true, epoch: EPOCH, refuser: o.refuser ?? 'person' })
 }
 
 const rowOf = (g: Gate, epoch = EPOCH) => denialRows(g, DENIED_ROWS, epoch)[0] as DenialRow
@@ -185,6 +185,7 @@ describe('a refusal in the denied list', () => {
   const blocked: [label: string, g: Gate][] = [
     ['a refusal of a non-plain ask', refusedGate('d1', { isPlain: false })],
     ['a refusal whose identity the memory did not keep', refusedGate('d1', { isHeld: false })],
+    ['a refusal a hook gave when the call was made', refusedGate('d1', { refuser: 'hook' })],
     ['a deny from a settings rule', recordCheck(DEFAULT_GATE, { id: 'd1', bucket: 'shell', detail: DETAIL, agentId: null, at: 1, verdict: 'deny', by: 'rule', cause: scrub('Bash(git push:*)', 40).text })],
     ['a deny from a hook', recordCheck(DEFAULT_GATE, { id: 'd1', bucket: 'shell', detail: DETAIL, agentId: null, at: 1, verdict: 'deny', by: 'hook', cause: scrub('PreToolUse', 40).text })],
     ['a deny from the mode or a check', recordCheck(DEFAULT_GATE, { id: 'd1', bucket: 'shell', detail: DETAIL, agentId: null, at: 1, verdict: 'deny', by: 'policy', cause: scrub('', 40).text })],
@@ -215,7 +216,7 @@ describe('a refusal in the denied list', () => {
     let g = approve(refusedGate('d1'), 'd1', 5, EPOCH, [])
     g = useGrant(useGrant(g, 'd1'), 'd1')
     expect(g.grants.map(x => x.uses)).toEqual([2])
-    const two = settleCheck(recordCheck(g, { id: 'd2', bucket: 'shell', detail: DETAIL, agentId: null, at: 2, verdict: 'ask', approvable: true }), 'd2', { didRun: false, isHeld: true, epoch: EPOCH })
+    const two = settleCheck(recordCheck(g, { id: 'd2', bucket: 'shell', detail: DETAIL, agentId: null, at: 2, verdict: 'ask', approvable: true }), 'd2', { didRun: false, isHeld: true, epoch: EPOCH, refuser: 'person' })
     expect(approve(two, 'd2', 6, EPOCH, ['d1']).grants.map(x => x.denialId)).toEqual(['d2'])
     expect(clearGrants(g).grants).toEqual([])
   })

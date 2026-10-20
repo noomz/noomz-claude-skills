@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { AgentCard, Architect, Bucket, Check, Gate, Layout, LogLine, Loop, Main, Roster, Turn, Usage, View } from '../types'
+import type { AgentCard, Architect, Bucket, Check, Gate, Layout, LogLine, Loop, Main, Refuser, Roster, Turn, Usage, View } from '../types'
 import { scrub } from './hygiene'
 import type { Hygiene, SafeText, Scrubbed } from './hygiene'
 import {
@@ -63,7 +63,7 @@ import {
   adviceLine,
   receiptOf,
   recordCheck,
-  isRefusal,
+  refuserOf,
   pendingAsks,
   settleCheck,
   shorten,
@@ -81,6 +81,7 @@ import type { DenialRow, GrantMemory } from './grants'
 const PANE = 'flightdeck'
 const TITLE = 'Flightdeck'
 const PANE_COLUMNS = 66
+const REFUSER_LABEL: Record<Refuser, string> = { person: 'you', dontAsk: 'dontAsk', hook: 'hook' }
 
 
 // ---------------------------------------------------------------- state
@@ -271,10 +272,10 @@ async function forgetSession($: EngineInterface, memory: GrantMemory) {
   await update($, gate, g => clearGrants(normalizeGate(g)))
 }
 
-async function settleCalls($: EngineInterface, memory: GrantMemory, ids: readonly string[], didRun: boolean) {
+async function settleCalls($: EngineInterface, memory: GrantMemory, ids: readonly string[], ran: { didRun: true } | { didRun: false; refuser: Refuser | null }) {
   const settles = ids.map((id): [string, Settle] => {
-    const isHeld = memory.settle(id, didRun)
-    return [id, didRun ? { didRun } : { didRun, isHeld, epoch: memory.epoch }]
+    const isHeld = memory.settle(id, ran.didRun)
+    return [id, ran.didRun ? ran : { ...ran, isHeld, epoch: memory.epoch }]
   })
   const settled = (g: Gate) => settles.reduce((x, [id, s]) => settleCheck(x, id, s), g)
   const g0 = await getGate($)
@@ -539,8 +540,9 @@ export const register: Register = (on, options) => {
 
   on('tool.call', async ($, e, next) => {
     const ran = await next(e)
-    const didRun = !isRefusal(ran)
-    const isSettled = await settleCalls($, memory, [e.tool_use_id], didRun)
+    const refuser = refuserOf(e.tool, ran)
+    const didRun = refuser === null
+    const isSettled = await settleCalls($, memory, [e.tool_use_id], didRun ? { didRun } : { didRun, refuser })
     // A background agent hands its report back through this tool; an architect's report is its advice.
     if (String(e.tool) === 'SubagentHandback') {
       const message = (e as unknown as { message?: unknown }).message
@@ -648,7 +650,7 @@ export const register: Register = (on, options) => {
     const done = await next(e)
     const id = e.agentId
     const open = pendingAsks(await getGate($), id ?? null)
-    if (await settleCalls($, memory, open.map(c => c.id), false)) {
+    if (await settleCalls($, memory, open.map(c => c.id), { didRun: false, refuser: null })) {
       for (const c of open) await say($, await whoIs($, id), `${c.detail}  denied`, 'error', id ?? null)
     }
     const now = await $.clock.now()
@@ -865,7 +867,8 @@ export const register: Register = (on, options) => {
       c.verdict === 'rule' ? 'allowed' : c.verdict === 'cleared' ? decider : c.verdict === 'granted' ? 'approved' : c.verdict === 'ask' ? 'pending' : 'denied'
     const toggleGate = (to: Bucket | 'denied') => () =>
       update($, view, x => ({ ...normalize(DEFAULT_VIEW, x), gateOpen: normalize(DEFAULT_VIEW, x).gateOpen === to ? null : to }))
-    const causeLabel = (d: DenialRow['check']) => (d.by === 'refused' || d.by === 'policy' ? d.by : `${d.by} ${d.cause}`)
+    const causeLabel = (d: DenialRow['check']) =>
+      d.by === 'refused' ? (d.refuser ? `refused · ${REFUSER_LABEL[d.refuser]}` : 'refused') : d.by === 'policy' ? d.by : `${d.by} ${d.cause}`
     const rowLabel = (r: DenialRow) =>
       r.status === 'expired'
         ? 'expired'

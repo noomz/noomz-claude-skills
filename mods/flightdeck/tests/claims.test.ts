@@ -1,10 +1,10 @@
 import type { On } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 
-import { DEFAULT_GATE, DEFAULT_MAIN, DEFAULT_TURN, DEFAULT_USAGE, adviceLine, isRefusal, consultVia, toolDetail } from '../hooks/core'
+import { DEFAULT_GATE, DEFAULT_MAIN, DEFAULT_TURN, DEFAULT_USAGE, adviceLine, refuserOf, consultVia, toolDetail } from '../hooks/core'
 import { scrub } from '../hooks/hygiene'
 import { flightdeck, stateStoreWithoutRedraw } from './store'
-import type { AgentCard, Architect, Gate, Hygiene, LogLine, Main, Turn, Usage } from '../types'
+import type { AgentCard, Architect, Check, Gate, Hygiene, LogLine, Main, Turn, Usage } from '../types'
 import type { Engine } from './store'
 
 type Row = [input: string, text: string, masked: number]
@@ -325,7 +325,7 @@ const gateEngine = (on: On) => {
   const values = engine(on)
   const core: { verdict: CheckVerdict } = { verdict: { decision: 'ask' } }
   on('tool.check', () => core.verdict)
-  on('tool.call', () => ({ deny: 'refused' }) as never)
+  on('tool.call', () => ({ result: `Error: ${PERSON_NO}`, text: PERSON_NO, isError: true }) as never)
   return { values, core }
 }
 
@@ -471,19 +471,22 @@ const PERSON_NO =
   "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed."
 const DONT_ASK = "Permission to use Bash has been denied because Claude Code is running in don't ask mode."
 
-describe('isRefusal reads a result as never ran', () => {
-  const cases: [label: string, result: Parameters<typeof isRefusal>[0], expected: boolean][] = [
-    ["a hook's deny", { deny: 'refused' }, true],
-    ["dontAsk mode's error", { text: DONT_ASK, isError: true }, true],
-    ["a person's No", { text: PERSON_NO, isError: true }, true],
-    ["a person's No sentence on a result that is not an error", { text: PERSON_NO, isError: false }, false],
-    ['the shorter engine sentence', { text: 'Permission to use Write denied.', isError: true }, true],
-    ['a command that ran and failed', { text: 'Exit code 1\nls: x: No such file or directory', isError: true }, false],
-    ['the sentence on a result that is not an error', { text: DONT_ASK }, false],
-    ['the sentence quoted inside other output', { text: `Exit code 1\n${DONT_ASK}`, isError: true }, false],
-    ['an error with no text', { isError: true }, false],
+describe('refuserOf reads who refused a call, or null when it ran', () => {
+  const cases: [label: string, tool: string, result: Parameters<typeof refuserOf>[1], expected: ReturnType<typeof refuserOf>][] = [
+    ["a hook's deny", 'Bash', { deny: 'refused' }, 'hook'],
+    ["dontAsk mode's error", 'Bash', { text: DONT_ASK, isError: true }, 'dontAsk'],
+    ["a person's No", 'Bash', { text: PERSON_NO, isError: true }, 'person'],
+    ["a person's No sentence on a result that is not an error", 'Bash', { text: PERSON_NO, isError: false }, null],
+    ['the shorter engine sentence', 'Write', { text: 'Permission to use Write denied.', isError: true }, 'dontAsk'],
+    ['the engine sentence naming another tool', 'Write', { text: 'Permission to use Bash denied.', isError: true }, null],
+    ['an MCP error that opens with the sentence for another tool', 'mcp__s__t', { text: 'Permission to use OtherTool denied. Ask again.', isError: true }, null],
+    ['a tool whose name the sentence only starts with', 'Bash', { text: 'Permission to use BashX has been denied', isError: true }, null],
+    ['a command that ran and failed', 'Bash', { text: 'Exit code 1\nls: x: No such file or directory', isError: true }, null],
+    ['the sentence on a result that is not an error', 'Bash', { text: DONT_ASK }, null],
+    ['the sentence quoted inside other output', 'Bash', { text: `Exit code 1\n${DONT_ASK}`, isError: true }, null],
+    ['an error with no text', 'Bash', { isError: true }, null],
   ]
-  for (const [label, result, expected] of cases) test(label, () => expect(isRefusal(result)).toBe(expected))
+  for (const [label, tool, result, expected] of cases) test(label, () => expect(refuserOf(tool, result)).toBe(expected))
 })
 
 const askEngine = (on: On, ran: () => unknown) => {
@@ -535,6 +538,26 @@ describe('an ask settles as refused', () => {
     await (await startCallWithoutAwait($, 'p1')).pendingCall
     expect(state(values).gate.recent.map(c => [c.id, c.verdict])).toEqual([['p1', 'deny']])
     expect(await deniedKeys($)).toEqual(['ok-p1'])
+  })
+
+  test("when a hook denies the call as it is made: blocked, labelled, with nothing to approve", async ($, on) => {
+    const values = askEngine(on, () => ({ deny: 'refused' }))
+    await (await startCallWithoutAwait($, 'h1')).pendingCall
+    const c = state(values).gate.recent[0] as Extract<Check, { by: 'refused' }>
+    expect([c.verdict, c.refuser, c.approvable]).toEqual(['deny', 'hook', false])
+    const ui = await $.ui.mount(pane())
+    await ui.press({ key: 'gate-denied' })
+    await ui.redraw()
+    expect(await ui.find({ text: /^refused · hook $/ })).toBeDefined()
+    expect(await ui.find({ key: 'ok-h1' })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test("never for an MCP tool's error that names another tool's refusal: it ran, and is cleared", async ($, on) => {
+    const values = askEngine(on, () => ({ result: 'x', text: 'Permission to use OtherTool denied.', isError: true }))
+    await $.tool.check({ tool: 'mcp__s__t', input: { q: 1 }, tool_use_id: 'm1' } as never)
+    await $.tool.call({ tool: 'mcp__s__t', q: 1, tool_use_id: 'm1' } as never)
+    expect(state(values).gate.recent.map(c => [c.id, c.verdict])).toEqual([['m1', 'cleared']])
   })
 
   test('never for a call that ran and failed: it is cleared and stays out of the denied list', async ($, on) => {

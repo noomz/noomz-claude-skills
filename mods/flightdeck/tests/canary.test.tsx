@@ -68,7 +68,7 @@ async function seed($: Engine, on: On) {
   const refusedAsks = new Set(['refusedMain', 'refusedAgent', 'refusedLast'])
   on('tool.check', (_$, e) => (refusedAsks.has(e.tool_use_id ?? '') ? { decision: 'ask' as const } : ({ decision: 'deny' as const, reason: 'rule', rule: 'Bash(password=hunter2)' }) as never))
   on('tool.call', (_$, e) =>
-    (refusedAsks.has(e.tool_use_id) ? { deny: `refused ${COMMAND}` } : { result: { stdout: '', stderr: 'boom', interrupted: false }, text: 'boom', isError: true }) as never,
+    (refusedAsks.has(e.tool_use_id) ? { result: `Error: ${COMMAND}`, text: `The user doesn't want to proceed with this tool use. ${COMMAND}`, isError: true } : { result: { stdout: '', stderr: 'boom', interrupted: false }, text: 'boom', isError: true }) as never,
   )
   on('agent.list', () => ({ value: [{ id: 'ag1', description: 'deploy', type: 'general-purpose', status: 'completed' }] }) as never)
   on('prompt.submit', (_$, e) => {

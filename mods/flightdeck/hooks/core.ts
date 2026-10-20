@@ -17,6 +17,7 @@ import type {
   Main,
   Moment,
   Receipt,
+  Refuser,
   Roster,
   Tally,
   ToolNote,
@@ -440,20 +441,26 @@ export const checkOf = (
   return { ...base, verdict: 'deny', by: v.rule ? 'rule' : v.hook ? 'hook' : 'policy', cause: o.cause }
 }
 
-export type Settle = { didRun: true } | { didRun: false; isHeld: boolean; epoch: string }
+export type Settle = { didRun: true } | { didRun: false; isHeld: boolean; epoch: string; refuser: Refuser | null }
 
-// The engine's two sentences for a call nobody let run, as Claude Code 2.1.304 words them: dontAsk's
-// "Permission to use <tool> denied" and a person's No, "The user doesn't want to proceed". A rewording
+// The engine's two sentences for a call nobody let run, as Claude Code 2.1.304 words them. dontAsk's
+// names the call's own tool, so a tool's error text naming another cannot pass for it. A rewording
 // fails safe: the call reads as ran, so its row is cleared and never approvable.
-const ENGINE_REFUSAL = /^(?:Permission to use \S+ (?:has been )?denied|The user doesn't want to proceed with this tool use)/
+const PERSON_NO = "The user doesn't want to proceed with this tool use"
 
-export const isRefusal = (r: { deny?: string; isError?: boolean; text?: string }) =>
-  r.deny !== undefined || (r.isError === true && ENGINE_REFUSAL.test(r.text ?? ''))
+export const refuserOf = (tool: string, r: { deny?: string; isError?: boolean; text?: string }): Refuser | null => {
+  if (r.deny !== undefined) return 'hook'
+  if (r.isError !== true) return null
+  const text = r.text ?? ''
+  if (text.startsWith(PERSON_NO)) return 'person'
+  const dontAsk = [`Permission to use ${tool} denied`, `Permission to use ${tool} has been denied`]
+  return dontAsk.some(s => text.startsWith(s)) ? 'dontAsk' : null
+}
 
 /**
  * The asks still open in one loop (`null` for the main loop). A loop's turn cannot end while it has a
  * dialog open or a tool running, so at its turn.complete each of these was refused: a backstop for a
- * refusal whose text isRefusal does not match.
+ * refusal whose text refuserOf does not match.
  */
 export const pendingAsks = (g: Gate, agentId: string | null) => g.recent.filter(c => c.verdict === 'ask' && c.agentId === agentId)
 
@@ -463,7 +470,7 @@ export const settleCheck = (g: Gate, id: string, s: Settle): Gate => {
   const { approvable: wasPlain, ...base } = c
   const next: Check = s.didRun
     ? { ...base, verdict: 'cleared' }
-    : { ...base, verdict: 'deny', by: 'refused', approvable: wasPlain && s.isHeld, epoch: s.epoch, retriedAt: null }
+    : { ...base, verdict: 'deny', by: 'refused', refuser: s.refuser, approvable: wasPlain && s.isHeld && s.refuser !== 'hook', epoch: s.epoch, retriedAt: null }
   return {
     ...g,
     recent: g.recent.map(r => (r === c ? next : r)),
