@@ -14,7 +14,8 @@ SCRIPT = pathlib.Path(meeting.__file__)
 
 class CleanTests(unittest.TestCase):
     def test_numbers_survive(self):
-        for text in ("budget is 10000 baht", "งบ 100000 บาท", "5555 ตลกมาก", "ราคา 1,000,000 บาท"):
+        for text in ("budget is 10000 baht", "งบ 100000 บาท", "5555 ตลกมาก", "ราคา 1,000,000 บาท",
+                     "1.5 1.5 1.5 1.5"):
             self.assertEqual(meeting.clean(text), text)
 
     def test_spaced_loop_is_cut(self):
@@ -38,7 +39,7 @@ class NameTests(unittest.TestCase):
         self.assertEqual(meeting.meeting_name("2026-10-20-sprint-review"), "2026-10-20-sprint-review")
 
     def test_rejects_paths_and_dot_names(self):
-        for bad in ("../x", "a/b", ".hidden", "..", ""):
+        for bad in ("../x", "a/b", ".hidden", "..", "", "ACTIVE.json", "snap-window.png"):
             with self.assertRaises(argparse.ArgumentTypeError):
                 meeting.meeting_name(bad)
 

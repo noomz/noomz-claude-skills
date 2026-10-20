@@ -100,9 +100,9 @@ def clean(text):
     text = re.sub(rf"([{THAI}])([{LATIN}])", r"\1 \2", text)
     text = re.sub(rf"([{LATIN}])([{THAI}])", r"\1 \2", text)
     # decoder loop guard: a unit repeated 4+ times, spaced or not (Thai loops run together).
-    # A digit-only unit is a number such as 10000, never a loop.
+    # A numeric unit (10000, 1.5, 1,000) is a number, never a loop.
     return re.sub(r"(\S+?)(?:\s*\1){3,}",
-                  lambda m: m[0] if m[1].isdigit() else f"{m[1]} [repeat cut]", text)
+                  lambda m: m[0] if re.fullmatch(r"\d[\d.,]*", m[1]) else f"{m[1]} [repeat cut]", text)
 
 
 def transcribe_one(wav, prompt, lang):
@@ -516,8 +516,9 @@ def cmd_vocab(a):
 
 
 def meeting_name(name):
-    # a folder name under the data root: no path separators, no leading dot
-    if not re.fullmatch(r"[\w][\w.-]*", name):
+    # a folder name under the data root: no path separators, no leading dot, and no
+    # .json/.png ending, which would collide with ACTIVE.json and snap-*.png beside it
+    if not re.fullmatch(r"[\w][\w.-]*", name) or name.lower().endswith((".json", ".png")):
         raise argparse.ArgumentTypeError(f"bad meeting name {name!r}: use letters, digits, '-', '_', '.'")
     return name
 
