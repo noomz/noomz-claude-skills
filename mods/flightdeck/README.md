@@ -34,8 +34,8 @@ Mods are an early-access Claude Code feature and their API can change between re
 | --- | --- | --- |
 | **main** | model, effort, permission mode, request count; a context gauge with compactions (⟲); cost and the first two rate-limit windows when your plan reports them, with the time to each reset (↻) from 56 columns; the last main-loop request's time to first token and output tokens per second | `turn.step`, `session.measure`, `session.compact`, `$.session.usage()` |
 | **architect** | consults on a timeline, whether one is running, how long the last took; optionally the moment of each consult; one line of a subagent architect's advice, masked, picked as [What it keeps](#what-it-keeps) says | a spawn of a matching agent type, or a matching server tool in the assistant's rows |
-| **gate** | one cell per recent permission check: green allowed without asking, blue decided by the auto-mode classifier or you and then run, amber pending, red ✗ denied, dim if made inside a subagent. Totals, and a drill-down per tool family that shows its last 5 checks: the tool name and its program word, file or host, masked | `tool.check`, settled by the `tool.call` around it |
-| **agents** | cards side by side while they fit: the task, type, live context and output tokens, steps, a running clock, `max_tokens` in red. Beyond that, swimlanes on one time axis | `agent.spawn`, `turn.step`, `tool.call`, `turn.complete` |
+| **gate** | one cell per recent permission check: green allowed without asking, blue decided by the auto-mode classifier or you and then run, the main box's colour allowed by your approval, amber pending, red ✗ denied, dim if made inside a subagent. Totals, a drill-down per tool family that shows its last 5 checks (the tool name and its program word, file or host, masked), and the [denied calls](#denied-calls) list | `tool.check`, settled by the `tool.call` around it or by its loop's `turn.complete` |
+| **agents** | cards side by side while they fit: the task, type, live context and output tokens, steps, a running clock, `max_tokens` in red. Beyond that, swimlanes on one time axis. A card's number shows [that agent's conversation](#inspect-a-subagent) | `agent.spawn`, `turn.step`, `tool.call`, `turn.complete` |
 | **loops** | model loops that match no card: workflow agents, compactions, memory forks | `turn.step` ids no card claims |
 | **receipt** | the running turn, or the last one: duration, agents, edits, errors, cost added; and a dim `hygiene · <n> masked` cell | `turn.start`, `turn.complete` |
 | **log** | each turn you type as `you · new turn · <n> chars`, a turn the engine started as `engine` and a fixed label, spawns, an agent the engine wakes again (`woken`), completions, consults, edits, errors and denials; filtered to one agent while you view its transcript | all of the above |
@@ -49,17 +49,54 @@ Connectors animate only while work flows: a turn is running, an agent is running
 | `/flightdeck` | open the pane |
 | `/flightdeck close` | close it |
 | `/flightdeck reset` | clear agents, checks and their totals, consults, the log, the turn, the architect roster and the masked count (cost, rate limits and compactions stay) |
-| `/flightdeck audit` | list the stored text fields under `log`, `agents`, `gate`, `architect` and `roster` by state path with their lengths in UTF-16 units, as JavaScript counts them, and the masked count. It prints no value, and the model does not read it |
+| `/flightdeck audit` | list the stored text fields under `log`, `agents`, `gate`, `architect`, `roster` and `view` by state path with their lengths in UTF-16 units, as JavaScript counts them, and the masked count. It prints no value, and the model does not read it |
 | `/flightdeck layout auto\|compact\|wide\|mini` | override the layout for this session |
 
 Focus the pane with `ctrl+x tab`, then:
 
 | Key | Does |
 | --- | --- |
-| `1`, `2`, … | expand an agent card or lane: its task, last 3 tool calls, status and duration |
+| `1`, `2`, … | show that agent's conversation in the main view; press it again to return |
+| `m` | return the main view to the main conversation (shown while you view an agent) |
 | `f` `s` `o` | open the gate's file / shell / other drill-down: the last 5 checks and their verdicts |
+| `d` | open the gate's denied calls |
+| `a` `r` `x` | with the denied calls open: arm the newest approvable refusal, then press again to approve it; retry the newest approved one, forget every approval |
 
 `/clear` and a resume reset the pane along with the conversation.
+
+### Inspect a subagent
+
+Press a card's number (`1` to `6`) to open that agent's conversation in the main view, as the tasks list does. Your next Enter goes to that agent. Press the number again, or `m`, to return to the main conversation. Claude Code draws the conversation; flightdeck stores none of it. While you view an agent, its summary stays open under the cards: its task, status and last 3 tool calls.
+
+Claude Code cannot show every agent, for example a workflow agent, or a finished agent with no saved transcript. Then the card opens its summary with the reason, masked: `not shown: <reason>`. Press the number again to close it.
+
+### Denied calls
+
+Press `d` in the gate panel to list the 4 latest refusals, newest first. Each row says what refused the call:
+
+| Label | Meaning | Can you approve it here? |
+| --- | --- | --- |
+| `rule <rule>` | a deny rule in your settings | No. Edit the settings. |
+| `hook <hook>` | a hook refused it | No. |
+| `policy` | the mode, the tool's own check, or your organization | No. |
+| `refused · you` | it was asked and you pressed No | Yes, when the ask came from no settings rule, hook, setting, `decider` or organization ceiling. |
+| `refused · dontAsk` | it was asked and nobody could be asked, as in `dontAsk` mode or a background agent | Yes, on the same terms. |
+| `refused · hook` | it was asked, then a hook denied it as the call was made | No. |
+| `refused` | it was asked and still open when its loop's turn ended, so flightdeck cannot tell who refused it | Yes, on the same terms. |
+
+A call counts as refused in three cases:
+
+- You pressed No on its permission dialog. Claude Code answers that call with its own sentence, `The user doesn't want to proceed with this tool use`, and flightdeck matches it. As a backstop, an ask still open when that loop's turn ends counts as refused too, since a turn cannot end while a dialog is open or a tool runs.
+- Nobody could be asked, as in `dontAsk` mode or a background agent. Claude Code answers with its own sentence, `Permission to use <tool> has been denied`, and flightdeck matches that sentence only when `<tool>` is the call's own tool, so a tool's error text that names another tool is not a refusal.
+- A hook denied the call after it was asked. That row is blocked: approving would only meet the hook again.
+
+A call that ran and failed is not refused: its row is cleared, never in this list. If a later Claude Code words its refusal differently, such a call reads as cleared too, never as approvable.
+
+The row a press would act on gets a second, full-width line showing what an approval would match: the tool, a 4-character mark of the exact call, so two calls read apart even past the cut, and the masked head of the command, path, search, URL or input. It has an **approve** button, which takes two presses on the same row. The first press arms the row and its button reads **confirm**; the second approves it. `a` presses the armed row, or the newest approvable row when none is armed, and a refusal that arrives after you armed a row does not move it. A press on a row you did not arm only arms that row. Approving allows **that exact call** for the rest of this session: the same shell command character for character with every other field the same (only its description, timeout and background flag may differ, so the same command with the sandbox turned off is asked again), the same tool on the same file path, the same search path and pattern, the same URL, or for any other tool the same input, its description included. Approving `npm publish` does not allow `npm publish --force`, and `a && b` approved allows only `a && b`. Flightdeck's `tool.check` then answers `allow` when core would ask about that call with nothing configured behind the ask. The row reads `approved · not used yet` until that happens, then `approved · used <n>×`. If it stays at `not used yet` after the call ran again, something above flightdeck answered first.
+
+An approved row has a **retry** button. Retry tells the loop that was refused to try again, with one fixed message that names only the row's masked detail: the main conversation gets a prompt that runs when the session is idle, and a subagent gets a message (a finished subagent resumes, as when you message it). Each refusal retries once. A retry that is not delivered, because the prompt queue refused it or the subagent is gone, logs `retry not delivered, press again` and the row offers retry again. Approve and retry are two presses on purpose: a retry costs a turn.
+
+`x` forgets every approval. Approvals are also forgotten by `/flightdeck reset`, when the session ends for any reason, clears or resumes, and when flightdeck reloads. A row from before that reads `expired` and has nothing to press.
 
 ## Where it runs
 
@@ -71,7 +108,16 @@ With `openOnStart`, the pane opens by itself when a session starts, in terminals
 
 ## What it can reach
 
-Flightdeck only watches. Its hooks hand on what the next handler returns, so it does not deny or rewrite a tool call, a prompt or a subagent. A test pins this for `tool.check`, `tool.call`, `turn.start`, `turn.complete` and `agent.spawn`.
+Flightdeck watches, with one exception that you start: a call you approved in the [denied calls](#denied-calls). Its other hooks hand on what the next handler returns, so it does not deny or rewrite a tool call, a prompt or a subagent; a test pins this for `tool.call`, `turn.start`, `turn.complete` and `agent.spawn`.
+
+Its `tool.check` hook answers `allow` in place of core's verdict only when all of these hold, and the claims tests pin each one:
+
+- You pressed approve on a refusal of that exact call in this session, and flightdeck has not reloaded since.
+- Core's verdict is `ask` with no settings rule, hook, setting, `decider` or organization ceiling behind it. A deny of any origin never changes, and neither does any other verdict.
+- The tool is not `AskUserQuestion`, `ExitPlanMode`, `Agent`, `Task` or `SendMessage`.
+- The session is not in plan mode, as far as flightdeck knows. In plan mode Claude Code itself ignores a hook's `allow` for any call that is not read-only. Flightdeck also holds back when it knows the mode is plan, but it learns the mode only from prompts and subagent starts that reach it, so this check is best effort.
+
+Claude Code still asks you for tools that need you, and still blocks writes in plan mode, whatever a hook answers. Retry sends one fixed-text prompt (`$.prompt.submit`) or message (`$.session.send`), and only when you press it. A card press asks Claude Code to show an agent's transcript in the main view (`$.ui.view`); that changes what you see, not what any agent does.
 
 | It sees | Through |
 | --- | --- |
@@ -79,6 +125,7 @@ Flightdeck only watches. Its hooks hand on what the next handler returns, so it 
 | each permission verdict | `tool.check` |
 | subagent spawns, their model requests and token usage, and their final answers | `agent.spawn`, `turn.step`, `turn.complete` |
 | your prompts | `turn.start` |
+| which agents exist and whether each is running, to route a retry | `$.agent.list()` |
 | the agent types offered to the model | `agent.offer` |
 | context, cost and rate-limit readings | `session.measure`, `$.session.usage()` |
 | advisor tool calls in the assistant's responses (their content is encrypted) | `session.append` |
@@ -98,9 +145,13 @@ Seeing is not keeping. Each row below is a claim a test in [`tests/`](tests) che
 | An agent's description | masked, at most 80 characters | `an agent description is masked and cut to 80 characters, its name to 40` |
 | An agent's name, or its type when it has no name; a consult's agent type (what follows the last `:` of the masked type); an architect roster entry | masked, at most 40 characters | `the names flightdeck keeps are masked and cut to 40 characters` (three tests), `every stored text field stays inside its cap` |
 | A tool call's input | the tool name and one part of the input, masked, at most 64 characters. For a command, the word it opens with: after any leading spaces, tabs or line breaks, a word of letters, digits, `_`, `.`, `/` and `-` that does not start with `-`, followed by a space, a tab, a carriage return, a line feed or the end. The word is masked, then its last path segment taken and masked again when that changed it, so `/usr/local/bin/psql postgres://bob:hunter2@db/x` reads `Bash → psql`. Only the opening is checked, so `echo ok; pwd` reads `Bash → echo`. A command that opens any other way shows the tool name alone. That includes an assignment, so `PGPASSWORD=hunter2 psql -h db` and `H=Authorization:Bearer dummytok123456 curl x` read `Bash` and `$env:PGPASSWORD='hunter2'; psql` reads `PowerShell`, and a quote, `$`, `\`, a bracket or any other character at the start. For a file path, its last two segments, the path masked whole first when it holds `://`, a `=`, `:`, quote, space or `--` (a drive letter aside): `/repo/postgres://u:pw@h/db` reads `Grep → u:[masked]@h/db`. For a URL, its parsed host as the URL spells it, when the URL holds no tab or line break, the user name and password hold no percent-encoded character and the host has the DNS or IP shape; otherwise the tool name alone. Patterns, queries, descriptions and a URL's user, password, query and fragment are never shown | `a Bash or PowerShell detail shows the plain word a command opens with`, `…shows the tool name alone for a command that does not open with a plain word`, `a command that opens with an assignment, or with …, shows the tool name alone`, `a file tool detail…`, `a URL tool detail keeps the host alone`, `a denied PowerShell call that sets a variable never keeps the value` |
+| A call you can approve, and one you approved | in module memory alone, as the exact call it matches on, until the session ends or flightdeck reloads. State keeps only the refusal's masked tool detail, who refused it, the loop it ran in, and for an approval its time and use count. While the refusal can be approved or retried, the denied list draws its subject line from module memory: the tool, a 4-character mark of the exact call, and the masked head of the command, path, search, URL or input, at most 120 characters. The command, path or input is never stored | `a denied command approved and retried reaches neither state nor the retry text`, `after session.start no grant is left, in state or in memory`, `after session.end (…) no grant is left, in state or in memory` (five tests) |
+| A deny's settings rule or hook name | masked, at most 40 characters | `every stored text field stays inside its cap` |
+| Claude Code's reason for not showing an agent | masked, at most 64 characters | `every stored text field stays inside its cap`, `a card Claude Code cannot show opens its summary with the reason, masked; a second press closes it` |
+| A retry's text | a fixed sentence holding only the refusal's masked tool detail | `the text holds the scrubbed detail and nothing else from the session`, `a denied command approved and retried reaches neither state nor the retry text` |
 | Each text above | with ESC, other control characters, bidi overrides and zero-width characters removed, and whitespace folded to one line | `controls, ESC, bidi overrides and zero-width characters are stripped`, `a newline cannot start a second line` |
 
-The canary tests in [`tests/canary.test.tsx`](tests/canary.test.tsx) feed secrets and session words through each place the port's audit found flightdeck reading text: typed prompts and hand-back turns, an agent's description, name and type, an offered agent type, a shell command, a file path, a URL, a fetch prompt, a search pattern, a tool name, a subagent's answer and an architect's report. They read each stored string and each drawn string in the four layouts, docked and inline, on the terminal and desktop surfaces. None of the canary's secrets, prompt or answer words, ESC or bidi characters shows up, and each field the canary lists stays inside its cap.
+The canary tests in [`tests/canary.test.tsx`](tests/canary.test.tsx) feed secrets and session words through each place the port's audit found flightdeck reading text: typed prompts and hand-back turns, an agent's description, name and type, an offered agent type, a shell command, a file path, a URL, a fetch prompt, a search pattern, a tool name, a subagent's answer, an architect's report, a deny's rule, Claude Code's reason for not showing an agent, and denied commands that are approved and retried, one of them left unanswered as a No is and settled by its loop's end. The retry texts are read too. They read each stored string and each drawn string in the four layouts, docked and inline, on the terminal and desktop surfaces. None of the canary's secrets, prompt or answer words, ESC or bidi characters shows up, and each field the canary lists stays inside its cap. The one exception is the denied list's subject line, which shows the masked command on purpose: the canary checks that it is drawn, holds no secret, and stays inside 120 characters, and that the command's words show up nowhere else.
 
 `scrub()` replaces each secret with `[masked]` and keeps the key name. Compatibility characters read as the plain characters they show, so a fullwidth `＝` is `=`. Each rule below names the forms the tests pin. Other spellings can slip through, and the ones found so far are listed under **What it does not catch**. In the tested forms a secret is one mask and counts once; the exceptions are the two-mask cases listed with the over-masks. A `[masked]` the text already holds as a whole value, such as `password=[masked]`, stays and is not counted, and scrubbing a scrubbed text changes nothing. [`tests/hygiene.test.ts`](tests/hygiene.test.ts) and [`tests/claims.test.ts`](tests/claims.test.ts) hold the cases. The rules cover:
 
@@ -124,7 +175,7 @@ A blank filler such as `ㅤ` (U+3164) is read both as a space and as nothing, an
 
 Each field is cut to its cap at the longest start that does not end inside a mask or show part of a secret, so on the inputs the suite cuts at each cap a longer cap shows no less. A final `…` reads as a cut mark and stays outside any mask.
 
-**What it does not catch.** Masking works by pattern. A secret it misses stays in the fields that keep text: the architect's advice line, an agent's description, name and type, the architect roster and a tool detail. The tests pin these misses:
+**What it does not catch.** Masking works by pattern. A secret it misses stays in the fields that keep text: the architect's advice line, an agent's description, name and type, the architect roster and a tool detail. It also shows in the denied list's subject line while that refusal can be approved, so `mysqldump --pass=S3cretPass99 db` refused there reads in full. The tests pin these misses:
 
 - a secret with no key name or known shape, such as `the creds are hunter2`
 - short forms such as `pw=hunter2`, and a value after a doubled or unknown separator, such as `password--hunter2` and `password >> hunter2`
@@ -162,9 +213,9 @@ Each field is cut to its cap at the longest start that does not end inside a mas
 
 Some text is masked that holds no secret. `scrub()` masks what upstream `redact()` hides, with the exceptions above, so a word after `token:`, `secret:`, `Authorization:`, `Bearer` or a secret flag is masked, as in `Add --token flag`, `Add Bearer authentication`, `Return 401 when Authorization: header is missing`, `Document the token: field` and `secret: none here`. The same parity masks a separator typed after `=` or `:` together with its value (`password == hunter2` reads `password =[masked]`), a key word that follows `password:` along with its own value (`password: secret: hunter2` shows two masks and counts 2), the word `Basic` behind a blank filler or zero-width character after `Authorization =` (`Authorization =` U+2800 `Basic abc` reads `Authorization =[masked] [masked]` and counts 2), the rest of a query after `token=` (`?token=abc&state=xyz` reads `?token=[masked]`), the port and path before a later `@` in a URL (`https://example.com:8443/package/@scope/pkg` reads `https://example.com:[masked]@scope/pkg`), and an `-----END` armor glued to a token-shaped run. An empty quoted value carries on to the next word, so `password: "" (none)` masks `(none)`. A query key typed as prose masks the next word, so `Deprecate the ?api_key= query param` masks `query`, and `docs;key=value` masks `value`. A final `!` after a word reads as a password sign, so `Rotate the password now!` masks `now!`. Other over-masks are `?code=python`, `PASSWORD_MIN_LENGTH=12`, `docker run -u $(id -u):$(id -g)`, a variable whose name only ends in `KEY` such as `MONKEY=banana`, and a name that starts like a token such as `sk-learn-pipeline` or `pk_live_handler_name`. `/flightdeck audit` shows how much text flightdeck holds.
 
-State lives in `$.state` for the session. `/flightdeck reset`, `/clear` and a resume empty the text fields under `log`, `agents`, `gate`, `architect` and `roster` and set the masked count to 0; `/flightdeck audit` then reports 0 stored text fields. A session start resets state unless its `meta` names this schema version: upstream flightdeck stored no `meta` at all, an older port stored a lower version, and a reload after an install can meet either, so a missing, malformed, older or newer `meta` empties the state, the model, mode, cost and rate limits included, because none of it went through `scrub()`.
+State lives in `$.state` for the session. `/flightdeck reset`, `/clear` and a resume empty the text fields under `log`, `agents`, `gate`, `architect`, `roster` and `view` and set the masked count to 0; `/flightdeck audit` then reports 0 stored text fields. A session start resets state unless its `meta` names this schema version: upstream flightdeck stored no `meta` at all, an older port stored a lower version, and a reload after an install can meet either, so a missing, malformed, older or newer `meta` empties the state, the model, mode, cost and rate limits included, because none of it went through `scrub()`.
 
-The `hygiene · <n> masked` cell and `/flightdeck audit` show the masked count. It adds up the masks `scrub()` finds each time flightdeck reads text for a field it keeps, before the field's cap cuts it, so a mask the cap cuts away still counts. A log row or title built from a field already masked adds nothing: an agent description `token=abc123 go` counts 1 across the card and its log row, and a denied check on `postgres://app:pw1234@db` counts 1 across the gate detail and the denial row. A command read twice counts twice: inside a subagent, its permission check and its tool call each read it, so the gate detail and the card's tool note count 2. A secret in a part the detail never reads, such as an assignment's value, is not counted, so `PGPASSWORD="correct horse battery staple" psql -h db` counts 0. A tool call in the main loop that ran keeps nothing and counts 0. The count is not the number of masks the pane shows.
+The `hygiene · <n> masked` cell and `/flightdeck audit` show the masked count. It adds up the masks `scrub()` finds each time flightdeck reads text for a field it keeps, before the field's cap cuts it, so a mask the cap cuts away still counts. A log row or title built from a field already masked adds nothing: an agent description `token=abc123 go` counts 1 across the card and its log row, and a denied check on `postgres://app:pw1234@db` counts 1 across the gate detail and the denial row. A command read twice counts twice: inside a subagent, its permission check and its tool call each read it, so the gate detail and the card's tool note count 2. A plain ask flightdeck could approve is read once more for the denied list's subject line, so its masks count again there. A secret in a part the detail never reads, such as an assignment's value, is not counted, so `PGPASSWORD="correct horse battery staple" psql -h db` counts 0. A tool call in the main loop that ran keeps nothing and counts 0. The count is not the number of masks the pane shows.
 
 ## What is inferred, not measured
 
@@ -211,6 +262,7 @@ In `/config`, or under `pluginConfigs["flightdeck"].options` in `settings.json`:
 | --- | --- |
 | [`hooks/register.tsx`](hooks/register.tsx) | the event hooks, state access, and one function per panel |
 | [`hooks/core.ts`](hooks/core.ts) | the reducers, formatters and layout rules as pure functions, so behaviour is testable directly |
+| [`hooks/grants.ts`](hooks/grants.ts) | every rule that decides when flightdeck may answer `allow`, the denied list's reducers and the retry route, as pure functions; and the memory that holds approved calls, never in state |
 | [`hooks/hygiene.ts`](hooks/hygiene.ts) | `scrub()`, the one gate session text passes through; a byte-identical copy of the pinboard mod's |
 | [`hooks/rail.tsx`](hooks/rail.tsx), [`hooks/elapsed.tsx`](hooks/elapsed.tsx) | surface modules: animated connectors and live clocks that redraw only themselves, on the surface's own frame clock |
 | [`types/index.d.ts`](types/index.d.ts) | the state contract; every field that holds session text is typed `SafeText` |

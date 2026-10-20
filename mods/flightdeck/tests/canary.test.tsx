@@ -1,6 +1,9 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { flightdeck, leaves, stateStore } from './store'
+import { CAP, subjectLine } from '../hooks/core'
+import { identityOf, markOf } from '../hooks/grants'
+import type { Subject } from '../hooks/grants'
+import { flightdeck, leaves, stateStoreWithoutRedraw } from './store'
 import type { Engine, On } from './store'
 
 const SURFACES = ['terminal', 'desktop'] as const
@@ -16,6 +19,8 @@ const COMMAND = 'curl -u admin:s3cr3t https://h.example/x?sig=abc'
 
 const SECRETS = ['hunter2', 'ABCDEFGHIJKLMNOPQRST', 'eyJhbGciOiJIUzI1NiJ9', 'eyJzdWIiOiIxIn0', 'sk-ant-', 'ghp_', 's3cr3t', 'sig=abc', 'abcdefghijklmnop']
 const SESSION_TEXT = ['aws_secret_access_key', 'All set', 'ANSWERMARK', 'admin:', 'h.example/x']
+// The denied list draws what an approval would match: this masked line, from module memory, never state.
+const SUBJECT_LINE = subjectLine('Bash', { command: COMMAND }, markOf(identityOf('Bash', { command: COMMAND }) as Subject)).text
 const HIDDEN = /[\u001b\u009b\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/
 
 const CAPS: [path: RegExp, cap: number][] = [
@@ -23,6 +28,9 @@ const CAPS: [path: RegExp, cap: number][] = [
   [/^agents\.\d+\.type$/, 40],
   [/^agents\.\d+\.tools\.\d+\.text$/, 64],
   [/^gate\.recent\.\d+\.detail$/, 64],
+  [/^gate\.recent\.\d+\.cause$/, 40],
+  [/^gate\.grants\.\d+\.detail$/, 64],
+  [/^view\.viewDeny$/, 64],
   [/^architect\.lastAdvice$/, 160],
   [/^architect\.consults\.\d+\.via$/, 40],
   [/^roster\.architectTypes\.\d+$/, 40],
@@ -42,16 +50,40 @@ const spawnArgs = (n: number, subagentType: string, description: string, name?: 
   fork: false,
 })
 
+const RETRIES: string[] = []
+
+const pane = (surface: (typeof SURFACES)[number], placement: 'dock' | 'inline' = 'dock') => ({
+  plugin: 'flightdeck',
+  component: 'Pane' as const,
+  requestId: 'flightdeck',
+  surface,
+  props: { title: 'Flightdeck', isFocused: true, bodyColumns: 120, placement, scroll: { offset: 0, bodyRows: 70 }, view: {} },
+})
+
 async function seed($: Engine, on: On) {
-  const values = stateStore(on)
+  const values = stateStoreWithoutRedraw(on)
+  RETRIES.length = 0
   mock.clock(on)
   on('ui.status', () => ({ value: undefined }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('turn.start', (_$, e) => ({ turnId: e.turnId }))
   on('turn.complete', () => ({ text: '' }))
   on('agent.offer', () => ({ isOffered: true }) as never)
-  on('tool.check', () => ({ decision: 'deny' as const, reason: 'rule' }) as never)
-  on('tool.call', () => ({ result: { stdout: '', stderr: 'boom', interrupted: false }, text: 'boom', isError: true }) as never)
+  on('ui.view', () => ({ value: { deny: `no agent holds password=hunter2 ${ESC}[31m` } }))
+  const refusedAsks = new Set(['refusedMain', 'refusedAgent', 'refusedLast'])
+  on('tool.check', (_$, e) => (refusedAsks.has(e.tool_use_id ?? '') ? { decision: 'ask' as const } : ({ decision: 'deny' as const, reason: 'rule', rule: 'Bash(password=hunter2)' }) as never))
+  on('tool.call', (_$, e) =>
+    (refusedAsks.has(e.tool_use_id) ? { result: `Error: ${COMMAND}`, text: `The user doesn't want to proceed with this tool use. ${COMMAND}`, isError: true } : { result: { stdout: '', stderr: 'boom', interrupted: false }, text: 'boom', isError: true }) as never,
+  )
+  on('agent.list', () => ({ value: [{ id: 'ag1', description: 'deploy', type: 'general-purpose', status: 'completed' }] }) as never)
+  on('prompt.submit', (_$, e) => {
+    RETRIES.push(e.text)
+    return { text: e.text }
+  })
+  on('session.send', (_$, e) => {
+    RETRIES.push(e.text)
+    return { isDelivered: true }
+  })
   let n = 0
   on('agent.spawn', (_$, e) => ({ model: 'claude-sonnet-5-5', agentId: e.subagentType === 'architect' ? 'arch1' : `ag${++n}` }) as never)
 
@@ -70,7 +102,21 @@ async function seed($: Engine, on: On) {
   await $.tool.call({ tool: 'SubagentHandback', message: ADVICE, agentId: 'arch1', tool_use_id: 'c2' } as never)
   await $.turn.start({ text: `<agent-message from="arch1">\nThe report follows:\n${ADVICE} two\n</agent-message>`, turnId: 'T4' })
   await $.turn.complete({ answer: `${ADVICE} three`, durationMs: 900, isAborted: false, turnId: 'T5', agentId: 'arch1', reason: 'answer' } as never)
+  await $.tool.check({ tool: 'Bash', input: { command: COMMAND }, tool_use_id: 'refusedMain' })
+  await $.tool.call({ tool: 'Bash', command: COMMAND, tool_use_id: 'refusedMain' } as never)
+  await $.tool.check({ tool: 'Bash', input: { command: COMMAND }, tool_use_id: 'refusedAgent', agentId: 'ag1' })
+  await $.tool.call({ tool: 'Bash', command: COMMAND, agentId: 'ag1', tool_use_id: 'refusedAgent' } as never)
+  await $.tool.check({ tool: 'Bash', input: { command: COMMAND }, tool_use_id: 'refusedLast' })
+  await $.turn.complete({ answer: ANSWER, durationMs: 300, isAborted: true, turnId: 'T6', reason: 'aborted' } as never)
   await $.command.run({ command: 'flightdeck', args: 'open' } as never)
+  const ui = await $.ui.mount(pane('terminal'))
+  await ui.press({ key: 'card-ag1' })
+  await ui.press({ key: 'gate-denied' })
+  for (const key of ['ok-refusedMain', 'ok-refusedMain', 're-refusedMain', 'ok-refusedAgent', 'ok-refusedAgent', 're-refusedAgent', 'ok-refusedLast', 'ok-refusedLast', 're-refusedLast']) {
+    await ui.redraw()
+    await ui.press({ key })
+  }
+  await ui.unmount()
   return values
 }
 
@@ -81,19 +127,16 @@ const panes = async ($: Engine, surface: (typeof SURFACES)[number]) => {
   for (const layout of LAYOUTS) {
     await $.command.run({ command: 'flightdeck', args: `layout ${layout}` } as never)
     for (const placement of ['dock', 'inline'] as const) {
-      const ui = await $.ui.mount({
-        plugin: 'flightdeck',
-        component: 'Pane',
-        requestId: 'flightdeck',
-        surface,
-        props: { title: 'Flightdeck', isFocused: true, bodyColumns: 120, placement, scroll: { offset: 0, bodyRows: 70 }, view: {} },
-      })
+      const ui = await $.ui.mount(pane(surface, placement))
       const hasButtons = layout !== 'mini' && !(layout === 'auto' && placement === 'inline')
-      for (const key of ['card-ag1', 'gate-shell', 'gate-other']) {
+      for (const key of ['card-ag1', 'gate-shell', 'gate-other', 'gate-denied']) {
         expect(Boolean(await ui.find({ key })), `${layout}.${placement} draws ${key}`).toBe(hasButtons)
         if (hasButtons) await ui.press({ key })
       }
       if (hasButtons) expect(await ui.find({ text: /no tool calls yet/ }), `${layout}.${placement} expands the card`).toBeUndefined()
+      await ui.redraw()
+      if (hasButtons) expect(await ui.find({ key: 'ok-refusedMain' }), `${layout}.${placement} draws the denied list`).toBeUndefined()
+      if (hasButtons) expect(await ui.find({ text: /refused/ }), `${layout}.${placement} draws the denied list`).toBeDefined()
       leaves(await ui.drawn(), `${layout}.${placement}`, out)
       await ui.unmount()
     }
@@ -101,10 +144,11 @@ const panes = async ($: Engine, surface: (typeof SURFACES)[number]) => {
   return out
 }
 
-const expectClean = (strings: [string, string][]) => {
+const expectClean = (strings: [string, string][], drawnLine = '') => {
   for (const [path, text] of strings) {
     for (const secret of SECRETS) expect(text.includes(secret), `${path} holds ${secret}`).toBe(false)
-    for (const words of SESSION_TEXT) expect(text.includes(words), `${path} holds session text ${words}`).toBe(false)
+    const rest = drawnLine ? text.replaceAll(drawnLine, '') : text
+    for (const words of SESSION_TEXT) expect(rest.includes(words), `${path} holds session text ${words}`).toBe(false)
     expect(HIDDEN.test(text), `${path} holds an ESC or bidi character`).toBe(false)
   }
 }
@@ -114,6 +158,16 @@ test('state holds no canary secret, no prompt or answer text, and no ESC or bidi
   const strings = stored(values)
   expect(strings.length).toBeGreaterThan(0)
   expectClean(strings)
+})
+
+test('a denied command approved and retried reaches neither state nor the retry text', async ($, on) => {
+  const values = await seed($, on)
+  const s = flightdeck(values) as { gate: { grants: unknown[]; recent: { id: string; retriedAt?: number | null }[] } }
+  expect(s.gate.grants.length).toBe(3)
+  expect(s.gate.recent.filter(c => c.retriedAt != null).map(c => c.id)).toEqual(['refusedMain', 'refusedAgent', 'refusedLast'])
+  expect(JSON.stringify(flightdeck(values)).includes(COMMAND)).toBe(false)
+  expect(RETRIES.length).toBe(3)
+  expectClean(RETRIES.map((text, i) => [`retry.${i}`, text]))
 })
 
 test('every stored text field stays inside its cap', async ($, on) => {
@@ -131,6 +185,8 @@ for (const surface of SURFACES) {
     await seed($, on)
     const strings = await panes($, surface)
     expect(strings.length).toBeGreaterThan(0)
-    expectClean(strings)
+    expect(strings.some(([, text]) => text.includes(SUBJECT_LINE)), 'the denied list draws the masked subject line').toBe(true)
+    expect([SUBJECT_LINE.length <= CAP.subject, SUBJECT_LINE.includes('[masked]')]).toEqual([true, true])
+    expectClean(strings, SUBJECT_LINE)
   })
 }

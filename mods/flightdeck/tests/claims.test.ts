@@ -1,10 +1,13 @@
 import type { On } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 
-import { DEFAULT_GATE, DEFAULT_MAIN, DEFAULT_TURN, DEFAULT_USAGE, adviceLine, consultVia, toolDetail } from '../hooks/core'
+import { DEFAULT_GATE, DEFAULT_MAIN, DEFAULT_TURN, DEFAULT_USAGE, adviceLine, refuserOf, consultVia, toolDetail } from '../hooks/core'
+import { CAP, subjectLine } from '../hooks/core'
+import { identityOf, markOf } from '../hooks/grants'
+import type { Subject } from '../hooks/grants'
 import { scrub } from '../hooks/hygiene'
-import { flightdeck, stateStore } from './store'
-import type { AgentCard, Architect, Gate, Hygiene, LogLine, Main, Turn, Usage } from '../types'
+import { flightdeck, stateStoreWithoutRedraw } from './store'
+import type { AgentCard, Architect, Check, Gate, Hygiene, LogLine, Main, Turn, Usage } from '../types'
 import type { Engine } from './store'
 
 type Row = [input: string, text: string, masked: number]
@@ -152,11 +155,12 @@ const base = (on: On) => {
   on('turn.complete', () => ({ text: '' }))
   on('session.end', (_$, e) => ({ sessionId: e.sessionId }))
   on('agent.offer', () => ({ isOffered: true }))
+  on('ui.view', () => ({ value: { deny: 'no agent holds the id' } }))
 }
 
 const engine = (on: On) => {
   base(on)
-  return stateStore(on)
+  return stateStoreWithoutRedraw(on)
 }
 
 const pane = (bodyColumns = 64) => ({
@@ -303,19 +307,411 @@ describe("an architect's advice", () => {
 })
 
 describe('the hooks hand on what the next handler returns', () => {
-  test('tool.check, tool.call, turn.start, turn.complete and agent.spawn', async ($, on) => {
+  test('tool.call, turn.start, turn.complete and agent.spawn', async ($, on) => {
     engine(on)
-    const verdict = { decision: 'ask' as const, reason: 'rule' }
     const ran = { result: { stdout: 'x', stderr: '', interrupted: false }, text: 'x', isError: true as const }
     const started = { model: 'claude-sonnet-5-5', agentId: 'pt1' }
-    on('tool.check', () => verdict)
     on('tool.call', () => ran)
     on('agent.spawn', () => started)
     expect(await $.turn.start({ text: 'password=hunter2', turnId: 'P1' })).toEqual({ turnId: 'P1' })
-    expect(await $.tool.check({ tool: 'Bash', input: { command: 'ls' }, tool_use_id: 'pk1' })).toEqual(verdict)
     expect(await $.tool.call({ tool: 'Bash', command: 'ls', tool_use_id: 'pk1' })).toEqual(ran)
     expect(await $.agent.spawn(spawn('general-purpose', 'go'))).toEqual(started)
     expect(await $.turn.complete({ answer: 'done', durationMs: 5, isAborted: false, turnId: 'P1', reason: 'answer' })).toEqual({ text: '' })
+  })
+})
+
+type CheckVerdict = Awaited<ReturnType<Engine['tool']['check']>>
+
+const PUSH = 'git push origin main'
+
+const gateEngine = (on: On) => {
+  const values = engine(on)
+  const core: { verdict: CheckVerdict } = { verdict: { decision: 'ask' } }
+  on('tool.check', () => core.verdict)
+  on('tool.call', () => ({ result: `Error: ${PERSON_NO}`, text: PERSON_NO, isError: true }) as never)
+  return { values, core }
+}
+
+let callN = 0
+const refuse = async ($: Engine, command = PUSH, agentId?: string) => {
+  const id = `rf${++callN}`
+  await $.tool.check({ tool: 'Bash', input: { command }, tool_use_id: id, ...(agentId ? { agentId } : {}) })
+  await $.tool.call({ tool: 'Bash', command, tool_use_id: id, ...(agentId ? { agentId } : {}) } as never)
+  return id
+}
+
+const pressDenied = async ($: Engine, key: string) => {
+  const ui = await $.ui.mount(pane())
+  if (!(await ui.find({ key: 'gate-denied', text: /▾/ }))) {
+    await ui.press({ key: 'gate-denied' })
+    await ui.redraw()
+  }
+  await ui.press({ key })
+  await ui.unmount()
+}
+
+const approveDenied = async ($: Engine, id: string) => {
+  await pressDenied($, `ok-${id}`)
+  await pressDenied($, `ok-${id}`)
+}
+
+const ask = ($: Engine, command = PUSH, ceiling?: 'ask') => $.tool.check({ tool: 'Bash', input: { command }, tool_use_id: `q${++callN}`, ...(ceiling ? { ceiling } : {}) })
+
+describe("flightdeck's tool.check answer", () => {
+  test('is unchanged when no grant matches', async ($, on) => {
+    gateEngine(on)
+    await refuse($)
+    expect(await ask($)).toEqual({ decision: 'ask' })
+  })
+
+  const denies: [label: string, verdict: CheckVerdict][] = [
+    ['a deny with no rule', { decision: 'deny', reason: 'refused' }],
+    ['a deny from a settings rule', { decision: 'deny', rule: `Bash(${PUSH})` }],
+    ['a deny from a hook', { decision: 'deny', hook: 'PreToolUse' }],
+  ]
+  const nonPlain: [label: string, verdict: CheckVerdict][] = [
+    ['an ask from a settings rule', { decision: 'ask', rule: 'Bash(git push:*)' }],
+    ['an ask under a hook', { decision: 'ask', hook: 'PreToolUse' }],
+    ["an ask from an option's own check", { decision: 'ask', setting: 'permissions.blockReadsOutsideWorkingDirectories' }],
+    ['an ask a hook puts to the person', { decision: 'ask', decider: 'person' }],
+    ['an ask under an organization ceiling', { decision: 'ask', ceiling: 'ask' }],
+  ]
+  for (const [label, verdict] of [...denies, ...nonPlain]) {
+    test(`is unchanged for ${label}, though you approved that exact call`, async ($, on) => {
+      const { core } = gateEngine(on)
+        const id = await refuse($)
+      await approveDenied($, id)
+      core.verdict = verdict
+      // The engine pins a ceiling to the question's own: the call carries it.
+      expect(await ask($, PUSH, verdict.ceiling === 'ask' ? 'ask' : undefined)).toEqual(verdict)
+    })
+  }
+
+  test('is allow for a plain ask of the exact call you approved, and ask again for one character more', async ($, on) => {
+    const { values } = gateEngine(on)
+    const id = await refuse($)
+    await approveDenied($, id)
+    expect((await ask($)).decision).toBe('allow')
+    expect(await ask($, `${PUSH} --force`)).toEqual({ decision: 'ask' })
+    expect(state(values).gate.grants.map(g => [g.denialId, g.uses])).toEqual([[id, 1]])
+  })
+
+  test('is unchanged in plan mode, though you approved that exact call', async ($, on) => {
+    const { values } = gateEngine(on)
+    const id = await refuse($)
+    await approveDenied($, id)
+    values.set('flightdeck/main/', { value: { ...DEFAULT_MAIN, mode: 'plan' }, version: 9 })
+    expect(await ask($)).toEqual({ decision: 'ask' })
+  })
+
+  test('no grant exists without a press: a refused call asked again stays an ask', async ($, on) => {
+    const { values } = gateEngine(on)
+    await refuse($)
+    await refuse($)
+    expect(await ask($)).toEqual({ decision: 'ask' })
+    expect(state(values).gate.grants).toEqual([])
+  })
+
+  test('x forgets every approval; the refusal can be approved again', async ($, on) => {
+    const { values } = gateEngine(on)
+    const id = await refuse($)
+    await approveDenied($, id)
+    await pressDenied($, 'gate-forget')
+    expect([state(values).gate.grants, await ask($)]).toEqual([[], { decision: 'ask' }])
+    await approveDenied($, id)
+    expect((await ask($)).decision).toBe('allow')
+  })
+
+  test('a press the gate refuses leaves no grant in memory either, so nothing is allowed that the pane does not show', async ($, on) => {
+    const { values } = gateEngine(on)
+    const id = await refuse($)
+    const ui = await $.ui.mount(pane())
+    await ui.press({ key: 'gate-denied' })
+    await ui.redraw()
+    await ui.press({ key: `ok-${id}` })
+    await ui.redraw()
+    expect(await ui.find({ key: `ok-${id}`, text: /confirm/ })).toBeDefined()
+    const stored = values.get('flightdeck/gate/') as { value: Gate; version: number }
+    values.set('flightdeck/gate/', { value: { ...stored.value, recent: [] }, version: stored.version + 1 })
+    await ui.press({ key: `ok-${id}` })
+    await ui.unmount()
+    expect([state(values).gate.grants, await ask($)]).toEqual([[], { decision: 'ask' }])
+    expect(state(values).log.map(l => l.text).at(-1)).toBe('not approvable now · Bash → git')
+  })
+
+  const ends: [label: string, end: ($: Engine) => Promise<unknown>][] = [
+    ['session.start', $ => $.session.start({ cwd: '/w', surface: null, isInteractive: false })],
+    ['/flightdeck reset', $ => $.command.run({ command: 'flightdeck', args: 'reset' } as never)],
+    ...(['clear', 'resume', 'logout', 'prompt_input_exit', 'other'] as const).map(
+      (reason): [string, ($: Engine) => Promise<unknown>] => [`session.end (${reason})`, $ => $.session.end({ reason, sessionId: 's' } as never)],
+    ),
+  ]
+  for (const [label, end] of ends) {
+    test(`after ${label} no grant is left, in state or in memory`, async ($, on) => {
+      const { values } = gateEngine(on)
+      on('command.register', (_$, e) => ({ value: { command: e.name } }))
+      on('session.start', (_$, e) => ({ cwd: e.cwd }))
+        const id = await refuse($)
+      await approveDenied($, id)
+      await end($)
+      expect([state(values).gate.grants, await ask($)]).toEqual([[], { decision: 'ask' }])
+    })
+  }
+})
+
+describe('what an approve press acts on', () => {
+  const drawnRow = async ($: Engine, id: string) => {
+    const ui = await $.ui.mount(pane())
+    if (!(await ui.find({ key: 'gate-denied', text: /▾/ }))) await ui.press({ key: 'gate-denied' })
+    await ui.redraw()
+    const button = (await ui.find({ key: `ok-${id}` }))?.props as { label?: string; hotkey?: string } | undefined
+    await ui.unmount()
+    return { button }
+  }
+
+  test('a refusal that arrives after you armed one does not move what the next press approves', async ($, on) => {
+    gateEngine(on)
+    const a = await refuse($)
+    await pressDenied($, `ok-${a}`)
+    const b = await refuse($, `${PUSH} --force`)
+    const [rowA, rowB] = [(await drawnRow($, a)).button, (await drawnRow($, b)).button]
+    expect([rowA?.label, rowA?.hotkey, rowB?.label, rowB?.hotkey]).toEqual(['confirm', 'a', 'approve', undefined])
+    await pressDenied($, `ok-${a}`)
+    expect([(await ask($)).decision, (await ask($, `${PUSH} --force`)).decision]).toEqual(['allow', 'ask'])
+  })
+
+  test('a press on a row you did not arm only arms it', async ($, on) => {
+    const { values } = gateEngine(on)
+    const a = await refuse($)
+    await pressDenied($, `ok-${a}`)
+    const b = await refuse($, `${PUSH} --force`)
+    await pressDenied($, `ok-${b}`)
+    expect(state(values).gate.grants).toEqual([])
+    expect([(await drawnRow($, a)).button?.label, (await drawnRow($, b)).button?.label]).toEqual(['approve', 'confirm'])
+    expect(state(values).log.map(l => l.text).at(-1)).toBe('press again to approve · Bash → git')
+  })
+
+  test('two refusals of one program read apart in the denied list, by the masked command and its mark', async ($, on) => {
+    gateEngine(on)
+    const first = await refuse($)
+    await refuse($, `${PUSH} --force`)
+    const mark = (command: string) => markOf(identityOf('Bash', { command }) as Subject)
+    expect(mark(PUSH)).not.toBe(mark(`${PUSH} --force`))
+    const ui = await $.ui.mount(pane())
+    await ui.press({ key: 'gate-denied' })
+    await ui.redraw()
+    const line = (command: string) => ui.find({ text: `  Bash ${mark(command)} → ${command}` })
+    expect(await line(`${PUSH} --force`), 'the newest refusal, which a press arms').toBeDefined()
+    expect(await line(PUSH), 'one subject line at a time').toBeUndefined()
+    await ui.press({ key: `ok-${first}` })
+    await ui.redraw()
+    expect(await line(PUSH), 'arming the older row shows its own line').toBeDefined()
+    expect(await line(`${PUSH} --force`)).toBeUndefined()
+    await ui.unmount()
+  })
+})
+
+describe('a subject line', () => {
+  test('keeps both ends of a long command inside its cap, and masks a secret the cut falls beside', () => {
+    const command = `PGPASSWORD=hunter2hunter2 psql -h db ${'/very/long/segment'.repeat(12)}/dump-final.sql`
+    const line = subjectLine('Bash', { command }, '#ab12').text
+    expect(line.length).toBeLessThanOrEqual(CAP.subject)
+    expect(line.startsWith('Bash #ab12 → PGPASSWORD=[masked]'), line).toBe(true)
+    expect(line.endsWith('/dump-final.sql'), line).toBe(true)
+    expect(line).toContain('...')
+    expect(line).not.toContain('hunter2')
+  })
+})
+
+describe('a retry', () => {
+  test('of a main-loop refusal submits one fixed prompt, and a second press sends nothing', async ($, on) => {
+    gateEngine(on)
+    const sent: string[] = []
+    on('prompt.submit', (_$, e) => {
+      sent.push(e.text)
+      return { text: e.text }
+    })
+    const id = await refuse($)
+    await approveDenied($, id)
+    const ui = await $.ui.mount(pane())
+    await Promise.all([ui.press({ key: `re-${id}` }), ui.press({ key: `re-${id}` }).catch(() => undefined)])
+    await ui.unmount()
+    await pressDenied($, `re-${id}`).catch(() => undefined)
+    expect(sent).toEqual(['flightdeck: the person approved Bash → git for this session after it was refused. If that call is still needed, make it again now, unchanged.'])
+  })
+
+  test("of a finished subagent's refusal messages that agent, which resumes it", async ($, on) => {
+    const { values } = gateEngine(on)
+    const sent: { to: unknown; text: string }[] = []
+    on('agent.list', () => ({ value: [{ id: 'ra1', description: 'go', type: 'general-purpose', status: 'completed' }] }) as never)
+    on('session.send', (_$, e) => {
+      sent.push({ to: e.to, text: e.text })
+      return { isDelivered: true }
+    })
+    const id = await refuse($, PUSH, 'ra1')
+    await approveDenied($, id)
+    await pressDenied($, `re-${id}`)
+    expect(sent.map(m => m.to)).toEqual(['ra1'])
+    expect(state(values).log.map(l => l.text).at(-1)).toBe('retry resumes agent · Bash → git')
+  })
+})
+
+const retryShown = async ($: Engine, id: string) => {
+  const ui = await $.ui.mount(pane())
+  if (!(await ui.find({ key: 'gate-denied', text: /▾/ }))) await ui.press({ key: 'gate-denied' })
+  await ui.redraw()
+  const has = Boolean(await ui.find({ key: `re-${id}` }))
+  await ui.unmount()
+  return has
+}
+
+describe('a retry that is not delivered', () => {
+  test('to the main loop is unmarked and logged, so a second press submits again', async ($, on) => {
+    const { values } = gateEngine(on)
+    const sent: string[] = []
+    on('prompt.submit', (_$, e) => {
+      sent.push(e.text)
+      if (sent.length === 1) throw new Error('queue full')
+      return { text: e.text }
+    })
+    const id = await refuse($)
+    await approveDenied($, id)
+    await pressDenied($, `re-${id}`)
+    const lastLog = () => state(values).log.map(l => l.text).at(-1)
+    for (let i = 0; i < 200 && !lastLog()?.startsWith('retry not delivered'); i++) await Promise.resolve()
+    expect(lastLog()).toBe('retry not delivered, press again · Bash → git')
+    expect(await retryShown($, id)).toBe(true)
+    await pressDenied($, `re-${id}`)
+    expect([sent.length, await retryShown($, id)]).toEqual([2, false])
+  })
+
+  test('to a subagent is unmarked and logged with the reason', async ($, on) => {
+    const { values } = gateEngine(on)
+    on('agent.list', () => ({ value: [{ id: 'ra1', description: 'go', type: 'general-purpose', status: 'running' }] }) as never)
+    on('session.send', () => ({ isDelivered: false, reason: 'recipient gone' }))
+    const id = await refuse($, PUSH, 'ra1')
+    await approveDenied($, id)
+    await pressDenied($, `re-${id}`)
+    expect(state(values).log.map(l => l.text).at(-1)).toBe('retry not delivered, press again · recipient gone')
+    expect(state(values).gate.recent.find(c => c.id === id)).toMatchObject({ retriedAt: null })
+    expect(await retryShown($, id)).toBe(true)
+  })
+})
+
+const PERSON_NO =
+  "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed."
+const DONT_ASK = "Permission to use Bash has been denied because Claude Code is running in don't ask mode."
+
+describe('refuserOf reads who refused a call, or null when it ran', () => {
+  const cases: [label: string, tool: string, result: Parameters<typeof refuserOf>[1], expected: ReturnType<typeof refuserOf>][] = [
+    ["a hook's deny", 'Bash', { deny: 'refused' }, 'hook'],
+    ["dontAsk mode's error", 'Bash', { text: DONT_ASK, isError: true }, 'dontAsk'],
+    ["a person's No", 'Bash', { text: PERSON_NO, isError: true }, 'person'],
+    ["a person's No sentence on a result that is not an error", 'Bash', { text: PERSON_NO, isError: false }, null],
+    ['the shorter engine sentence', 'Write', { text: 'Permission to use Write denied.', isError: true }, 'dontAsk'],
+    ['the engine sentence naming another tool', 'Write', { text: 'Permission to use Bash denied.', isError: true }, null],
+    ['an MCP error that opens with the sentence for another tool', 'mcp__s__t', { text: 'Permission to use OtherTool denied. Ask again.', isError: true }, null],
+    ['a tool whose name the sentence only starts with', 'Bash', { text: 'Permission to use BashX has been denied', isError: true }, null],
+    ['a command that ran and failed', 'Bash', { text: 'Exit code 1\nls: x: No such file or directory', isError: true }, null],
+    ['the sentence on a result that is not an error', 'Bash', { text: DONT_ASK }, null],
+    ['the sentence quoted inside other output', 'Bash', { text: `Exit code 1\n${DONT_ASK}`, isError: true }, null],
+    ['an error with no text', 'Bash', { isError: true }, null],
+  ]
+  for (const [label, tool, result, expected] of cases) test(label, () => expect(refuserOf(tool, result)).toBe(expected))
+})
+
+const askEngine = (on: On, ran: () => unknown) => {
+  const values = engine(on)
+  on('tool.check', () => ({ decision: 'ask' as const }))
+  on('tool.call', () => ran() as never)
+  return values
+}
+
+const startCallWithoutAwait = async ($: Engine, id: string, agentId?: string) => {
+  const who = agentId ? { agentId } : {}
+  await $.tool.check({ tool: 'Bash', input: { command: PUSH }, tool_use_id: id, ...who })
+  return { pendingCall: $.tool.call({ tool: 'Bash', command: PUSH, tool_use_id: id, ...who } as never) }
+}
+
+const turnEnd = ($: Engine, agentId?: string) =>
+  $.turn.complete({ answer: '', durationMs: 5, isAborted: true, turnId: `te${++callN}`, reason: 'aborted', ...(agentId ? { agentId } : {}) } as never)
+
+const deniedKeys = async ($: Engine) => {
+  const ui = await $.ui.mount(pane())
+  await ui.press({ key: 'gate-denied' })
+  await ui.redraw()
+  const keys = await Promise.all(['ok-n1', 'ok-n2', 'ok-d1', 'ok-f1', 'ok-p1'].map(async k => ((await ui.find({ key: k })) ? k : null)))
+  await ui.unmount()
+  return keys.filter(k => k !== null)
+}
+
+describe('an ask settles as refused', () => {
+  test('when its loop ends with the call unanswered; approved, the same plain ask is allowed', async ($, on) => {
+    const values = askEngine(on, () => new Promise(() => undefined))
+    await startCallWithoutAwait($, 'n1')
+    await turnEnd($)
+    expect(state(values).gate.recent.map(c => [c.id, c.verdict])).toEqual([['n1', 'deny']])
+    expect(await deniedKeys($)).toEqual(['ok-n1'])
+    await approveDenied($, 'n1')
+    const again = await $.tool.check({ tool: 'Bash', input: { command: PUSH }, tool_use_id: 'n9' })
+    expect(again.decision).toBe('allow')
+  })
+
+  test("when dontAsk mode answers with the engine's refusal", async ($, on) => {
+    const values = askEngine(on, () => ({ result: `Error: ${DONT_ASK}`, text: DONT_ASK, isError: true }))
+    await (await startCallWithoutAwait($, 'd1')).pendingCall
+    expect(state(values).gate.recent.map(c => [c.id, c.verdict])).toEqual([['d1', 'deny']])
+    expect(await deniedKeys($)).toEqual(['ok-d1'])
+  })
+
+  test("when a person's No answers the call, with no turn.complete", async ($, on) => {
+    const values = askEngine(on, () => ({ result: `Error: ${PERSON_NO}`, text: PERSON_NO, isError: true }))
+    await (await startCallWithoutAwait($, 'p1')).pendingCall
+    expect(state(values).gate.recent.map(c => [c.id, c.verdict])).toEqual([['p1', 'deny']])
+    expect(await deniedKeys($)).toEqual(['ok-p1'])
+  })
+
+  test("when a hook denies the call as it is made: blocked, labelled, with nothing to approve", async ($, on) => {
+    const values = askEngine(on, () => ({ deny: 'refused' }))
+    await (await startCallWithoutAwait($, 'h1')).pendingCall
+    const c = state(values).gate.recent[0] as Extract<Check, { by: 'refused' }>
+    expect([c.verdict, c.refuser, c.approvable]).toEqual(['deny', 'hook', false])
+    const ui = await $.ui.mount(pane())
+    await ui.press({ key: 'gate-denied' })
+    await ui.redraw()
+    expect(await ui.find({ text: /^refused · hook $/ })).toBeDefined()
+    expect(await ui.find({ key: 'ok-h1' })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test("never for an MCP tool's error that names another tool's refusal: it ran, and is cleared", async ($, on) => {
+    const values = askEngine(on, () => ({ result: 'x', text: 'Permission to use OtherTool denied.', isError: true }))
+    await $.tool.check({ tool: 'mcp__s__t', input: { q: 1 }, tool_use_id: 'm1' } as never)
+    await $.tool.call({ tool: 'mcp__s__t', q: 1, tool_use_id: 'm1' } as never)
+    expect(state(values).gate.recent.map(c => [c.id, c.verdict])).toEqual([['m1', 'cleared']])
+  })
+
+  test('never for a call that ran and failed: it is cleared and stays out of the denied list', async ($, on) => {
+    const values = askEngine(on, () => ({ result: { stdout: '', stderr: 'ls: x', interrupted: false }, text: 'Exit code 1\nls: x: No such file or directory', isError: true }))
+    await (await startCallWithoutAwait($, 'f1')).pendingCall
+    await turnEnd($)
+    expect(state(values).gate.recent.map(c => [c.id, c.verdict])).toEqual([['f1', 'cleared']])
+    expect(await deniedKeys($)).toEqual([])
+  })
+
+  test("never by another loop's end: agent A ending leaves agent B's ask open", async ($, on) => {
+    const values = askEngine(on, () => new Promise(() => undefined))
+    await startCallWithoutAwait($, 'n1', 'agA')
+    await startCallWithoutAwait($, 'n2', 'agB')
+    await turnEnd($, 'agA')
+    await turnEnd($)
+    expect(state(values).gate.recent.map(c => [c.id, c.verdict])).toEqual([
+      ['n1', 'deny'],
+      ['n2', 'ask'],
+    ])
+    await turnEnd($, 'agB')
+    await turnEnd($, 'agB')
+    expect(state(values).gate.totals.shell).toMatchObject({ ask: 0, deny: 2 })
   })
 })
 
@@ -339,7 +735,7 @@ describe('the masked count adds the masks scrub() finds each time flightdeck rea
 
   test('a denied check counts 1: the gate detail, and the denial row built from it adds nothing', async ($, on) => {
     const values = engine(on)
-    on('tool.check', () => ({ decision: 'deny' as const, reason: 'rule' }))
+    on('tool.check', () => ({ decision: 'deny' as const, reason: 'rule', rule: 'Bash(curl:*)' }))
     await $.tool.check({ tool: 'Bash', input: { command: 'AKIAABCDEFGHIJKLMNOP' }, tool_use_id: 'dk1' })
     const s = state(values)
     expect([s.gate.recent.map(c => c.detail), s.log.map(l => l.text), s.hygiene.masked]).toEqual([['Bash → [masked]'], ['denied by rule · Bash → [masked]'], 1])
@@ -433,7 +829,7 @@ describe('what a reset empties and keeps', () => {
     values.set('flightdeck/usage/', { value: usage, version: 1 })
     values.set('flightdeck/main/', { value: { ...DEFAULT_MAIN, model: 'claude-opus-5-5', mode: 'plan' }, version: 1 })
     values.set('flightdeck/turn/', { value: { ...DEFAULT_TURN, edits: 3, errors: 2, startedAt: 5 }, version: 1 })
-    values.set('flightdeck/gate/', { value: { ...DEFAULT_GATE, totals: { ...DEFAULT_GATE.totals, shell: { rule: 4, ask: 0, cleared: 1, deny: 2 } } }, version: 1 })
+    values.set('flightdeck/gate/', { value: { ...DEFAULT_GATE, totals: { ...DEFAULT_GATE.totals, shell: { rule: 4, granted: 0, ask: 0, cleared: 1, deny: 2 } } }, version: 1 })
     await $.command.run({ command: 'flightdeck', args: 'reset' } as never)
     const s = state(values)
     expect([s.usage, s.turn, s.gate]).toEqual([{ ...usage, pct: null, tokens: null }, DEFAULT_TURN, DEFAULT_GATE])
@@ -456,8 +852,9 @@ describe('what a reset empties and keeps', () => {
 
   const metas: [label: string, meta: unknown, kept: number][] = [
     ['version 2', { schemaVersion: 2 }, 0],
-    ['version 3', { schemaVersion: 3 }, 1],
-    ['version 4', { schemaVersion: 4 }, 0],
+    ['version 3', { schemaVersion: 3 }, 0],
+    ['version 4', { schemaVersion: 4 }, 1],
+    ['version 5', { schemaVersion: 5 }, 0],
     ['no meta, as upstream flightdeck wrote it', undefined, 0],
     ['an empty meta', {}, 0],
     ['a meta that is not an object', 'v3', 0],
@@ -512,19 +909,12 @@ test('with matchDescriptions, an offered type whose description matches joins th
   expect([s.roster.architectTypes, s.architect.ids, s.agents ?? []]).toEqual([['reviewer-bot'], ['rd1'], []])
 })
 
-test('a check made inside a subagent call is marked as such, and the gate draws it dim', async ($, on) => {
+test("a check keeps the loop its tool.check names: the subagent's id, or null for the main loop", async ($, on) => {
   const values = engine(on)
-  on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: 'ns1' }))
   on('tool.check', () => ({ decision: 'allow' as const }))
-  on('tool.call', async (_$, e) => {
-    await $.tool.check({ tool: e.tool, input: { command: 'ls' }, tool_use_id: e.tool_use_id })
-    return { result: {}, text: 'ok' }
-  })
-  await $.turn.start({ text: 'go', turnId: 'Z1' })
-  await $.agent.spawn(spawn('general-purpose', 'list'))
-  await $.tool.call({ tool: 'Bash', command: 'ls', agentId: 'ns1', tool_use_id: 'zk1' } as never)
-  await $.tool.call({ tool: 'Bash', command: 'ls', tool_use_id: 'zk2' } as never)
-  expect(state(values).gate.recent.map(c => c.inSubagent)).toEqual([true, false])
+  await $.tool.check({ tool: 'Bash', input: { command: 'ls' }, tool_use_id: 'zk1', agentId: 'ns1' })
+  await $.tool.check({ tool: 'Bash', input: { command: 'ls' }, tool_use_id: 'zk2' })
+  expect(state(values).gate.recent.map(c => c.agentId)).toEqual(['ns1', null])
 })
 
 test('/flightdeck audit lists the text fields under gate, architect and roster too', async ($, on) => {

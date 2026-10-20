@@ -5,6 +5,7 @@ import {
   DEFAULT_ARCHITECT,
   DEFAULT_GATE,
   DEFAULT_TURN,
+  NO_TEXT,
   afterCall,
   applyStep,
   consultTimeline,
@@ -38,7 +39,7 @@ import {
 } from '../hooks/core'
 import type { Check, LogLine } from '../types'
 import { scrub } from '../hooks/hygiene'
-import { flightdeck, leaves, stateStore } from './store'
+import { flightdeck, leaves, stateStoreWithoutRedraw } from './store'
 import type { Engine } from './store'
 
 // ---------------------------------------------------------------- pure behaviour
@@ -164,22 +165,23 @@ test('a URL tool detail keeps the host alone', () => {
   expect(toolDetail('WebSearch', { query: 'my password is hunter2' }).text).toBe('WebSearch')
 })
 
-const check = (id: string, verdict: Check['verdict'], bucket: Check['bucket'] = 'shell'): Check => ({
-  id,
-  bucket,
-  verdict,
-  inSubagent: false,
-  detail: toolDetail('Bash', { command: 'ls' }).text,
-  at: 1,
-})
+const check = (id: string, verdict: 'rule' | 'ask' | 'deny', bucket: Check['bucket'] = 'shell', approvable = false): Check => {
+  const base = { id, bucket, agentId: null, detail: toolDetail('Bash', { command: 'ls' }).text, at: 1 }
+  if (verdict === 'ask') return { ...base, verdict, approvable }
+  if (verdict === 'deny') return { ...base, verdict, by: 'policy', cause: NO_TEXT }
+  return { ...base, verdict }
+}
+
+const ran = { didRun: true } as const
+const refused = { didRun: false, isHeld: false, epoch: 'e1', refuser: 'person' } as const
 
 test('an ask is settled by the call that follows: cleared if it ran, deny if refused', () => {
   let g = recordCheck(DEFAULT_GATE, check('a', 'ask'))
   g = recordCheck(g, check('b', 'ask'))
   g = recordCheck(g, check('c', 'rule', 'file'))
-  g = settleCheck(g, 'a', true)
-  g = settleCheck(g, 'b', false)
-  g = settleCheck(g, 'zzz', true) // not an ask: unchanged
+  g = settleCheck(g, 'a', ran)
+  g = settleCheck(g, 'b', refused)
+  g = settleCheck(g, 'zzz', ran)
   const s = gateSummary(g)
   expect([s.rule, s.ask, s.cleared, s.deny, s.total]).toEqual([1, 0, 1, 1, 3])
   expect(g.recent.map(c => c.verdict)).toEqual(['cleared', 'deny', 'rule'])
@@ -191,12 +193,12 @@ test('the gate tallies a mixed run of verdicts per family', () => {
   g = recordCheck(g, check('a1', 'ask', 'shell'))
   g = recordCheck(g, check('a2', 'ask', 'shell'))
   g = recordCheck(g, check('d1', 'deny', 'other'))
-  g = settleCheck(g, 'a1', true)
-  g = settleCheck(g, 'a2', false)
-  expect(g.totals.file).toEqual({ rule: 1, ask: 0, cleared: 0, deny: 0 })
-  expect(g.totals.shell).toEqual({ rule: 0, ask: 0, cleared: 1, deny: 1 })
+  g = settleCheck(g, 'a1', ran)
+  g = settleCheck(g, 'a2', refused)
+  expect(g.totals.file).toEqual({ rule: 1, granted: 0, ask: 0, cleared: 0, deny: 0 })
+  expect(g.totals.shell).toEqual({ rule: 0, granted: 0, ask: 0, cleared: 1, deny: 1 })
   expect(g.totals.other.deny).toBe(1)
-  expect(gateSummary(g)).toEqual({ rule: 1, ask: 0, cleared: 1, deny: 2, total: 4 })
+  expect(gateSummary(g)).toEqual({ rule: 1, granted: 0, ask: 0, cleared: 1, deny: 2, total: 4 })
   expect(gateSummary(DEFAULT_GATE).total).toBe(0)
 })
 
@@ -213,9 +215,19 @@ test('a pending ask is never trimmed out before it settles', () => {
   for (let i = 0; i < 120; i += 1) g = recordCheck(g, check(`r${i}`, 'rule', 'file'))
   expect(g.recent.length).toBe(80)
   expect(g.recent.some(c => c.id === 'old-ask')).toBe(true)
-  g = settleCheck(g, 'old-ask', true)
+  g = settleCheck(g, 'old-ask', ran)
   expect(gateSummary(g).ask).toBe(0)
   expect(trimRecent([check('a', 'rule'), check('b', 'rule')], 5).length).toBe(2)
+})
+
+test('the newest 8 approvable refusals outlast a burst of other checks; older ones and blocked denials do not', () => {
+  const approvable = (id: string) => settleCheck(recordCheck(DEFAULT_GATE, check(id, 'ask', 'shell', true)), id, { didRun: false, isHeld: true, epoch: 'e1', refuser: 'person' }).recent
+  let g = DEFAULT_GATE
+  for (let i = 0; i < 10; i += 1) g = { ...g, recent: [...g.recent, ...approvable(`ok${i}`)] }
+  g = recordCheck(g, check('blocked', 'deny'))
+  for (let i = 0; i < 120; i += 1) g = recordCheck(g, check(`r${i}`, 'rule', 'file'))
+  expect(g.recent.filter(c => c.verdict === 'deny').map(c => c.id)).toEqual(['ok2', 'ok3', 'ok4', 'ok5', 'ok6', 'ok7', 'ok8', 'ok9'])
+  expect(g.recent.length).toBe(80)
 })
 
 test('edits count from every loop; errors only from the main loop', () => {
@@ -343,6 +355,7 @@ const engine = (on: On) => {
   on('ui.status', () => ({ value: undefined }))
   on('turn.start', (_$, e) => ({ turnId: e.turnId }))
   on('turn.complete', () => ({ text: '' }))
+  on('ui.view', () => ({ value: { deny: 'no agent holds the id' } }))
   return clock
 }
 
@@ -429,6 +442,99 @@ test('pastel keeps the fixed dark-terminal colours', { options: { palette: 'past
   engine(on)
   const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
   expect((await ui.find({ text: /· main$/ }))?.props.color).toBe('#7dd3fc')
+  await ui.unmount()
+})
+
+test("a card press shows that agent's transcript in the main view; pressing it again, or m, returns", async ($, on) => {
+  mock.clock(on)
+  on('ui.status', () => ({ value: undefined }))
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  const asked: unknown[] = []
+  on('ui.view', (_$, e) => {
+    asked.push(e)
+    return { value: {} }
+  })
+  on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: 'tv1' }))
+  await $.turn.start({ text: 'go', turnId: 'V1' })
+  await $.agent.spawn(spawn('general-purpose', 'Write the parser tests'))
+  const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  expect(await ui.find({ key: 'view-main' })).toBeUndefined()
+  await ui.press({ key: 'card-tv1' })
+  await ui.redraw({ ...pane(64).props, view: { agentId: 'tv1' } })
+  expect(await ui.find({ text: /transcript in main view/ })).toBeDefined()
+  await ui.press({ key: 'card-tv1' })
+  await ui.press({ key: 'view-main' })
+  expect(asked).toEqual([{ agentId: 'tv1' }, {}, {}])
+  await ui.unmount()
+})
+
+test('a card Claude Code cannot show opens its summary with the reason, masked; a second press closes it', async ($, on) => {
+  engine(on)
+  on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: 'td1' }))
+  await $.turn.start({ text: 'go', turnId: 'V2' })
+  await $.agent.spawn(spawn('general-purpose', 'Write the parser tests'))
+  const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  await ui.press({ key: 'card-td1' })
+  expect(await ui.find({ text: /^not shown: no agent holds the id$/ })).toBeDefined()
+  expect(await ui.find({ text: /^Write the parser tests$/ })).toBeDefined()
+  await ui.press({ key: 'card-td1' })
+  expect(await ui.find({ text: /not shown/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+const PERSON_NO_RESULT = {
+  result: "Error: The user doesn't want to proceed with this tool use.",
+  text: "The user doesn't want to proceed with this tool use.",
+  isError: true,
+}
+
+test('the denied list names who refused each call and offers approve only where it may', async ($, on) => {
+  engine(on)
+  const verdicts: Record<string, unknown> = {
+    r1: { decision: 'deny', rule: 'Bash(rm:*)' },
+    h1: { decision: 'deny', hook: 'PreToolUse' },
+    p1: { decision: 'deny' },
+    a1: { decision: 'ask' },
+    s1: { decision: 'ask', rule: 'Bash(git push:*)' },
+  }
+  on('tool.check', (_$, e) => (verdicts[e.tool_use_id ?? ''] ?? { decision: 'ask' }) as never)
+  on('tool.call', () => PERSON_NO_RESULT as never)
+  for (const id of Object.keys(verdicts)) {
+    await $.tool.check({ tool: 'Bash', input: { command: `${id} x` }, tool_use_id: id })
+    if (id === 'a1' || id === 's1') await $.tool.call({ tool: 'Bash', command: `${id} x`, tool_use_id: id } as never)
+  }
+  const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  await ui.press({ key: 'gate-denied' })
+  expect(await ui.find({ text: /^rule Bash\(rm:\*\) $/ })).toBeUndefined()
+  for (const label of [/^hook PreToolUse $/, /^policy $/, /^refused · you $/]) expect(await ui.find({ text: label }), String(label)).toBeDefined()
+  expect((await ui.findAll({ type: 'Button' })).map(b => b.props.key).filter(k => String(k).startsWith('ok-'))).toEqual(['ok-a1'])
+  expect((await ui.find({ key: 'ok-a1' }))?.props.hotkey).toBe('a')
+  await ui.press({ key: 'ok-a1' })
+  await ui.redraw()
+  expect(await ui.find({ text: /^approved · not used yet$/ })).toBeUndefined()
+  expect((await ui.find({ key: 'ok-a1' }))?.props).toMatchObject({ label: 'confirm', hotkey: 'a' })
+  await ui.press({ key: 'ok-a1' })
+  expect(await ui.find({ text: /^approved · not used yet$/ })).toBeDefined()
+  expect((await ui.find({ key: 're-a1' }))?.props.hotkey).toBe('r')
+  await $.tool.check({ tool: 'Bash', input: { command: 'a1 x' }, tool_use_id: 'a2' })
+  await ui.redraw()
+  expect(await ui.find({ text: /^approved · used 1×$/ })).toBeDefined()
+  expect(await ui.find({ text: /1 approved this session/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a refusal recorded under another load reads as expired, with nothing to press', async ($, on) => {
+  engine(on)
+  on('tool.check', () => ({ decision: 'ask' as const }))
+  on('tool.call', () => PERSON_NO_RESULT as never)
+  on('session.end', (_$, e) => ({ sessionId: e.sessionId }) as never)
+  await $.tool.check({ tool: 'Bash', input: { command: 'ls' }, tool_use_id: 'e1' })
+  await $.tool.call({ tool: 'Bash', command: 'ls', tool_use_id: 'e1' } as never)
+  await $.session.end({ reason: 'other', sessionId: 's' } as never)
+  const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  await ui.press({ key: 'gate-denied' })
+  expect(await ui.find({ text: /^expired$/ })).toBeDefined()
+  expect(await ui.find({ key: 'ok-e1' })).toBeUndefined()
   await ui.unmount()
 })
 
@@ -598,7 +704,7 @@ test("a background architect's advice is read from its hand-back", async ($, on)
 
 test('a hand-back turn is read only when the engine started it', async ($, on) => {
   engine(on)
-  const values = stateStore(on)
+  const values = stateStoreWithoutRedraw(on)
   on('agent.spawn', () => ({ model: 'claude-fable-5-1', agentId: 'fab1' }))
   await $.turn.start({ text: 'review it', turnId: 'H3' })
   await $.agent.spawn(spawn('fable-advisor:fable-advisor', 'final review'))
@@ -610,7 +716,7 @@ test('a hand-back turn is read only when the engine started it', async ($, on) =
 
 test("a hand-back from an agent that is not an architect is not advice", async ($, on) => {
   engine(on)
-  const values = stateStore(on)
+  const values = stateStoreWithoutRedraw(on)
   on('classic.UserPromptSubmit', () => ({}))
   on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: 'gp1' }))
   await $.turn.start({ text: 'go', turnId: 'H10' })
@@ -624,7 +730,7 @@ test("a hand-back from an agent that is not an architect is not advice", async (
 
 test("a typed prompt shaped as a live architect's hand-back is still its length alone", async ($, on) => {
   engine(on)
-  const values = stateStore(on)
+  const values = stateStoreWithoutRedraw(on)
   on('classic.UserPromptSubmit', () => ({}))
   on('agent.spawn', () => ({ model: 'claude-fable-5-1', agentId: 'arch1' }))
   await $.turn.start({ text: 'go', turnId: 'H5' })
@@ -641,7 +747,7 @@ test("a typed prompt shaped as a live architect's hand-back is still its length 
 
 test('a prompt typed while a turn runs stays typed when the engine delivers a message into that turn', async ($, on) => {
   engine(on)
-  const values = stateStore(on)
+  const values = stateStoreWithoutRedraw(on)
   on('classic.UserPromptSubmit', () => ({}))
   on('agent.spawn', () => ({ model: 'claude-fable-5-1', agentId: 'arch1' }))
   await $.turn.start({ text: 'go', turnId: 'H7' })
@@ -656,7 +762,7 @@ test('a prompt typed while a turn runs stays typed when the engine delivers a me
 
 test('a prompt submitted from two sources with the same text is typed', async ($, on) => {
   engine(on)
-  const values = stateStore(on)
+  const values = stateStoreWithoutRedraw(on)
   on('classic.UserPromptSubmit', () => ({}))
   await $.classic.UserPromptSubmit({ prompt: 'same words', source: 'user' })
   await $.classic.UserPromptSubmit({ prompt: 'same words', source: 'system' })
@@ -666,7 +772,7 @@ test('a prompt submitted from two sources with the same text is typed', async ($
 
 const architectAt = async ($: Engine, on: On) => {
   engine(on)
-  const values = stateStore(on)
+  const values = stateStoreWithoutRedraw(on)
   on('classic.UserPromptSubmit', () => ({}))
   on('agent.spawn', () => ({ model: 'claude-fable-5-1', agentId: 'arch1' }))
   await $.turn.start({ text: 'go', turnId: 'A0' })
@@ -728,7 +834,7 @@ test('a typed prompt shows in the log as its length alone', async ($, on) => {
 
 test('a typed prompt that opens with a tag, or holds from="…", is still its length alone', async ($, on) => {
   engine(on)
-  const values = stateStore(on)
+  const values = stateStoreWithoutRedraw(on)
   on('classic.UserPromptSubmit', () => ({}))
   const text = '<instructions> db creds from="hunter2pw" ok </instructions>'
   await $.classic.UserPromptSubmit({ prompt: text, source: 'user' })
@@ -741,7 +847,7 @@ test('a typed prompt that opens with a tag, or holds from="…", is still its le
 
 test('a turn the engine started is logged as a fixed label for its source, never its text', async ($, on) => {
   engine(on)
-  const values = stateStore(on)
+  const values = stateStoreWithoutRedraw(on)
   on('classic.UserPromptSubmit', () => ({}))
   const text = '<task-notification from="ab12cd">password=hunter2 done</task-notification>'
   await $.classic.UserPromptSubmit({ prompt: text, source: 'system' })
@@ -755,7 +861,7 @@ test('a turn the engine started is logged as a fixed label for its source, never
 
 test('a denied PowerShell call that sets a variable never keeps the value', async ($, on) => {
   engine(on)
-  const values = stateStore(on)
+  const values = stateStoreWithoutRedraw(on)
   on('tool.check', () => ({ decision: 'deny' as const, reason: 'rule' }))
   await $.tool.check({ tool: 'PowerShell', input: { command: "[Environment]::SetEnvironmentVariable('API_KEY','abc123def456')" }, tool_use_id: 'ps1' })
   expect(leaves(flightdeck(values)).filter(([, text]) => text.includes('abc1'))).toEqual([])
@@ -829,7 +935,7 @@ for (const [how, end] of [
   ['session.end on resume', ($: Engine) => $.session.end({ reason: 'resume', sessionId: 's' } as never)],
 ] as const) {
   test(`${how} empties every text field, roster and meta included, and a second run changes nothing`, async ($, on) => {
-    const values = stateStore(on)
+    const values = stateStoreWithoutRedraw(on)
     engine(on)
     on('session.end', (_$, e) => ({ sessionId: e.sessionId }) as never)
     on('agent.offer', () => ({ isOffered: true }) as never)
@@ -844,7 +950,7 @@ for (const [how, end] of [
     const once = JSON.stringify(flightdeck(values))
     expect(textFields(values)).toEqual([])
     expect(flightdeck(values).roster).toEqual({ architectTypes: [] })
-    expect(flightdeck(values).meta).toEqual({ schemaVersion: 3 })
+    expect(flightdeck(values).meta).toEqual({ schemaVersion: 4 })
     expect(flightdeck(values).hygiene).toEqual({ masked: 0, rejected: 0 })
     await end($)
     expect(JSON.stringify(flightdeck(values))).toBe(once)
@@ -852,7 +958,7 @@ for (const [how, end] of [
 }
 
 const auditSession = async ($: Engine, on: On) => {
-  const values = stateStore(on)
+  const values = stateStoreWithoutRedraw(on)
   const logged: string[] = []
   engine(on)
   on('ui.log', (_$, e) => {

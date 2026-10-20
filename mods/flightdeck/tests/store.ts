@@ -3,7 +3,7 @@ import type { test } from 'claude-code/testing'
 export type On = Parameters<Extract<Parameters<typeof test>[1], (...args: never[]) => unknown>>[1]
 export type Engine = Parameters<Extract<Parameters<typeof test>[1], (...args: never[]) => unknown>>[0]
 
-export function stateStore(on: On) {
+export function stateStoreWithoutRedraw(on: On) {
   const values = new Map<string, { value: unknown; version: number }>()
   const name = (e: { plugin: string; key: string; id?: string }) => `${e.plugin}/${e.key}/${e.id ?? ''}`
   on('state.get', (_$, e) => ({ value: values.get(name(e)) ?? { value: undefined, version: 0 } }))

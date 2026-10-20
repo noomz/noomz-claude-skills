@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { AgentCard, Architect, Bucket, Check, Gate, Layout, LogLine, Loop, Main, Roster, Turn, Usage, View } from '../types'
+import type { AgentCard, Architect, Bucket, Check, Gate, Layout, LogLine, Loop, Main, Refuser, Roster, Turn, Usage, View } from '../types'
 import { scrub } from './hygiene'
 import type { Hygiene, SafeText, Scrubbed } from './hygiene'
 import {
@@ -20,6 +20,8 @@ import {
   afterCall,
   applyStep,
   bucketOf,
+  checkOf,
+  denyCause,
   cardTitle,
   titleLines,
   consultTimeline,
@@ -61,6 +63,8 @@ import {
   adviceLine,
   receiptOf,
   recordCheck,
+  refuserOf,
+  pendingAsks,
   settleCheck,
   shorten,
   speedOf,
@@ -68,13 +72,17 @@ import {
   stepSpeed,
   stepLoop,
   textFields,
+  subjectLine,
   toolDetail,
 } from './core'
-import type { Config, Panel } from './core'
+import type { Config, Panel, Settle } from './core'
+import { approve, askSubject, clearGrants, dropGrant, DENIED_ROWS, denialRows, grantMemory, grantedVerdict, markOf, markRetried, retryPlan, retryText, unmarkRetried, useGrant } from './grants'
+import type { DenialRow, GrantMemory } from './grants'
 
 const PANE = 'flightdeck'
 const TITLE = 'Flightdeck'
 const PANE_COLUMNS = 66
+const REFUSER_LABEL: Record<Refuser, string> = { person: 'you', dontAsk: 'dontAsk', hook: 'hook' }
 
 
 // ---------------------------------------------------------------- state
@@ -133,8 +141,8 @@ async function getHygiene($: EngineInterface): Promise<Hygiene> {
 }
 
 async function audit($: EngineInterface) {
-  const [l, a, g, ar, r, h] = await Promise.all([getLog($), getCards($), getGate($), getArchitect($), getRoster($), getHygiene($)])
-  const fields = textFields({ log: l, agents: a, gate: g, architect: ar, roster: r })
+  const [l, a, g, ar, r, v, h] = await Promise.all([getLog($), getCards($), getGate($), getArchitect($), getRoster($), getView($), getHygiene($)])
+  const fields = textFields({ log: l, agents: a, gate: g, architect: ar, roster: r, view: v })
   const rows = new Map<string, string[]>()
   for (const f of fields) {
     const [key = '', ...rest] = f.path.split('.')
@@ -260,13 +268,111 @@ async function noteMode($: EngineInterface, mode: string | undefined) {
   if (mode) await update($, main, m => (normalize(DEFAULT_MAIN, m).mode === mode ? normalize(DEFAULT_MAIN, m) : { ...normalize(DEFAULT_MAIN, m), mode }))
 }
 
+async function forgetSession($: EngineInterface, memory: GrantMemory) {
+  memory.reset()
+  await update($, gate, g => clearGrants(normalizeGate(g)))
+}
+
+async function settleCalls($: EngineInterface, memory: GrantMemory, ids: readonly string[], ran: { didRun: true } | { didRun: false; refuser: Refuser | null }) {
+  const settles = ids.map((id): [string, Settle] => {
+    const isHeld = memory.settle(id, ran.didRun)
+    return [id, ran.didRun ? ran : { ...ran, isHeld, epoch: memory.epoch }]
+  })
+  const settled = (g: Gate) => settles.reduce((x, [id, s]) => settleCheck(x, id, s), g)
+  const g0 = await getGate($)
+  if (settled(g0) === g0) return false
+  await update($, gate, g => settled(normalizeGate(g)))
+  return true
+}
+
+async function approveDenial($: EngineInterface, memory: GrantMemory, row: DenialRow) {
+  const { id, detail } = row.check
+  const epoch = memory.epoch
+  const forgotten = () => say($, 'gate', `cannot approve, call forgotten · ${detail}`, 'error')
+  if (!memory.holds(id, epoch)) return forgotten()
+  const at = await $.clock.now()
+  let isShown = false
+  await update($, gate, g => {
+    const before = normalizeGate(g)
+    const after = approve(before, id, at, epoch)
+    isShown = after !== before
+    return after
+  })
+  if (!isShown) return say($, 'gate', `not approvable now · ${detail}`, 'error')
+  if (!memory.approve(id, epoch)) {
+    await update($, gate, g => dropGrant(normalizeGate(g), id))
+    return forgotten()
+  }
+  await say($, 'gate', `approved for this session · ${detail}`)
+}
+
+async function pressApprove($: EngineInterface, memory: GrantMemory, row: DenialRow) {
+  const id = row.check.id
+  let isArmed = false
+  await update($, view, x => {
+    const v = normalize(DEFAULT_VIEW, x)
+    isArmed = v.armed === id
+    return { ...v, armed: isArmed ? null : id }
+  })
+  if (isArmed) return approveDenial($, memory, row)
+  await say($, 'gate', `press again to approve · ${row.check.detail}`)
+}
+
+async function retryDenial($: EngineInterface, memory: GrantMemory, row: DenialRow) {
+  const agentId = row.check.agentId
+  const status = agentId === null ? undefined : (await $.agent.list()).find(a => a.id === agentId)?.status
+  const plan = retryPlan(row, status)
+  if (plan.kind === 'none') return say($, 'gate', `no retry, ${plan.why} · ${row.check.detail}`, 'error')
+  const at = await $.clock.now()
+  let isMarked = false
+  await update($, gate, g => {
+    const before = normalizeGate(g)
+    const after = markRetried(before, row.check.id, at, memory.epoch)
+    isMarked = after !== before
+    return after
+  })
+  if (!isMarked) return
+  const undo = async (why: string) => {
+    await update($, gate, g => unmarkRetried(normalizeGate(g), row.check.id, at))
+    await say($, 'gate', `retry not delivered, press again · ${why}`, 'error', row.check.agentId)
+  }
+  const text = retryText(row.check.detail)
+  if (plan.kind === 'main') {
+    // It resolves only when that turn starts; a press must return well before.
+    void $.prompt.submit({ text }).catch(() => undo(row.check.detail))
+    return say($, 'gate', `retry queued for main · ${row.check.detail}`)
+  }
+  const sent = await $.session.send({ to: { agentId: plan.agentId }, text }).catch(() => ({ isDelivered: false as const, reason: 'send failed' }))
+  if (!sent.isDelivered) return undo(sent.reason)
+  await say($, 'gate', `${plan.resumes ? 'retry resumes agent' : 'retry sent'} · ${row.check.detail}`, 'info', plan.agentId)
+}
+
+async function forgetGrants($: EngineInterface, memory: GrantMemory) {
+  memory.forgetGrants()
+  await update($, gate, g => clearGrants(normalizeGate(g)))
+  await say($, 'gate', 'approvals forgotten')
+}
+
+async function toggleView($: EngineInterface, id: string, viewed: string | null) {
+  if (viewed === id) {
+    await $.ui.view({})
+    return
+  }
+  if (viewed === null && (await getView($)).expanded === id) {
+    await update($, view, x => ({ ...normalize(DEFAULT_VIEW, x), expanded: null, viewDeny: null }))
+    return
+  }
+  const shown = await $.ui.view({ agentId: id })
+  const viewDeny = shown.deny === undefined ? null : await scrubAndTally($, shown.deny, CAP.viewDeny)
+  await update($, view, x => ({ ...normalize(DEFAULT_VIEW, x), expanded: viewDeny === null ? null : id, viewDeny }))
+}
+
 // ---------------------------------------------------------------- hooks
 
 export const register: Register = (on, options) => {
   const cfg = parseConfig(options)
   const C = PALETTES[cfg.palette]
-  // tool.check carries no loop id; the tool.call around it does, keyed by the call's id.
-  const callLoop = new Map<string, string | null>()
+  const memory = grantMemory()
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -275,6 +381,7 @@ export const register: Register = (on, options) => {
       argumentHint: '[open|close|reset|audit|layout auto|compact|wide|mini]',
     })
     await resetUnlessCurrentSchema($)
+    await forgetSession($, memory)
     // A host without usage (headless, an SDK host, a session not yet bound) just starts without it.
     const u = await $.session.usage().catch(() => null)
     if (u) {
@@ -293,6 +400,7 @@ export const register: Register = (on, options) => {
   })
 
   on('session.end', async ($, e, next) => {
+    await forgetSession($, memory)
     if (e.reason === 'clear' || e.reason === 'resume') {
       await resetSession($)
       await refreshStatus($, cfg)
@@ -307,6 +415,7 @@ export const register: Register = (on, options) => {
       return { text: 'Flightdeck closed.' }
     }
     if (verb === 'reset') {
+      await forgetSession($, memory)
       await resetSession($)
       await refreshStatus($, cfg)
       return { text: 'Flightdeck reset.' }
@@ -324,7 +433,7 @@ export const register: Register = (on, options) => {
     }
     const opened = await openPane($)
     if (!opened.isPlaced) return { text: `Flightdeck is not shown yet: ${opened.reason}` }
-    return { text: 'Flightdeck opened. Focus it with ctrl+x tab; 1-6 expand cards, f/s/o open the gate rows.' }
+    return { text: 'Flightdeck opened. Focus it with ctrl+x tab; 1-6 show a subagent conversation, f/s/o open the gate rows, d the denied calls.' }
   })
 
   const sources = promptSources()
@@ -434,35 +543,40 @@ export const register: Register = (on, options) => {
 
   on('tool.check', async ($, e, next) => {
     const verdict = await next(e)
+    const subject = askSubject(verdict, e.tool, e.input, (await getMain($)).mode)
+    const grantFrom = subject === null ? null : memory.allows(subject)
+    const detail = toolDetail(e.tool, e.input)
+    const answer = grantFrom === null ? verdict : grantedVerdict(detail.text)
     if (e.tool_use_id) {
-      const detail = toolDetail(e.tool, e.input)
-      await tally($, detail)
-      const check: Check = {
-        id: e.tool_use_id,
-        bucket: bucketOf(e.tool),
-        verdict: verdict.decision === 'allow' ? 'rule' : verdict.decision,
-        inSubagent: Boolean(callLoop.get(e.tool_use_id)),
-        detail: detail.text,
-        at: await $.clock.now(),
+      const isHeld = subject !== null && grantFrom === null
+      if (isHeld) {
+        const line = subjectLine(e.tool, e.input, markOf(subject))
+        await tally($, line)
+        memory.hold(e.tool_use_id, subject, line.text)
       }
-      await update($, gate, g => recordCheck(normalizeGate(g), check))
+      const cause = kept(denyCause(verdict), CAP.cause)
+      await tally($, detail, cause)
+      const base = { id: e.tool_use_id, bucket: bucketOf(e.tool), detail: detail.text, agentId: e.agentId ?? null, at: await $.clock.now() }
+      const check = checkOf(base, verdict, { isGranted: grantFrom !== null, approvable: isHeld, cause: cause.text })
+      await update($, gate, g => {
+        const recorded = recordCheck(normalizeGate(g), check)
+        return grantFrom === null ? recorded : useGrant(recorded, grantFrom)
+      })
+      if (grantFrom !== null) await say($, 'gate', `allowed by your approval · ${check.detail}`, 'info', check.agentId)
       // The status line updates when the call settles; only a refusal ends here.
-      if (verdict.decision === 'deny') {
-        await say($, 'gate', `denied by rule · ${check.detail}`, 'error')
+      if (check.verdict === 'deny') {
+        await say($, 'gate', `denied by ${check.by} · ${check.detail}`, 'error', check.agentId)
         await refreshStatus($, cfg)
       }
     }
-    return verdict
+    return answer
   })
 
   on('tool.call', async ($, e, next) => {
-    callLoop.set(e.tool_use_id, e.agentId ?? null)
-    const ran = await next(e).finally(() => callLoop.delete(e.tool_use_id))
-    const didRun = ran.deny === undefined
-    // Settle this call's pending ask, if it had one; skip the write (and the redraw) otherwise.
-    const g0 = await getGate($)
-    const isSettled = settleCheck(g0, e.tool_use_id, didRun) !== g0
-    if (isSettled) await update($, gate, g => settleCheck(normalizeGate(g), e.tool_use_id, didRun))
+    const ran = await next(e)
+    const refuser = refuserOf(e.tool, ran)
+    const didRun = refuser === null
+    const isSettled = await settleCalls($, memory, [e.tool_use_id], didRun ? { didRun } : { didRun, refuser })
     // A background agent hands its report back through this tool; an architect's report is its advice.
     if (String(e.tool) === 'SubagentHandback') {
       const message = (e as unknown as { message?: unknown }).message
@@ -481,18 +595,18 @@ export const register: Register = (on, options) => {
       await update($, turn, t => afterCall(normalize(DEFAULT_TURN, t), { inSubagent: Boolean(e.agentId), hasFailed, isEdit }))
     }
     const detail = toolDetail(e.tool, e)
-    if (e.agentId || ran.deny !== undefined || hasFailed || isEdit) await tally($, detail)
+    if (e.agentId || !didRun || hasFailed || isEdit) await tally($, detail)
     const text = detail.text
     if (e.agentId) {
       const id = e.agentId
       await update($, agents, list =>
         listOf<unknown>(list)
           .map(normalizeCard)
-          .map(c => (c.id === id ? noteTool(c, { text, isError: hasFailed || ran.deny !== undefined }) : c)),
+          .map(c => (c.id === id ? noteTool(c, { text, isError: hasFailed || !didRun }) : c)),
       )
     }
     // The log keeps what is worth a glance: refusals, errors and edits; the rest is on the cards.
-    if (ran.deny !== undefined) await say($, await whoIs($, e.agentId), `${text}  denied`, 'error', e.agentId ?? null)
+    if (!didRun) await say($, await whoIs($, e.agentId), `${text}  denied`, 'error', e.agentId ?? null)
     else if (hasFailed) await say($, await whoIs($, e.agentId), `${text}  ✗`, 'error', e.agentId ?? null)
     else if (isEdit) await say($, await whoIs($, e.agentId), text, 'info', e.agentId ?? null)
     if (isSettled || !didRun) await refreshStatus($, cfg)
@@ -569,6 +683,10 @@ export const register: Register = (on, options) => {
   on('turn.complete', async ($, e, next) => {
     const done = await next(e)
     const id = e.agentId
+    const open = pendingAsks(await getGate($), id ?? null)
+    if (await settleCalls($, memory, open.map(c => c.id), { didRun: false, refuser: null })) {
+      for (const c of open) await say($, await whoIs($, id), `${c.detail}  denied`, 'error', id ?? null)
+    }
     const now = await $.clock.now()
     if (!id) {
       const [t, cards, cost] = await Promise.all([getTurn($), getCards($), costNow($)])
@@ -778,7 +896,64 @@ export const register: Register = (on, options) => {
     // ---- gate
     const s = gateSummary(g)
     const verdictColor = (c: Check) =>
-      c.verdict === 'rule' ? C.gate : c.verdict === 'cleared' ? C.cleared : c.verdict === 'ask' ? C.amber : C.warn
+      c.verdict === 'rule' ? C.gate : c.verdict === 'cleared' ? C.cleared : c.verdict === 'granted' ? C.main : c.verdict === 'ask' ? C.amber : C.warn
+    const verdictLabel = (c: Check) =>
+      c.verdict === 'rule' ? 'allowed' : c.verdict === 'cleared' ? decider : c.verdict === 'granted' ? 'approved' : c.verdict === 'ask' ? 'pending' : 'denied'
+    const toggleGate = (to: Bucket | 'denied') => () =>
+      update($, view, x => ({ ...normalize(DEFAULT_VIEW, x), gateOpen: normalize(DEFAULT_VIEW, x).gateOpen === to ? null : to }))
+    const causeLabel = (d: DenialRow['check']) =>
+      d.by === 'refused' ? (d.refuser ? `refused · ${REFUSER_LABEL[d.refuser]}` : 'refused') : d.by === 'policy' ? d.by : `${d.by} ${d.cause}`
+    const rowLabel = (r: DenialRow) =>
+      r.status === 'expired'
+        ? 'expired'
+        : r.status === 'blocked' || r.status === 'approvable' || !r.grant
+          ? ''
+          : `${r.status} · ${r.grant.uses === 0 ? 'not used yet' : `used ${r.grant.uses}×`}`
+    const deniedList = (w: number) => {
+      const rows = denialRows(g, DENIED_ROWS, memory.epoch)
+      const armed = rows.find(r => r.status === 'approvable' && r.check.id === v.armed)
+      const approveKey = armed ?? rows.find(r => r.status === 'approvable')
+      const newestRetryable = rows.find(r => r.status === 'approved')
+      // One wrapped subject line, under only the row a press would act on, bounds the list's height.
+      const lineRow = approveKey ?? rows.find(r => r.status === 'approved' || r.status === 'retried')
+      const live = g.grants.filter(x => x.epoch === memory.epoch).length
+      return (
+        <Box flexDirection="column">
+          {rows.length === 0 ? <Text color={C.faint}>no denials yet</Text> : null}
+          {rows.map(r => {
+            const card = r.check.agentId === null ? undefined : cards.find(c => c.id === r.check.agentId)
+            const where = r.check.agentId === null ? '' : ` · ${card ? shorten(cardTitle(card), 12) : 'agent'}`
+            const label = rowLabel(r)
+            const line = r === lineRow ? memory.lineOf(r.check.id) : null
+            return (
+              <Box key={`row-${r.check.id}`} flexDirection="column">
+                <Box columnGap={1}>
+                  <Box flexShrink={1}>
+                    <Text wrap="truncate">
+                      <Text color={C.warn}>✗ </Text>
+                      <Text color={C.dim}>{`${shorten(causeLabel(r.check), 18)} `}</Text>
+                      <Text dimColor={r.check.agentId !== null}>{`${r.check.detail}${where}`}</Text>
+                    </Text>
+                  </Box>
+                  {label ? <Text color={r.status === 'expired' ? C.faint : C.main}>{label}</Text> : null}
+                  {r.status === 'approvable' ? (
+                    <Button key={`ok-${r.check.id}`} plain label={r === armed ? 'confirm' : 'approve'} hotkey={r === approveKey ? 'a' : undefined} onPress={() => pressApprove($, memory, r)} />
+                  ) : null}
+                  {r.status === 'approved' ? (
+                    <Button key={`re-${r.check.id}`} plain label="retry" hotkey={r === newestRetryable ? 'r' : undefined} onPress={() => retryDenial($, memory, r)} />
+                  ) : null}
+                </Box>
+                {line ? <Text wrap="wrap" color={C.main}>{`  ${line}`}</Text> : null}
+              </Box>
+            )
+          })}
+          <Box columnGap={2}>
+            <Text dimColor>{`${live} approved this session${w >= 56 ? ' · only the exact call' : ''}`}</Text>
+            {live > 0 ? <Button key="gate-forget" plain hotkey="x" label="forget all" onPress={() => forgetGrants($, memory)} /> : null}
+          </Box>
+        </Box>
+      )
+    }
     const gatePanel = (w: number) => {
       const strip = g.recent.slice(-Math.max(8, w - 4))
       const open = v.gateOpen
@@ -793,7 +968,7 @@ export const register: Register = (on, options) => {
           <Box>
             {strip.length === 0 ? <Text color={C.faint}>no checks yet</Text> : null}
             {strip.map(c => (
-              <Text color={verdictColor(c)} dimColor={c.inSubagent}>
+              <Text color={verdictColor(c)} dimColor={c.agentId !== null}>
                 {c.verdict === 'deny' ? '✗' : '■'}
               </Text>
             ))}
@@ -803,38 +978,33 @@ export const register: Register = (on, options) => {
             <Text dimColor>{` ${s.rule} allowed  `}</Text>
             <Text color={C.cleared}>■</Text>
             <Text dimColor>{` ${s.cleared} ${decider}  `}</Text>
+            {s.granted > 0 ? <Text color={C.main}>{`■ ${s.granted} approved  `}</Text> : null}
             {s.ask > 0 ? <Text color={C.amber}>{`■ ${s.ask} pending  `}</Text> : null}
             <Text color={s.deny > 0 ? C.warn : C.dim}>{`✗ ${s.deny} denied`}</Text>
-            {w >= 80 && g.recent.some(c => c.inSubagent) ? <Text color={C.faint}>{'  dim: in subagents'}</Text> : null}
+            {w >= 80 && g.recent.some(c => c.agentId !== null) ? <Text color={C.faint}>{'  dim: in subagents'}</Text> : null}
           </Text>
           <Box columnGap={2}>
             {(['file', 'shell', 'other'] as const).map((b: Bucket) => {
               const tl = g.totals[b]
-              const n = tl.rule + tl.ask + tl.cleared + tl.deny
-              return (
-                <Button
-                  key={`gate-${b}`}
-                  plain
-                  hotkey={b[0]}
-                  label={`${b} ${n}${open === b ? ' ▾' : ''}`}
-                  dimColor={n === 0}
-                  onPress={() => update($, view, x => ({ ...normalize(DEFAULT_VIEW, x), gateOpen: normalize(DEFAULT_VIEW, x).gateOpen === b ? null : b }))}
-                />
-              )
+              const n = tl.rule + tl.granted + tl.ask + tl.cleared + tl.deny
+              return <Button key={`gate-${b}`} plain hotkey={b[0]} label={`${b} ${n}${open === b ? ' ▾' : ''}`} dimColor={n === 0} onPress={toggleGate(b)} />
             })}
+            <Button key="gate-denied" plain hotkey="d" label={`denied ${s.deny}${open === 'denied' ? ' ▾' : ''}`} dimColor={s.deny === 0} onPress={toggleGate('denied')} />
           </Box>
-          {open
-            ? g.recent
-                .filter(c => c.bucket === open)
-                .slice(-5)
-                .map(c => (
-                  <Text wrap="truncate">
-                    <Text color={verdictColor(c)}>{c.verdict === 'deny' ? '✗ ' : '■ '}</Text>
-                    <Text color={C.dim}>{`${(c.verdict === 'rule' ? 'allowed' : c.verdict === 'cleared' ? decider : c.verdict === 'ask' ? 'pending' : 'denied').padEnd(10)} `}</Text>
-                    <Text dimColor={c.inSubagent}>{shorten(c.detail, Math.max(10, w - 18))}</Text>
-                  </Text>
-                ))
-            : null}
+          {open === 'denied'
+            ? deniedList(w)
+            : open
+              ? g.recent
+                  .filter(c => c.bucket === open)
+                  .slice(-5)
+                  .map(c => (
+                    <Text wrap="truncate">
+                      <Text color={verdictColor(c)}>{c.verdict === 'deny' ? '✗ ' : '■ '}</Text>
+                      <Text color={C.dim}>{`${verdictLabel(c).padEnd(10)} `}</Text>
+                      <Text dimColor={c.agentId !== null}>{shorten(c.detail, Math.max(10, w - 18))}</Text>
+                    </Text>
+                  ))
+              : null}
         </Box>
       )
     }
@@ -842,8 +1012,7 @@ export const register: Register = (on, options) => {
     // ---- agents: cards up to the limit, swimlanes beyond it
     const statusColor = (c: AgentCard) => (c.status === 'failed' ? C.warn : c.status === 'done' ? C.gate : C.agent)
     const glyph = (c: AgentCard) => (c.status === 'running' ? '◐' : c.status === 'done' ? '✓' : c.status === 'failed' ? '✗' : '■')
-    const expandOnPress = (id: string) => () =>
-      update($, view, x => ({ ...normalize(DEFAULT_VIEW, x), expanded: normalize(DEFAULT_VIEW, x).expanded === id ? null : id }))
+    const viewOnPress = (id: string) => () => toggleView($, id, viewed)
 
     const agentsPanel = (w: number) => {
       // Cards need 20 columns each; when the pane can't hold the limit, lanes take over.
@@ -852,7 +1021,11 @@ export const register: Register = (on, options) => {
       const header = (
         <Box justifyContent="space-between" width={w}>
           <Text bold>{`agents · ${running.length} running · ${cards.length} total`}</Text>
-          {cards.length > 0 ? <Text color={C.faint}>1-{Math.min(cards.length, useLanes ? 6 : fit)} expand</Text> : null}
+          {viewed ? (
+            <Button key="view-main" plain hotkey="m" label="main view" onPress={() => $.ui.view({})} />
+          ) : cards.length > 0 ? (
+            <Text color={C.faint}>1-{Math.min(cards.length, useLanes ? 6 : fit)} conversation</Text>
+          ) : null}
         </Box>
       )
       if (cards.length === 0) {
@@ -878,7 +1051,7 @@ export const register: Register = (on, options) => {
                 <Box>
                   <Text color={statusColor(c)} bold={isViewed}>{`${isViewed ? '▶' : glyph(c)} `}</Text>
                   <Box width={17}>
-                    <Button key={`card-${c.id}`} plain hotkey={String(i + 1)} label={shorten(cardTitle(c), 14)} onPress={expandOnPress(c.id)} />
+                    <Button key={`card-${c.id}`} plain hotkey={String(i + 1)} label={shorten(cardTitle(c), 14)} onPress={viewOnPress(c.id)} />
                   </Box>
                   <Text color={C.faint}>{' ' + '·'.repeat(gm?.before ?? 0)}</Text>
                   <Text color={statusColor(c)}>{'━'.repeat(gm?.bar ?? 1)}</Text>
@@ -910,7 +1083,7 @@ export const register: Register = (on, options) => {
                   width={cardW}
                   paddingX={1}
                 >
-                  <Button key={`card-${c.id}`} plain hotkey={String(i + 1)} label={titleLines(cardTitle(c), cardW - 7, cardW - 4)[0]} onPress={expandOnPress(c.id)} />
+                  <Button key={`card-${c.id}`} plain hotkey={String(i + 1)} label={titleLines(cardTitle(c), cardW - 7, cardW - 4)[0]} onPress={viewOnPress(c.id)} />
                   <Text bold wrap="truncate">
                     {titleLines(cardTitle(c), cardW - 7, cardW - 4)[1]}
                   </Text>
@@ -935,10 +1108,15 @@ export const register: Register = (on, options) => {
       )
     }
 
-    const expandedCard = cards.find(c => c.id === v.expanded)
+    const expandedCard = cards.find(c => c.id === (viewed ?? v.expanded))
     const expandedPanel = (w: number) =>
       expandedCard ? (
         <Box flexDirection="column" borderStyle="single" borderColor={C.agent} paddingX={1} width={w}>
+          {viewed === expandedCard.id ? (
+            <Text color={C.agent} wrap="truncate">transcript in main view · its number or m returns</Text>
+          ) : v.viewDeny ? (
+            <Text color={C.amber} wrap="truncate">{`not shown: ${v.viewDeny}`}</Text>
+          ) : null}
           <Text bold wrap="wrap">
             {expandedCard.description || expandedCard.type}
           </Text>
@@ -998,7 +1176,7 @@ export const register: Register = (on, options) => {
 
     // ---- log: whatever rows the other panels leave, 4 to 8
     // The main box's speed line and the gap above the log are a row each.
-    const used = 2 + 5 + (speed ? 1 : 0) + 1 + (showArchitect ? 6 : 0) + 6 + (v.gateOpen ? 5 : 0) + (cards.length > cfg.maxCards ? 3 + Math.min(6, cards.length) : 8) + (expandedCard ? 8 : 0) + (lp.length ? 1 : 0) + 3
+    const used = 2 + 5 + (speed ? 1 : 0) + 1 + (showArchitect ? 6 : 0) + 6 + (v.gateOpen === 'denied' ? 8 : v.gateOpen ? 5 : 0) + (cards.length > cfg.maxCards ? 3 + Math.min(6, cards.length) : 8) + (expandedCard ? 9 : 0) + (lp.length ? 1 : 0) + 3
     const bodyRows = e.props.scroll?.bodyRows ?? e.viewport?.rows ?? 40
     const nLog = logRows(bodyRows, used)
     const shownLines = (viewed ? lines.filter(l => l.agentId === viewed) : lines).slice(-nLog)
@@ -1096,7 +1274,7 @@ export const register: Register = (on, options) => {
     const isMini = layout === 'mini' || (layout === 'auto' && e.props.placement === 'inline')
     if (isMini) {
       const live = [...cards.filter(c => c.status === 'running'), ...cards.filter(c => c.status !== 'running').reverse()].slice(0, 3)
-      const counts = ` ${s.rule} allowed · ${s.cleared} ${decider}${s.ask > 0 ? ` · ${s.ask} pending` : ''} · ${s.deny} denied`
+      const counts = ` ${s.rule} allowed · ${s.cleared} ${decider}${s.granted > 0 ? ` · ${s.granted} approved` : ''}${s.ask > 0 ? ` · ${s.ask} pending` : ''} · ${s.deny} denied`
       const strip = g.recent.slice(-Math.max(4, W - cfg.gateLabel.length - 1 - counts.length))
       const mg = u.pct !== null ? gauge(u.pct, 6) : null
       return (
@@ -1118,7 +1296,7 @@ export const register: Register = (on, options) => {
             <Box>
               <Text dimColor>{`${cfg.gateLabel.toLowerCase()} `}</Text>
               {strip.map(c => (
-                <Text color={verdictColor(c)} dimColor={c.inSubagent}>
+                <Text color={verdictColor(c)} dimColor={c.agentId !== null}>
                   {c.verdict === 'deny' ? '✗' : '■'}
                 </Text>
               ))}

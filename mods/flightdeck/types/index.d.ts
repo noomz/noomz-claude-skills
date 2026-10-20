@@ -7,8 +7,7 @@ export type Moment = 'before a plan' | 'error repeats' | 'before done'
 
 export type Bucket = 'file' | 'shell' | 'other'
 
-/** rule: settings allowed it. ask: put to the decider, outcome pending. cleared: asked, then ran. deny: refused. */
-export type Verdict = 'rule' | 'ask' | 'cleared' | 'deny'
+export type Refuser = 'person' | 'dontAsk' | 'hook'
 
 export type Main = {
   model: string
@@ -37,18 +36,37 @@ export type Consult = { id: string; at: number; endAt: number | null; moment: Mo
 
 export type Architect = { consults: Consult[]; ids: string[]; seen: string[]; lastAdvice: SafeText }
 
-export type Check = {
+export type CheckBase = {
+  /** The call's tool_use_id; a refusal's id is its call's. */
   id: string
   bucket: Bucket
-  verdict: Verdict
-  inSubagent: boolean
   detail: SafeText
+  /** The loop the call ran in; null for the main loop. */
+  agentId: string | null
   at: number
 }
 
-export type Tally = { rule: number; ask: number; cleared: number; deny: number }
+/**
+ * rule: core allowed it. granted: allowed because you approved it here. cleared: asked, then ran.
+ * ask: put to the decider, pending; `approvable` when the ask was plain and its identity is held.
+ * deny by rule, hook or policy: core refused it; `cause` names the rule or hook. deny refused: asked,
+ * then refused; approvable only in the `epoch` (the memory generation) that holds its identity and only
+ * when the refuser is not a hook. `refuser` is null when the loop's end settled it, with no sentence to read.
+ */
+export type Check =
+  | (CheckBase & { verdict: 'rule' | 'cleared' | 'granted' })
+  | (CheckBase & { verdict: 'ask'; approvable: boolean })
+  | (CheckBase & { verdict: 'deny'; by: 'rule' | 'hook' | 'policy'; cause: SafeText })
+  | (CheckBase & { verdict: 'deny'; by: 'refused'; refuser: Refuser | null; approvable: boolean; epoch: string; retriedAt: number | null })
 
-export type Gate = { recent: Check[]; totals: Record<Bucket, Tally> }
+export type Verdict = Check['verdict']
+
+export type Tally = Record<Verdict, number>
+
+/** One approval, as drawn: the refusal it came from and what you saw. The call itself is never kept. */
+export type Grant = { denialId: string; bucket: Bucket; detail: SafeText; at: number; uses: number; epoch: string }
+
+export type Gate = { recent: Check[]; totals: Record<Bucket, Tally>; grants: Grant[] }
 
 export type ToolNote = { text: SafeText; isError: boolean }
 
@@ -102,7 +120,11 @@ export type Receipt = {
 
 export type Layout = 'auto' | 'compact' | 'wide' | 'mini'
 
-export type View = { expanded: string | null; gateOpen: Bucket | null; layout: Layout | null }
+/**
+ * `expanded`: the card whose summary shows because Claude Code would not show its transcript, and why.
+ * `armed`: the refusal your last approve press picked; only a press on that same row approves.
+ */
+export type View = { expanded: string | null; viewDeny: SafeText | null; gateOpen: Bucket | 'denied' | null; layout: Layout | null; armed: string | null }
 
 export type Roster = { architectTypes: SafeText[] }
 
