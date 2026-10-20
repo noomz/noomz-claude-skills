@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.0
+
+- A card's number shows that subagent's real conversation in the main view, as the tasks list does, and the next Enter goes to that agent. Press the number again, or `m`, to return. Flightdeck stores none of the conversation. When Claude Code cannot show an agent, the card opens its summary with the reason, masked.
+- The gate panel's `d` opens the denied calls: the 4 latest refusals, each labelled `rule <rule>`, `hook <hook>`, `policy` or `refused`. A refusal of an ask that nothing configured can be approved (`a`, or the row's button) for the rest of the session. Flightdeck's `tool.check` then answers `allow` for that exact call when core would ask about it with no rule, hook, setting, decider or organization ceiling behind the ask. It never changes a deny, holds back when it knows the mode is plan (Claude Code ignores a hook's `allow` for non-read calls there anyway), and never grants `AskUserQuestion`, `ExitPlanMode`, `Agent`, `Task` or `SendMessage`.
+- A refused call is one you pressed No on, one that nobody could be asked about (`dontAsk` mode, a background agent), or one a hook denied. Flightdeck matches Claude Code's own sentences: `The user doesn't want to proceed with this tool use` for your No and `Permission to use <tool> has been denied` for `dontAsk`. It also settles an ask still open when its loop's turn ends, in case a refusal is worded differently; a call that ran and failed stays cleared.
+- An approved refusal can be retried once (`r`, or the row's button): the main loop gets one fixed prompt, a subagent one fixed message that resumes it if it has finished. `x` forgets every approval; `/flightdeck reset`, the session's end, a clear, a resume and a reload forget them too.
+- The approved call lives in module memory only. State and the pane keep the refusal's masked tool detail, who refused it and a use count, never the command, path or input. The canary test approves and retries a denied command that holds secrets and reads state, the pane and the retry texts.
+- A permission check now reads its loop from `tool.check` itself, so the in-memory map from call to loop is gone.
+- The state schema is version 4: state from 0.5.x is emptied on the first start.
+
 ## 0.5.2
 
 - An agent the engine wakes again under its own id, such as when its background task ends after it handed back, revives its card instead of adding a second one. Two cards with one id drew two clocks under one key, and the engine refused the whole pane, which stayed blank until `/flightdeck reset` or `/clear`. The log shows the wakeup as `woken`.
