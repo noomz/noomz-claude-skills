@@ -394,17 +394,18 @@ const isApprovable = (c: Check) => (c.verdict === 'ask' || (c.verdict === 'deny'
 
 const KEPT_APPROVABLE = 8
 
-/**
- * Keeps the last `max` checks, but never drops a pending ask (its settle must still find it) nor
- * the newest approvable refusals, so a burst of reads cannot push out the one you meant to approve.
- */
+const isDeniedApprovable = (c: Check) => c.verdict === 'deny' && isApprovable(c)
+
+const retained = (list: Check[]): Set<Check> => new Set(list.filter(isDeniedApprovable).slice(-KEPT_APPROVABLE))
+
 export const trimRecent = (list: Check[], max: number): Check[] => {
   let extra = list.length - max
   if (extra <= 0) return list
-  const kept = new Set(list.filter(c => c.verdict === 'deny' && isApprovable(c)).slice(-KEPT_APPROVABLE))
+  const keptApprovable = retained(list)
+  const isPending = (c: Check) => c.verdict === 'ask'
   const out: Check[] = []
   for (const c of list) {
-    if (extra > 0 && c.verdict !== 'ask' && !kept.has(c)) {
+    if (extra > 0 && !isPending(c) && !keptApprovable.has(c)) {
       extra -= 1
       continue
     }
@@ -426,10 +427,8 @@ export const recordCheck = (g: Gate, c: Check): Gate => ({
   totals: counted(g, c.bucket, c.verdict),
 })
 
-/** What a refused call's rule or hook was named: the raw text, for the shell to scrub. */
 export const denyCause = (v: ToolCheckResult) => v.rule ?? v.hook ?? ''
 
-/** A check from core's verdict; `isGranted` when flightdeck answered allow for your approval. */
 export const checkOf = (
   base: { id: string; bucket: Bucket; detail: SafeText; agentId: string | null; at: number },
   v: ToolCheckResult,
@@ -441,7 +440,6 @@ export const checkOf = (
   return { ...base, verdict: 'deny', by: v.rule ? 'rule' : v.hook ? 'hook' : 'policy', cause: o.cause }
 }
 
-/** How a call settled: it ran, or it was refused, with its identity held in `epoch` or not. */
 export type Settle = { didRun: true } | { didRun: false; isHeld: boolean; epoch: string }
 
 // The engine's two sentences for a call nobody let run, as Claude Code 2.1.304 words them: dontAsk's
@@ -449,7 +447,6 @@ export type Settle = { didRun: true } | { didRun: false; isHeld: boolean; epoch:
 // fails safe: the call reads as ran, so its row is cleared and never approvable.
 const ENGINE_REFUSAL = /^(?:Permission to use \S+ (?:has been )?denied|The user doesn't want to proceed with this tool use)/
 
-/** Whether a call's result says it never ran: a hook's `deny`, or the engine's refusal as an error. */
 export const isRefusal = (r: { deny?: string; isError?: boolean; text?: string }) =>
   r.deny !== undefined || (r.isError === true && ENGINE_REFUSAL.test(r.text ?? ''))
 
@@ -460,7 +457,6 @@ export const isRefusal = (r: { deny?: string; isError?: boolean; text?: string }
  */
 export const pendingAsks = (g: Gate, agentId: string | null) => g.recent.filter(c => c.verdict === 'ask' && c.agentId === agentId)
 
-/** An `ask` settled by the call that followed it, or by its loop's end: it ran (cleared) or was refused (deny refused). */
 export const settleCheck = (g: Gate, id: string, s: Settle): Gate => {
   const c = g.recent.find(r => r.id === id && r.verdict === 'ask')
   if (!c || c.verdict !== 'ask') return g

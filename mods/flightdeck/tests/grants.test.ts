@@ -2,7 +2,7 @@ import type { AgentStatus } from 'claude-code'
 import { describe, expect, test } from 'claude-code/testing'
 
 import { DEFAULT_GATE, recordCheck, settleCheck } from '../hooks/core'
-import { approve, askSubject, clearGrants, denialRows, grantMemory, grantedVerdict, identityOf, isPlainAsk, markRetried, retryPlan, retryText, useGrant } from '../hooks/grants'
+import { approve, askSubject, clearGrants, DENIED_ROWS, denialRows, grantMemory, grantedVerdict, identityOf, isPlainAsk, markRetried, retryPlan, retryText, useGrant } from '../hooks/grants'
 import type { DenialRow, RetryPlan, Subject } from '../hooks/grants'
 import { scrub } from '../hooks/hygiene'
 import type { Check, Gate } from '../types'
@@ -12,13 +12,11 @@ type Verdict = Parameters<typeof isPlainAsk>[0]
 const COMMAND = 'git push origin main'
 const call = { tool: 'Bash', input: { command: COMMAND } }
 
-/** What flightdeck's tool.check answers for core's verdict, given what the memory holds. */
 const answer = (memory: ReturnType<typeof grantMemory>, v: Verdict, tool: string, input: unknown, mode = 'default'): Verdict => {
   const subject = askSubject(v, tool, input, mode)
   return subject !== null && memory.allows(subject) !== null ? grantedVerdict(scrub('Bash → git', 64).text) : v
 }
 
-/** A memory where the call was asked plainly, refused, and approved. */
 const granted = () => {
   const memory = grantMemory()
   const subject = identityOf(call.tool, call.input) as Subject
@@ -149,13 +147,12 @@ describe('the memory', () => {
 const EPOCH = 'e1'
 const DETAIL = scrub('Bash → git', 64).text
 
-/** A gate holding one refusal of call `id`: of a plain ask held in EPOCH unless said otherwise. */
 const refusedGate = (id: string, o: { agentId?: string | null; isHeld?: boolean; isPlain?: boolean } = {}) => {
   const ask: Check = { id, bucket: 'shell', detail: DETAIL, agentId: o.agentId ?? null, at: 1, verdict: 'ask', approvable: o.isPlain ?? true }
   return settleCheck(recordCheck(DEFAULT_GATE, ask), id, { didRun: false, isHeld: o.isHeld ?? true, epoch: EPOCH })
 }
 
-const rowOf = (g: Gate, epoch = EPOCH) => denialRows(g, 4, epoch)[0] as DenialRow
+const rowOf = (g: Gate, epoch = EPOCH) => denialRows(g, DENIED_ROWS, epoch)[0] as DenialRow
 
 describe('a refusal in the denied list', () => {
   test('a plain ask refused with its identity held is approvable; approving it records one grant, twice still one', () => {

@@ -75,7 +75,7 @@ import {
   toolDetail,
 } from './core'
 import type { Config, Panel, Settle } from './core'
-import { approve, askSubject, clearGrants, denialRows, grantMemory, grantedVerdict, isPlainAsk, markRetried, retryPlan, retryText, useGrant } from './grants'
+import { approve, askSubject, clearGrants, DENIED_ROWS, denialRows, grantMemory, grantedVerdict, isPlainAsk, markRetried, retryPlan, retryText, useGrant } from './grants'
 import type { DenialRow, GrantMemory } from './grants'
 
 const PANE = 'flightdeck'
@@ -266,13 +266,11 @@ async function noteMode($: EngineInterface, mode: string | undefined) {
   if (mode) await update($, main, m => (normalize(DEFAULT_MAIN, m).mode === mode ? normalize(DEFAULT_MAIN, m) : { ...normalize(DEFAULT_MAIN, m), mode }))
 }
 
-// Every grant ends with the session: whatever ends it, and whatever the next start finds.
 async function forgetSession($: EngineInterface, memory: GrantMemory) {
   memory.reset()
   await update($, gate, g => clearGrants(normalizeGate(g)))
 }
 
-/** Settles these calls' pending asks; true when any was still pending. Settling twice is a no-op. */
 async function settleCalls($: EngineInterface, memory: GrantMemory, ids: readonly string[], didRun: boolean) {
   const settles = ids.map((id): [string, Settle] => {
     const isHeld = memory.settle(id, didRun)
@@ -280,7 +278,6 @@ async function settleCalls($: EngineInterface, memory: GrantMemory, ids: readonl
   })
   const settled = (g: Gate) => settles.reduce((x, [id, s]) => settleCheck(x, id, s), g)
   const g0 = await getGate($)
-  // Skip the write (and the redraw) when no call here had an ask open.
   if (settled(g0) === g0) return false
   await update($, gate, g => settled(normalizeGate(g)))
   return true
@@ -300,7 +297,6 @@ async function retryDenial($: EngineInterface, memory: GrantMemory, row: DenialR
   const plan = retryPlan(row, status)
   if (plan.kind === 'none') return say($, 'gate', `no retry, ${plan.why} · ${row.check.detail}`, 'error')
   const at = await $.clock.now()
-  // Marked before it is sent, inside the write: a second press finds it retried and sends nothing.
   let isMarked = false
   await update($, gate, g => {
     const before = normalizeGate(g)
@@ -326,7 +322,6 @@ async function forgetGrants($: EngineInterface, memory: GrantMemory) {
   await say($, 'gate', 'approvals forgotten')
 }
 
-/** Shows the agent's transcript in the main view, or back to main if it is shown; a refusal opens its summary. */
 async function toggleView($: EngineInterface, id: string, viewed: string | null) {
   if (viewed === id) {
     await $.ui.view({})
@@ -515,7 +510,6 @@ export const register: Register = (on, options) => {
     return done
   })
 
-  // The one place flightdeck can change a verdict: a plain ask of a call you approved becomes allow.
   on('tool.check', async ($, e, next) => {
     const verdict = await next(e)
     const subject = isPlainAsk(verdict) ? askSubject(verdict, e.tool, e.input, (await getMain($)).mode) : null
@@ -544,7 +538,6 @@ export const register: Register = (on, options) => {
   })
 
   on('tool.call', async ($, e, next) => {
-    // turn.complete settles any ask still open when its loop ends, as a backstop for a refusal worded some other way.
     const ran = await next(e)
     const didRun = !isRefusal(ran)
     const isSettled = await settleCalls($, memory, [e.tool_use_id], didRun)
@@ -879,9 +872,8 @@ export const register: Register = (on, options) => {
         : r.status === 'blocked' || r.status === 'approvable' || !r.grant
           ? ''
           : `${r.status} · ${r.grant.uses === 0 ? 'not used yet' : `used ${r.grant.uses}×`}`
-    // Four rows and a footer: the same five rows an open bucket takes.
     const deniedList = (w: number) => {
-      const rows = denialRows(g, 4, memory.epoch)
+      const rows = denialRows(g, DENIED_ROWS, memory.epoch)
       const newestApprovable = rows.find(r => r.status === 'approvable')
       const newestRetryable = rows.find(r => r.status === 'approved')
       const live = g.grants.filter(x => x.epoch === memory.epoch).length
@@ -1072,7 +1064,6 @@ export const register: Register = (on, options) => {
       )
     }
 
-    // The viewed agent's summary, or the one whose transcript Claude Code would not show, and why.
     const expandedCard = cards.find(c => c.id === (viewed ?? v.expanded))
     const expandedPanel = (w: number) =>
       expandedCard ? (

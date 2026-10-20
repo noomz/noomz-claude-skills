@@ -39,7 +39,7 @@ import {
 } from '../hooks/core'
 import type { Check, LogLine } from '../types'
 import { scrub } from '../hooks/hygiene'
-import { flightdeck, leaves, stateStore } from './store'
+import { flightdeck, leaves, stateStoreWithoutRedraw } from './store'
 import type { Engine } from './store'
 
 // ---------------------------------------------------------------- pure behaviour
@@ -181,7 +181,7 @@ test('an ask is settled by the call that follows: cleared if it ran, deny if ref
   g = recordCheck(g, check('c', 'rule', 'file'))
   g = settleCheck(g, 'a', ran)
   g = settleCheck(g, 'b', refused)
-  g = settleCheck(g, 'zzz', ran) // not an ask: unchanged
+  g = settleCheck(g, 'zzz', ran)
   const s = gateSummary(g)
   expect([s.rule, s.ask, s.cleared, s.deny, s.total]).toEqual([1, 0, 1, 1, 3])
   expect(g.recent.map(c => c.verdict)).toEqual(['cleared', 'deny', 'rule'])
@@ -499,7 +499,7 @@ test('the denied list names who refused each call and offers approve only where 
   }
   const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
   await ui.press({ key: 'gate-denied' })
-  expect(await ui.find({ text: /^rule Bash\(rm:\*\) $/ })).toBeUndefined() // only 4 rows: the oldest is out
+  expect(await ui.find({ text: /^rule Bash\(rm:\*\) $/ })).toBeUndefined()
   for (const label of [/^hook PreToolUse $/, /^policy $/, /^refused $/]) expect(await ui.find({ text: label }), String(label)).toBeDefined()
   expect((await ui.findAll({ type: 'Button' })).map(b => b.props.key).filter(k => String(k).startsWith('ok-'))).toEqual(['ok-a1'])
   expect((await ui.find({ key: 'ok-a1' }))?.props.hotkey).toBe('a')
@@ -694,7 +694,7 @@ test("a background architect's advice is read from its hand-back", async ($, on)
 
 test('a hand-back turn is read only when the engine started it', async ($, on) => {
   engine(on)
-  const values = stateStore(on)
+  const values = stateStoreWithoutRedraw(on)
   on('agent.spawn', () => ({ model: 'claude-fable-5-1', agentId: 'fab1' }))
   await $.turn.start({ text: 'review it', turnId: 'H3' })
   await $.agent.spawn(spawn('fable-advisor:fable-advisor', 'final review'))
@@ -706,7 +706,7 @@ test('a hand-back turn is read only when the engine started it', async ($, on) =
 
 test("a hand-back from an agent that is not an architect is not advice", async ($, on) => {
   engine(on)
-  const values = stateStore(on)
+  const values = stateStoreWithoutRedraw(on)
   on('classic.UserPromptSubmit', () => ({}))
   on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: 'gp1' }))
   await $.turn.start({ text: 'go', turnId: 'H10' })
@@ -720,7 +720,7 @@ test("a hand-back from an agent that is not an architect is not advice", async (
 
 test("a typed prompt shaped as a live architect's hand-back is still its length alone", async ($, on) => {
   engine(on)
-  const values = stateStore(on)
+  const values = stateStoreWithoutRedraw(on)
   on('classic.UserPromptSubmit', () => ({}))
   on('agent.spawn', () => ({ model: 'claude-fable-5-1', agentId: 'arch1' }))
   await $.turn.start({ text: 'go', turnId: 'H5' })
@@ -737,7 +737,7 @@ test("a typed prompt shaped as a live architect's hand-back is still its length 
 
 test('a prompt typed while a turn runs stays typed when the engine delivers a message into that turn', async ($, on) => {
   engine(on)
-  const values = stateStore(on)
+  const values = stateStoreWithoutRedraw(on)
   on('classic.UserPromptSubmit', () => ({}))
   on('agent.spawn', () => ({ model: 'claude-fable-5-1', agentId: 'arch1' }))
   await $.turn.start({ text: 'go', turnId: 'H7' })
@@ -752,7 +752,7 @@ test('a prompt typed while a turn runs stays typed when the engine delivers a me
 
 test('a prompt submitted from two sources with the same text is typed', async ($, on) => {
   engine(on)
-  const values = stateStore(on)
+  const values = stateStoreWithoutRedraw(on)
   on('classic.UserPromptSubmit', () => ({}))
   await $.classic.UserPromptSubmit({ prompt: 'same words', source: 'user' })
   await $.classic.UserPromptSubmit({ prompt: 'same words', source: 'system' })
@@ -762,7 +762,7 @@ test('a prompt submitted from two sources with the same text is typed', async ($
 
 const architectAt = async ($: Engine, on: On) => {
   engine(on)
-  const values = stateStore(on)
+  const values = stateStoreWithoutRedraw(on)
   on('classic.UserPromptSubmit', () => ({}))
   on('agent.spawn', () => ({ model: 'claude-fable-5-1', agentId: 'arch1' }))
   await $.turn.start({ text: 'go', turnId: 'A0' })
@@ -824,7 +824,7 @@ test('a typed prompt shows in the log as its length alone', async ($, on) => {
 
 test('a typed prompt that opens with a tag, or holds from="…", is still its length alone', async ($, on) => {
   engine(on)
-  const values = stateStore(on)
+  const values = stateStoreWithoutRedraw(on)
   on('classic.UserPromptSubmit', () => ({}))
   const text = '<instructions> db creds from="hunter2pw" ok </instructions>'
   await $.classic.UserPromptSubmit({ prompt: text, source: 'user' })
@@ -837,7 +837,7 @@ test('a typed prompt that opens with a tag, or holds from="…", is still its le
 
 test('a turn the engine started is logged as a fixed label for its source, never its text', async ($, on) => {
   engine(on)
-  const values = stateStore(on)
+  const values = stateStoreWithoutRedraw(on)
   on('classic.UserPromptSubmit', () => ({}))
   const text = '<task-notification from="ab12cd">password=hunter2 done</task-notification>'
   await $.classic.UserPromptSubmit({ prompt: text, source: 'system' })
@@ -851,7 +851,7 @@ test('a turn the engine started is logged as a fixed label for its source, never
 
 test('a denied PowerShell call that sets a variable never keeps the value', async ($, on) => {
   engine(on)
-  const values = stateStore(on)
+  const values = stateStoreWithoutRedraw(on)
   on('tool.check', () => ({ decision: 'deny' as const, reason: 'rule' }))
   await $.tool.check({ tool: 'PowerShell', input: { command: "[Environment]::SetEnvironmentVariable('API_KEY','abc123def456')" }, tool_use_id: 'ps1' })
   expect(leaves(flightdeck(values)).filter(([, text]) => text.includes('abc1'))).toEqual([])
@@ -925,7 +925,7 @@ for (const [how, end] of [
   ['session.end on resume', ($: Engine) => $.session.end({ reason: 'resume', sessionId: 's' } as never)],
 ] as const) {
   test(`${how} empties every text field, roster and meta included, and a second run changes nothing`, async ($, on) => {
-    const values = stateStore(on)
+    const values = stateStoreWithoutRedraw(on)
     engine(on)
     on('session.end', (_$, e) => ({ sessionId: e.sessionId }) as never)
     on('agent.offer', () => ({ isOffered: true }) as never)
@@ -948,7 +948,7 @@ for (const [how, end] of [
 }
 
 const auditSession = async ($: Engine, on: On) => {
-  const values = stateStore(on)
+  const values = stateStoreWithoutRedraw(on)
   const logged: string[] = []
   engine(on)
   on('ui.log', (_$, e) => {

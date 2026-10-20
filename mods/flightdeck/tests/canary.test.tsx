@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { flightdeck, leaves, stateStore } from './store'
+import { flightdeck, leaves, stateStoreWithoutRedraw } from './store'
 import type { Engine, On } from './store'
 
 const SURFACES = ['terminal', 'desktop'] as const
@@ -45,7 +45,6 @@ const spawnArgs = (n: number, subagentType: string, description: string, name?: 
   fork: false,
 })
 
-/** What a retry sent: the main loop's prompt and the agent's message. */
 const RETRIES: string[] = []
 
 const pane = (surface: (typeof SURFACES)[number], placement: 'dock' | 'inline' = 'dock') => ({
@@ -57,7 +56,7 @@ const pane = (surface: (typeof SURFACES)[number], placement: 'dock' | 'inline' =
 })
 
 async function seed($: Engine, on: On) {
-  const values = stateStore(on)
+  const values = stateStoreWithoutRedraw(on)
   RETRIES.length = 0
   mock.clock(on)
   on('ui.status', () => ({ value: undefined }))
@@ -66,12 +65,10 @@ async function seed($: Engine, on: On) {
   on('turn.complete', () => ({ text: '' }))
   on('agent.offer', () => ({ isOffered: true }) as never)
   on('ui.view', () => ({ value: { deny: `no agent holds password=hunter2 ${ESC}[31m` } }))
-  // k9, k10 and k11 are plain asks that are then refused: the calls a person approves and retries.
-  // k11 gets no answer, as a person's No; the main loop's end settles it.
-  const asked = new Set(['k9', 'k10', 'k11'])
-  on('tool.check', (_$, e) => (asked.has(e.tool_use_id ?? '') ? { decision: 'ask' as const } : ({ decision: 'deny' as const, reason: 'rule', rule: 'Bash(password=hunter2)' }) as never))
+  const refusedAsks = new Set(['refusedMain', 'refusedAgent', 'refusedLast'])
+  on('tool.check', (_$, e) => (refusedAsks.has(e.tool_use_id ?? '') ? { decision: 'ask' as const } : ({ decision: 'deny' as const, reason: 'rule', rule: 'Bash(password=hunter2)' }) as never))
   on('tool.call', (_$, e) =>
-    (asked.has(e.tool_use_id) ? { deny: `refused ${COMMAND}` } : { result: { stdout: '', stderr: 'boom', interrupted: false }, text: 'boom', isError: true }) as never,
+    (refusedAsks.has(e.tool_use_id) ? { deny: `refused ${COMMAND}` } : { result: { stdout: '', stderr: 'boom', interrupted: false }, text: 'boom', isError: true }) as never,
   )
   on('agent.list', () => ({ value: [{ id: 'ag1', description: 'deploy', type: 'general-purpose', status: 'completed' }] }) as never)
   on('prompt.submit', (_$, e) => {
@@ -100,18 +97,17 @@ async function seed($: Engine, on: On) {
   await $.tool.call({ tool: 'SubagentHandback', message: ADVICE, agentId: 'arch1', tool_use_id: 'c2' } as never)
   await $.turn.start({ text: `<agent-message from="arch1">\nThe report follows:\n${ADVICE} two\n</agent-message>`, turnId: 'T4' })
   await $.turn.complete({ answer: `${ADVICE} three`, durationMs: 900, isAborted: false, turnId: 'T5', agentId: 'arch1', reason: 'answer' } as never)
-  await $.tool.check({ tool: 'Bash', input: { command: COMMAND }, tool_use_id: 'k9' })
-  await $.tool.call({ tool: 'Bash', command: COMMAND, tool_use_id: 'k9' } as never)
-  await $.tool.check({ tool: 'Bash', input: { command: COMMAND }, tool_use_id: 'k10', agentId: 'ag1' })
-  await $.tool.call({ tool: 'Bash', command: COMMAND, agentId: 'ag1', tool_use_id: 'k10' } as never)
-  await $.tool.check({ tool: 'Bash', input: { command: COMMAND }, tool_use_id: 'k11' })
+  await $.tool.check({ tool: 'Bash', input: { command: COMMAND }, tool_use_id: 'refusedMain' })
+  await $.tool.call({ tool: 'Bash', command: COMMAND, tool_use_id: 'refusedMain' } as never)
+  await $.tool.check({ tool: 'Bash', input: { command: COMMAND }, tool_use_id: 'refusedAgent', agentId: 'ag1' })
+  await $.tool.call({ tool: 'Bash', command: COMMAND, agentId: 'ag1', tool_use_id: 'refusedAgent' } as never)
+  await $.tool.check({ tool: 'Bash', input: { command: COMMAND }, tool_use_id: 'refusedLast' })
   await $.turn.complete({ answer: ANSWER, durationMs: 300, isAborted: true, turnId: 'T6', reason: 'aborted' } as never)
   await $.command.run({ command: 'flightdeck', args: 'open' } as never)
   const ui = await $.ui.mount(pane('terminal'))
   await ui.press({ key: 'card-ag1' })
   await ui.press({ key: 'gate-denied' })
-  // The test's own state store raises no redraw: draw again after each press that changes the list.
-  for (const key of ['ok-k9', 're-k9', 'ok-k10', 're-k10', 'ok-k11', 're-k11']) {
+  for (const key of ['ok-refusedMain', 're-refusedMain', 'ok-refusedAgent', 're-refusedAgent', 'ok-refusedLast', 're-refusedLast']) {
     await ui.redraw()
     await ui.press({ key })
   }
@@ -134,7 +130,7 @@ const panes = async ($: Engine, surface: (typeof SURFACES)[number]) => {
       }
       if (hasButtons) expect(await ui.find({ text: /no tool calls yet/ }), `${layout}.${placement} expands the card`).toBeUndefined()
       await ui.redraw()
-      if (hasButtons) expect(await ui.find({ key: 'ok-k9' }), `${layout}.${placement} draws the denied list`).toBeUndefined()
+      if (hasButtons) expect(await ui.find({ key: 'ok-refusedMain' }), `${layout}.${placement} draws the denied list`).toBeUndefined()
       if (hasButtons) expect(await ui.find({ text: /refused/ }), `${layout}.${placement} draws the denied list`).toBeDefined()
       leaves(await ui.drawn(), `${layout}.${placement}`, out)
       await ui.unmount()
@@ -162,7 +158,7 @@ test('a denied command approved and retried reaches neither state nor the retry 
   const values = await seed($, on)
   const s = flightdeck(values) as { gate: { grants: unknown[]; recent: { id: string; retriedAt?: number | null }[] } }
   expect(s.gate.grants.length).toBe(3)
-  expect(s.gate.recent.filter(c => c.retriedAt != null).map(c => c.id)).toEqual(['k9', 'k10', 'k11'])
+  expect(s.gate.recent.filter(c => c.retriedAt != null).map(c => c.id)).toEqual(['refusedMain', 'refusedAgent', 'refusedLast'])
   expect(JSON.stringify(flightdeck(values)).includes(COMMAND)).toBe(false)
   expect(RETRIES.length).toBe(3)
   expectClean(RETRIES.map((text, i) => [`retry.${i}`, text]))
