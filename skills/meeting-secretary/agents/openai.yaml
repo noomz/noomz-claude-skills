@@ -1,4 +1,0 @@
-interface:
-  display_name: "Meeting Secretary"
-  short_description: "On-device live meeting transcript, real-time fact-checks, and a sourced meeting note"
-  default_prompt: "Use $meeting-secretary — start the meeting and be my secretary."

@@ -29,7 +29,8 @@ One term per line; blank lines and `# comments` are skipped; duplicates are drop
 - Recent issue and PR titles if `gh` works for this repo (`gh issue list -L 30`,
   read-only) — feature names and jargon
 - Earlier meetings in the data root: the "Corrections" sections and `(?)` marks in
-  `summary*.md` show exactly which words the recognizer got wrong
+  `summary*.md` show exactly which words the recognizer got wrong. The root ignores
+  itself, so `ls` it and `Read` each note by path, or use `rg --no-ignore`
 - For a meeting target: the agenda, invite text or topic the user gave
 
 ## 2. Choose terms

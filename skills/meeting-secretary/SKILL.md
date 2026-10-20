@@ -1,6 +1,6 @@
 ---
 name: meeting-secretary
-description: Records and transcribes a live meeting fully on-device (macOS, Thai and English by default, transcribe.cpp with Qwen3-ASR) and acts as the user's real-time meeting secretary — every 20 s chunk of speech lands in the chat, and Claude answers questions people ask (even when nobody asks Claude), checks statuses, figures and decisions against the project's own sources, flags contradictions, and logs action items. When the meeting ends, it re-transcribes the recording, fact-checks every claim, and writes a meeting note with path:line evidence. Also builds the project's speech-recognition vocabulary. Trigger on "/start-meeting", "/end-meeting", "/meeting-vocab", "start the meeting", "record this meeting", "transcribe this call live", "be my secretary for this call", "listen in on this meeting", "meeting is over", "stop recording", "write up the meeting", "meeting notes please", "summarize the meeting", "update the meeting vocab", or any request to transcribe, assist during, or write up a live meeting or call.
+description: Records a live meeting and transcribes it on the Mac (macOS, Claude Code; transcribe.cpp with Qwen3-ASR, Thai and English by default), then acts as the user's real-time meeting secretary — each 20 s chunk of transcript lands in the chat, and Claude answers questions people ask, checks statuses, figures and decisions against the project's own sources, flags contradictions, and logs action items. When the meeting ends, it re-transcribes the recording, fact-checks every claim, and writes a meeting note with path:line evidence. Also builds the project's speech-recognition vocabulary. Trigger on "/start-meeting", "/end-meeting", "/meeting-vocab", "start the meeting", "record this meeting", "be my secretary for this call", "meeting is over", "stop recording", "write up the meeting", "meeting notes please", or any request to transcribe, assist during, or write up a live meeting or call.
 ---
 
 # meeting-secretary — live transcript, real-time secretary, fact-checked note
@@ -12,7 +12,10 @@ PR, a runbook — put it in front of the user *while it still matters*. Afterwar
 the note the team acts on, with every claim checked against a source.
 
 Recording and transcription run locally (transcribe.cpp + Qwen3-ASR-1.7B, biased by a
-vocab prompt). No audio leaves the Mac.
+vocab prompt), so no audio leaves the Mac. The transcript text does: every line reaches
+Claude through the chat. Tell the user this once if they call a meeting confidential.
+
+Claude Code only: the live phase needs the Monitor, AskUserQuestion and TaskStop tools.
 
 ## Pick the phase
 
@@ -38,7 +41,7 @@ under the project it finds there.
 | `MEETING start NAME [--device D]... [--lang th] [--app APP [--window T] \| --screen N [--screen-crop W:H:X:Y]]` | Start the detached recorder; prints JSON with `transcript` and `log` paths |
 | `MEETING windows` | List app windows (id, app, title, size) for `--app` / `--window` |
 | `MEETING snap (N \| --app APP [--window T])` | One preview frame; JSON with `png` and `blank` |
-| `MEETING stop` | Stop the recorder; waits for the last chunk's transcript |
+| `MEETING stop` | Stop the recorder; waits up to 120 s for the last chunk's transcript. `"stopped": false` (exit 1) = still running: run `stop` again |
 | `MEETING final [NAME]` | Join chunks and re-transcribe in 30 s windows → `transcript-final.md` |
 | `MEETING frame NAME HH:MM:SS... [--span S --step S]` | PNGs from `screen.mp4` at wall-clock times |
 | `MEETING vocab [NAME]` | Vocab files in play, term counts, prompt size |
@@ -47,7 +50,9 @@ under the project it finds there.
 Run every command from the same project directory: the data root and the running
 meeting are found from it, so a `stop` from elsewhere reports "no active meeting"
 while the recorder keeps going. Env vars (`MEETING_HOME`, `MEETING_DEVICE`,
-`TCPP_HOME`) are in [reference/setup.md](reference/setup.md).
+`TCPP_HOME`) are in [reference/setup.md](reference/setup.md). Meeting names are folder
+names: letters, digits, `-`, `_`, `.`. Unit tests: `python3 -m unittest test_meeting`
+from `scripts/` ([scripts/test_meeting.py](scripts/test_meeting.py)).
 
 ## Where things live
 
@@ -64,12 +69,16 @@ transcripts never get committed. Each meeting is `<root>/<NAME>/`:
 
 Never copy transcripts, audio or frames into tracked project folders.
 
+Because the root ignores itself, `rg` and the Grep tool skip it: `rg foo .meetings/`
+finds nothing. List meeting folders with `ls`, then `Read` files by explicit path, or
+search with `rg --no-ignore`.
+
 ## Project sources and ground truth
 
 Before the meeting, learn what this workspace keeps: `CLAUDE.md` / `AGENTS.md`, the
 README, `docs/`, plans and handoffs (`.planning/`, `plans/`, ADRs), the memory index if
-one is loaded, a wiki, the code on the default branch, and earlier notes in the data
-root. Use what exists; do not invent sources.
+one is loaded, a wiki, the code on the default branch, and earlier `summary*.md` notes
+in the data root (read by path, see above). Use what exists; do not invent sources.
 
 For "is it live / what does it do / what was agreed", trust sources in this order:
 

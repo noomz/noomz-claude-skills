@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Meeting recorder + transcriber for the meeting-secretary skill (/start-meeting, /end-meeting).
 
-  meeting.py start NAME [--device "MacBook Pro Microphone" ...] [--lang th]
+  meeting.py start NAME [--device default ...] [--lang th]
                         [--screen N [--screen-crop W:H:X:Y] | --app NAME [--window TITLE]] [--replay WAV --rate 1]
   meeting.py windows                                    list app windows (id, app, title, size)
   meeting.py snap (N [--screen-crop W:H:X:Y] | --app NAME [--window TITLE]) [--out PNG]
@@ -58,8 +58,8 @@ ROOT = pathlib.Path(os.environ.get("MEETING_HOME") or PROJECT / ".meetings").exp
 BASE_VOCAB = pathlib.Path(__file__).resolve().parents[1] / "assets/vocab.txt"
 PROJECT_VOCAB = PROJECT / ".claude/meeting-vocab.txt"
 ACTIVE = ROOT / "ACTIVE.json"
-DEFAULT_DEVICE = os.environ.get("MEETING_DEVICE", "MacBook Pro Microphone")
-TCPP = pathlib.Path(os.environ.get("TCPP_HOME", pathlib.Path.home() / "Projects/Opensources/transcribe.cpp"))
+DEFAULT_DEVICE = os.environ.get("MEETING_DEVICE", "default")  # avfoundation: the system input
+TCPP = pathlib.Path(os.environ.get("TCPP_HOME", pathlib.Path.home() / ".local/share/transcribe.cpp")).expanduser()
 CLI = TCPP / "build/bin/transcribe-cli"
 MODEL = TCPP / "models/Qwen3-ASR-1.7B-Q8_0.gguf"
 LIVE_SECONDS = 20
@@ -99,7 +99,10 @@ def clean(text):
     text = re.sub(r"\s+", " ", text).strip()
     text = re.sub(rf"([{THAI}])([{LATIN}])", r"\1 \2", text)
     text = re.sub(rf"([{LATIN}])([{THAI}])", r"\1 \2", text)
-    return re.sub(r"(\S+?)(?:\s*\1){3,}", r"\1 [repeat cut]", text)  # decoder loop guard
+    # decoder loop guard: a unit repeated 4+ times, spaced or not (Thai loops run together).
+    # A digit-only unit is a number such as 10000, never a loop.
+    return re.sub(r"(\S+?)(?:\s*\1){3,}",
+                  lambda m: m[0] if m[1].isdigit() else f"{m[1]} [repeat cut]", text)
 
 
 def transcribe_one(wav, prompt, lang):
@@ -443,8 +446,12 @@ def cmd_stop(_):
         deadline = time.time() + 120  # last chunk still has to be transcribed
         while pid_alive(s["pid"]) and time.time() < deadline:
             time.sleep(0.5)
+    if pid_alive(s["pid"]):  # keep ACTIVE.json: status/stop must still find the recorder
+        print(json.dumps({"name": s["name"], "dir": s["dir"], "stopped": False, "pid": s["pid"]}))
+        sys.exit(f"recorder pid {s['pid']} still running after 120 s — run stop again, "
+                 f"or `kill {s['pid']}` and then stop")
     ACTIVE.unlink()
-    print(json.dumps({"name": s["name"], "dir": s["dir"], "stopped": not pid_alive(s["pid"])}))
+    print(json.dumps({"name": s["name"], "dir": s["dir"], "stopped": True}))
 
 
 def cmd_final(a):
@@ -508,33 +515,45 @@ def cmd_vocab(a):
                       "prompt_chars": len(prompt)}, ensure_ascii=False))
 
 
-ap = argparse.ArgumentParser()
-sub = ap.add_subparsers(dest="cmd", required=True)
-p = sub.add_parser("start"); p.add_argument("name"); p.add_argument("--device", action="append", default=[])
-p.add_argument("--replay"); p.add_argument("--rate", type=float, default=1.0)
-p.add_argument("--started", help="HH:MM wall clock of the recording start (for --replay)")
-p.add_argument("--lang", default="th", help="language code passed to the recognizer (default th)")
-p.add_argument("--screen", type=int, help="also record 'Capture screen N' at 1 fps")
-p.add_argument("--screen-crop", help="W:H:X:Y in full-resolution screen pixels (see snap)")
-p.add_argument("--app", help="record only this app's largest window (substring of the app name)")
-p.add_argument("--window", help="with --app: window title substring, or a window id from `windows`")
-p = sub.add_parser("snap"); p.add_argument("screen", type=int, nargs="?"); p.add_argument("--out")
-p.add_argument("--screen-crop"); p.add_argument("--app"); p.add_argument("--window")
-sub.add_parser("windows"); sub.add_parser("status"); sub.add_parser("stop")
-p = sub.add_parser("frame"); p.add_argument("name"); p.add_argument("times", nargs="+", help="HH:MM:SS")
-p.add_argument("--span", type=int, default=0, help="also take frames ±S seconds around each time")
-p.add_argument("--step", type=int, default=10)
-p = sub.add_parser("final"); p.add_argument("name", nargs="?")
-p = sub.add_parser("vocab"); p.add_argument("name", nargs="?")
-p = sub.add_parser("_daemon"); p.add_argument("name"); p.add_argument("--device", action="append", default=[])
-p.add_argument("--replay"); p.add_argument("--rate", type=float, default=1.0)
-p.add_argument("--screen", type=int); p.add_argument("--screen-crop")
-p.add_argument("--app"); p.add_argument("--window")
-a = ap.parse_args()
-if a.cmd == "start" and not a.device and not a.replay:
-    a.device = [DEFAULT_DEVICE]
-if a.cmd == "_daemon":
-    run_daemon(ROOT / a.name, a.device, a.replay, a.rate, a.screen, a.screen_crop, a.app, a.window)
-else:
-    {"start": cmd_start, "status": cmd_status, "stop": cmd_stop, "snap": cmd_snap, "windows": cmd_windows,
-     "frame": cmd_frame, "final": cmd_final, "vocab": cmd_vocab}[a.cmd](a)
+def meeting_name(name):
+    # a folder name under the data root: no path separators, no leading dot
+    if not re.fullmatch(r"[\w][\w.-]*", name):
+        raise argparse.ArgumentTypeError(f"bad meeting name {name!r}: use letters, digits, '-', '_', '.'")
+    return name
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("start"); p.add_argument("name", type=meeting_name); p.add_argument("--device", action="append", default=[])
+    p.add_argument("--replay"); p.add_argument("--rate", type=float, default=1.0)
+    p.add_argument("--started", help="HH:MM wall clock of the recording start (for --replay)")
+    p.add_argument("--lang", default="th", help="language code passed to the recognizer (default th)")
+    p.add_argument("--screen", type=int, help="also record 'Capture screen N' at 1 fps")
+    p.add_argument("--screen-crop", help="W:H:X:Y in full-resolution screen pixels (see snap)")
+    p.add_argument("--app", help="record only this app's largest window (substring of the app name)")
+    p.add_argument("--window", help="with --app: window title substring, or a window id from `windows`")
+    p = sub.add_parser("snap"); p.add_argument("screen", type=int, nargs="?"); p.add_argument("--out")
+    p.add_argument("--screen-crop"); p.add_argument("--app"); p.add_argument("--window")
+    sub.add_parser("windows"); sub.add_parser("status"); sub.add_parser("stop")
+    p = sub.add_parser("frame"); p.add_argument("name", type=meeting_name); p.add_argument("times", nargs="+", help="HH:MM:SS")
+    p.add_argument("--span", type=int, default=0, help="also take frames ±S seconds around each time")
+    p.add_argument("--step", type=int, default=10)
+    p = sub.add_parser("final"); p.add_argument("name", nargs="?", type=meeting_name)
+    p = sub.add_parser("vocab"); p.add_argument("name", nargs="?", type=meeting_name)
+    p = sub.add_parser("_daemon"); p.add_argument("name", type=meeting_name); p.add_argument("--device", action="append", default=[])
+    p.add_argument("--replay"); p.add_argument("--rate", type=float, default=1.0)
+    p.add_argument("--screen", type=int); p.add_argument("--screen-crop")
+    p.add_argument("--app"); p.add_argument("--window")
+    a = ap.parse_args()
+    if a.cmd == "start" and not a.device and not a.replay:
+        a.device = [DEFAULT_DEVICE]
+    if a.cmd == "_daemon":
+        run_daemon(ROOT / a.name, a.device, a.replay, a.rate, a.screen, a.screen_crop, a.app, a.window)
+    else:
+        {"start": cmd_start, "status": cmd_status, "stop": cmd_stop, "snap": cmd_snap, "windows": cmd_windows,
+         "frame": cmd_frame, "final": cmd_final, "vocab": cmd_vocab}[a.cmd](a)
+
+
+if __name__ == "__main__":
+    main()

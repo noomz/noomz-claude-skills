@@ -4,14 +4,18 @@
 
 1. `MEETING status` — if a meeting is already recording, say so and stop; the user
    probably wants /end-meeting first.
-2. `MEETING vocab` — if `<project>/.claude/meeting-vocab.txt` does not exist, say in
+2. **Consent.** Recording people without telling them is unlawful in many places
+   (Thailand's PDPA, two-party-consent US states, the EU's GDPR). Unless the user
+   already said so, ask them to confirm that everyone in the meeting knows it is being
+   recorded. Fold this into the AskUserQuestion of step 4.
+3. `MEETING vocab` — if `<project>/.claude/meeting-vocab.txt` does not exist, say in
    one line that `/meeting-vocab` would teach the recognizer this project's names. Do
    not block on it.
-3. Settle these. Take them from the user's message when present; otherwise ask ONE
+4. Settle these. Take them from the user's message when present; otherwise ask ONE
    AskUserQuestion with these as questions, defaults first:
    - **Name**: `YYYY-MM-DD-<topic-slug>` (today's date). It becomes the folder.
    - **Audio input**:
-     - In-room meeting → the built-in mic (default `MacBook Pro Microphone`, or
+     - In-room meeting → the system's default input (`default`, or
        `$MEETING_DEVICE`).
      - Online call (Teams/Zoom/Meet) → mic **plus** a system-audio loopback device
        (BlackHole, eqMac, Loopback), so remote speakers are recorded clearly: pass
@@ -33,7 +37,7 @@
    - **Topic hints** (optional): agenda, people, product names, issue numbers. Write
      extra terms one per line to `<root>/<name>/vocab-extra.txt` *before* starting —
      they bias the recognizer toward those spellings.
-4. Load a little context now, not during the meeting: the project's instruction file,
+5. Load a little context now, not during the meeting: the project's instruction file,
    memory index (if loaded), and the plans, handoffs and runbooks for the topic. Note
    which ones are relevant.
 
@@ -55,7 +59,7 @@ size) as `W:H:X:Y` (width, height, left, top) and re-snap. Confirm with the user
 before starting.
 
 ```bash
-MEETING start <name> [--device "MacBook Pro Microphone" --device "BlackHole 2ch"] [--lang th] \
+MEETING start <name> [--device default --device "BlackHole 2ch"] [--lang th] \
                      [--app "<app>" [--window <title|id>] | --screen <N> [--screen-crop W:H:X:Y]]
 ```
 
@@ -73,8 +77,11 @@ description: meeting <name> transcript
 timeout_ms: 1800000
 ```
 
-Monitors expire after 30 min. On the expiry notice, re-arm the same command (keep
-`-n 0` so old lines are not replayed) unless the transcript ended with `[END]`.
+Monitors expire after 30 min. On the expiry notice, unless the transcript ended with
+`[END]`: re-arm the same command first (keep `-n 0` so old lines are not replayed),
+then close the gap — read the transcript lines after the last stamp you replied to
+(`grep -n '^\[<HH:MM:SS>\]' <transcript>`, then `Read` from that line) and answer
+them. A line that shows up in both is answered once.
 Tell the user in one line: recording, which inputs, how to stop (`/end-meeting`).
 
 If the first chunk line has not arrived ~40 s after start, check `<log>`: an

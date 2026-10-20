@@ -1,6 +1,6 @@
 {
   "name": "meeting-secretary",
-  "description": "On-device live meeting transcription (macOS, Thai and English) with Claude as real-time secretary — answers questions from project sources, flags contradictions, logs decisions — then an accurate re-transcription and a fact-checked meeting note. Commands: /start-meeting, /end-meeting, /meeting-vocab.",
+  "description": "Live meeting secretary for Claude Code on macOS: audio is recorded and transcribed on the Mac (Thai and English), the transcript goes to Claude, which answers questions from project sources, flags contradictions and logs decisions, then writes a fact-checked meeting note. /start-meeting, /end-meeting, /meeting-vocab.",
   "version": "0.1.0",
   "author": {
     "name": "noomz",

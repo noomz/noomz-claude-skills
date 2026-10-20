@@ -9,7 +9,10 @@ it, and where.
 
 1. `MEETING stop` — prints `{"name", "dir", "stopped": true}`. If it says "no active
    meeting", the user may mean an earlier meeting; use the name they give, or the newest
-   folder with a `meta.json`.
+   folder with a `meta.json` (`ls` the data root; it is hidden from search). If it
+   prints `"stopped": false`, the recorder is still finishing a chunk: run `stop` once
+   more, and if that fails too, tell the user the pid and ask before `kill`. Do not
+   run `final` while the recorder is alive.
 2. Stop re-arming the transcript Monitor (and stop it with TaskStop if still running).
 3. `MEETING final <name>` with `run_in_background: true`. It joins the chunks into
    `full.wav` and re-transcribes in 30 s windows (about 4 s per minute of audio on
