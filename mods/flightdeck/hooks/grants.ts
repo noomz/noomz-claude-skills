@@ -3,6 +3,7 @@
 // state and never drawn, so a command's text cannot leak through the pane or the store.
 import type { AgentStatus, ToolCheckResult } from 'claude-code'
 
+import type { Check, Gate, Grant } from '../types'
 import type { SafeText } from './hygiene'
 
 /** A call's exact identity, the thing a grant matches on. Memory only: never stored, never drawn. */
@@ -71,6 +72,60 @@ export const grantedVerdict = (detail: SafeText): ToolCheckResult => ({
 export const retryText = (detail: SafeText) =>
   `flightdeck: the person approved ${detail} for this session after it was refused. If that call is still needed, make it again now, unchanged.`
 
+export type Denial = Extract<Check, { verdict: 'deny' }>
+
+/**
+ * Where a refusal stands. blocked: core refused it, or the ask came from configuration, so it is
+ * shown and never approvable. expired: its identity was held by another load or before a reset.
+ */
+export type DenialStatus = 'blocked' | 'approvable' | 'expired' | 'approved' | 'retried'
+
+export type DenialRow = { check: Denial; status: DenialStatus; grant: Grant | null }
+
+const rowOf = (g: Gate, c: Denial, epoch: string): DenialRow => {
+  if (c.by !== 'refused' || !c.approvable) return { check: c, status: 'blocked', grant: null }
+  if (c.epoch !== epoch) return { check: c, status: 'expired', grant: null }
+  const grant = g.grants.find(x => x.denialId === c.id && x.epoch === epoch) ?? null
+  if (!grant) return { check: c, status: 'approvable', grant }
+  return { check: c, status: c.retriedAt === null ? 'approved' : 'retried', grant }
+}
+
+/** The denied list as drawn: newest first, at most `n`. */
+export const denialRows = (g: Gate, n: number, epoch: string): DenialRow[] =>
+  g.recent
+    .filter((c): c is Denial => c.verdict === 'deny')
+    .slice(-n)
+    .reverse()
+    .map(c => rowOf(g, c, epoch))
+
+const GRANT_ROWS_MAX = 32
+
+/**
+ * Records your approval of denial `id`, after the memory granted it: a no-op unless the row is
+ * approvable in this epoch, so approving twice keeps one. Drops the grants the memory evicted.
+ */
+export const approve = (g: Gate, id: string, at: number, epoch: string, evicted: readonly string[]): Gate => {
+  const c = g.recent.find((r): r is Denial => r.id === id && r.verdict === 'deny')
+  if (!c || rowOf(g, c, epoch).status !== 'approvable') return g
+  const grant: Grant = { denialId: id, bucket: c.bucket, detail: c.detail, at, uses: 0, epoch }
+  return { ...g, grants: [...g.grants.filter(x => !evicted.includes(x.denialId)), grant].slice(-GRANT_ROWS_MAX) }
+}
+
+/** Marks denial `id` retried; a no-op unless it is approved and not yet retried, so a double press sends once. */
+export const markRetried = (g: Gate, id: string, at: number, epoch: string): Gate => {
+  const c = g.recent.find((r): r is Denial => r.id === id && r.verdict === 'deny')
+  if (!c || c.by !== 'refused' || rowOf(g, c, epoch).status !== 'approved') return g
+  return { ...g, recent: g.recent.map(r => (r === c ? { ...c, retriedAt: at } : r)) }
+}
+
+/** Counts one call your grant for denial `denialId` allowed. */
+export const useGrant = (g: Gate, denialId: string): Gate => ({
+  ...g,
+  grants: g.grants.map(x => (x.denialId === denialId ? { ...x, uses: x.uses + 1 } : x)),
+})
+
+export const clearGrants = (g: Gate): Gate => (g.grants.length === 0 ? g : { ...g, grants: [] })
+
 export type RetryPlan =
   | { kind: 'main' }
   | { kind: 'agent'; agentId: string; resumes: boolean }
@@ -78,16 +133,14 @@ export type RetryPlan =
 
 const ENDED: ReadonlySet<AgentStatus> = new Set(['completed', 'failed', 'killed'])
 
-/** How to retry a refused call, given its loop's status in `$.agent.list()` (undefined: not listed). */
-export const retryPlan = (
-  d: { agentId: string | null; isApproved: boolean; retriedAt: number | null },
-  status: AgentStatus | undefined,
-): RetryPlan => {
-  if (!d.isApproved) return { kind: 'none', why: 'not approved' }
-  if (d.retriedAt !== null) return { kind: 'none', why: 'already retried' }
-  if (d.agentId === null) return { kind: 'main' }
+/** How to retry a refusal, given its loop's status in `$.agent.list()` (undefined: not listed). */
+export const retryPlan = (row: DenialRow, status: AgentStatus | undefined): RetryPlan => {
+  if (row.status === 'retried') return { kind: 'none', why: 'already retried' }
+  if (row.status !== 'approved') return { kind: 'none', why: 'not approved' }
+  const { agentId } = row.check
+  if (agentId === null) return { kind: 'main' }
   if (status === undefined) return { kind: 'none', why: 'agent gone' }
-  return { kind: 'agent', agentId: d.agentId, resumes: ENDED.has(status) }
+  return { kind: 'agent', agentId, resumes: ENDED.has(status) }
 }
 
 const PENDING_MAX = 64

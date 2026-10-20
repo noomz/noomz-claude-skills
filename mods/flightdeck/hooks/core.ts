@@ -1,6 +1,8 @@
 // Pure data: defaults, reducers, formatting and layout math. Nothing here touches `$`, so every
 // behaviour is testable directly (the test kit cannot raise a subagent's tool call or a
 // permission check inside a call; these functions are what the hooks apply).
+import type { ToolCheckResult } from 'claude-code'
+
 import type {
   AgentCard,
   Architect,
@@ -8,6 +10,7 @@ import type {
   Check,
   Consult,
   Gate,
+  Grant,
   Layout,
   LogLine,
   Loop,
@@ -19,18 +22,19 @@ import type {
   ToolNote,
   Turn,
   Usage,
+  Verdict,
   View,
 } from '../types'
 import { scrub } from './hygiene'
 import type { Hygiene, SafeText, Scrubbed } from './hygiene'
 
-export const SCHEMA_VERSION = 3
+export const SCHEMA_VERSION = 4
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 
 export const isCurrentSchema = (meta: unknown) => isObject(meta) && meta.schemaVersion === SCHEMA_VERSION
 
-export const CAP = { description: 80, name: 40, detail: 64, advice: 160, who: 40, line: 160 } as const
+export const CAP = { description: 80, name: 40, detail: 64, advice: 160, who: 40, line: 160, cause: 40, viewDeny: 64 } as const
 
 export const NO_TEXT = '' as SafeText
 
@@ -57,10 +61,10 @@ export const DEFAULT_USAGE: Usage = {
   lastCompactAt: null,
 }
 export const DEFAULT_ARCHITECT: Architect = { consults: [], ids: [], seen: [], lastAdvice: NO_TEXT }
-const ZERO: Tally = { rule: 0, ask: 0, cleared: 0, deny: 0 }
-export const DEFAULT_GATE: Gate = { recent: [], totals: { file: ZERO, shell: ZERO, other: ZERO } }
+const ZERO: Tally = { rule: 0, granted: 0, ask: 0, cleared: 0, deny: 0 }
+export const DEFAULT_GATE: Gate = { recent: [], totals: { file: ZERO, shell: ZERO, other: ZERO }, grants: [] }
 export const DEFAULT_TURN: Turn = { edits: 0, errorStreak: 0, errors: 0, isReviewing: false, startedAt: 0, costAtStart: null }
-export const DEFAULT_VIEW: View = { expanded: null, gateOpen: null, layout: null }
+export const DEFAULT_VIEW: View = { expanded: null, viewDeny: null, gateOpen: null, layout: null }
 export const DEFAULT_ROSTER: Roster = { architectTypes: [] }
 export const DEFAULT_HYGIENE: Hygiene = { masked: 0, rejected: 0 }
 
@@ -77,6 +81,7 @@ export const normalizeGate = (stored: unknown): Gate => {
   return {
     recent: listOf<Check>(g.recent),
     totals: { file: normalize(ZERO, totals.file), shell: normalize(ZERO, totals.shell), other: normalize(ZERO, totals.other) },
+    grants: listOf<Grant>(g.grants),
   }
 }
 
@@ -385,13 +390,21 @@ export const toolDetail = (tool: string, input: unknown): Scrubbed => {
   return holdsKey ? detailOf(tool, path, pathSegments) : detailOf(tool, lastSegments(path, 2))
 }
 
-/** Keeps the last `max` checks, but never drops a pending ask: its settle must still find it. */
+const isApprovable = (c: Check) => (c.verdict === 'ask' || (c.verdict === 'deny' && c.by === 'refused')) && c.approvable
+
+const KEPT_APPROVABLE = 8
+
+/**
+ * Keeps the last `max` checks, but never drops a pending ask (its settle must still find it) nor
+ * the newest approvable refusals, so a burst of reads cannot push out the one you meant to approve.
+ */
 export const trimRecent = (list: Check[], max: number): Check[] => {
   let extra = list.length - max
   if (extra <= 0) return list
+  const kept = new Set(list.filter(c => c.verdict === 'deny' && isApprovable(c)).slice(-KEPT_APPROVABLE))
   const out: Check[] = []
   for (const c of list) {
-    if (extra > 0 && c.verdict !== 'ask') {
+    if (extra > 0 && c.verdict !== 'ask' && !kept.has(c)) {
       extra -= 1
       continue
     }
@@ -400,23 +413,49 @@ export const trimRecent = (list: Check[], max: number): Check[] => {
   return out.slice(-max * 2)
 }
 
-export const recordCheck = (g: Gate, c: Check): Gate => {
-  const t = g.totals[c.bucket]
-  return {
-    recent: trimRecent([...g.recent, c], 80),
-    totals: { ...g.totals, [c.bucket]: { ...t, [c.verdict]: t[c.verdict] + 1 } },
-  }
+const counted = (g: Gate, bucket: Bucket, plus: Verdict, minus?: Verdict) => {
+  const t = g.totals[bucket]
+  const next: Tally = { ...t, [plus]: t[plus] + 1 }
+  if (minus) next[minus] = Math.max(0, t[minus] - 1)
+  return { ...g.totals, [bucket]: next }
 }
 
-/** An `ask` settled by the call that followed it: it ran (cleared) or was refused (deny). */
-export const settleCheck = (g: Gate, id: string, didRun: boolean): Gate => {
+export const recordCheck = (g: Gate, c: Check): Gate => ({
+  ...g,
+  recent: trimRecent([...g.recent, c], 80),
+  totals: counted(g, c.bucket, c.verdict),
+})
+
+/** What a refused call's rule or hook was named: the raw text, for the shell to scrub. */
+export const denyCause = (v: ToolCheckResult) => v.rule ?? v.hook ?? ''
+
+/** A check from core's verdict; `isGranted` when flightdeck answered allow for your approval. */
+export const checkOf = (
+  base: { id: string; bucket: Bucket; detail: SafeText; agentId: string | null; at: number },
+  v: ToolCheckResult,
+  o: { isGranted: boolean; approvable: boolean; cause: SafeText },
+): Check => {
+  if (o.isGranted) return { ...base, verdict: 'granted' }
+  if (v.decision === 'allow') return { ...base, verdict: 'rule' }
+  if (v.decision === 'ask') return { ...base, verdict: 'ask', approvable: o.approvable }
+  return { ...base, verdict: 'deny', by: v.rule ? 'rule' : v.hook ? 'hook' : 'policy', cause: o.cause }
+}
+
+/** How a call settled: it ran, or it was refused, with its identity held in `epoch` or not. */
+export type Settle = { didRun: true } | { didRun: false; isHeld: boolean; epoch: string }
+
+/** An `ask` settled by the call that followed it: it ran (cleared) or was refused (deny refused). */
+export const settleCheck = (g: Gate, id: string, s: Settle): Gate => {
   const c = g.recent.find(r => r.id === id && r.verdict === 'ask')
-  if (!c) return g
-  const verdict = didRun ? 'cleared' : 'deny'
-  const t = g.totals[c.bucket]
+  if (!c || c.verdict !== 'ask') return g
+  const { approvable: wasPlain, ...base } = c
+  const next: Check = s.didRun
+    ? { ...base, verdict: 'cleared' }
+    : { ...base, verdict: 'deny', by: 'refused', approvable: wasPlain && s.isHeld, epoch: s.epoch, retriedAt: null }
   return {
-    recent: g.recent.map(r => (r === c ? { ...r, verdict } : r)),
-    totals: { ...g.totals, [c.bucket]: { ...t, ask: Math.max(0, t.ask - 1), [verdict]: t[verdict] + 1 } },
+    ...g,
+    recent: g.recent.map(r => (r === c ? next : r)),
+    totals: counted(g, c.bucket, next.verdict, 'ask'),
   }
 }
 
@@ -424,13 +463,14 @@ export const gateSummary = (g: Gate) => {
   const all = (['file', 'shell', 'other'] as const).reduce(
     (s, k) => ({
       rule: s.rule + g.totals[k].rule,
+      granted: s.granted + g.totals[k].granted,
       ask: s.ask + g.totals[k].ask,
       cleared: s.cleared + g.totals[k].cleared,
       deny: s.deny + g.totals[k].deny,
     }),
     { ...ZERO },
   )
-  return { ...all, total: all.rule + all.ask + all.cleared + all.deny }
+  return { ...all, total: all.rule + all.granted + all.ask + all.cleared + all.deny }
 }
 
 // ---------------------------------------------------------------- turn and architect
@@ -646,7 +686,7 @@ export const consultVia = (subagentType: string): Scrubbed => kept(subagentType,
 
 export const elapsedOf = (c: AgentCard, now: number) => (c.endedAt ?? now) - c.spawnedAt
 
-type Held = { log: LogLine[]; agents: AgentCard[]; gate: Gate; architect: Architect; roster: Roster }
+type Held = { log: LogLine[]; agents: AgentCard[]; gate: Gate; architect: Architect; roster: Roster; view: View }
 
 export const textFields = (h: Held): { path: string; length: number }[] =>
   [
@@ -656,7 +696,12 @@ export const textFields = (h: Held): { path: string; length: number }[] =>
       [`agents.${i}.description`, c.description] as const,
       ...c.tools.map((n, j) => [`agents.${i}.tools.${j}.text`, n.text] as const),
     ]),
-    ...h.gate.recent.map((c, i) => [`gate.recent.${i}.detail`, c.detail] as const),
+    ...h.gate.recent.flatMap((c, i) => [
+      [`gate.recent.${i}.detail`, c.detail] as const,
+      ...(c.verdict === 'deny' && c.by !== 'refused' ? [[`gate.recent.${i}.cause`, c.cause] as const] : []),
+    ]),
+    ...h.gate.grants.map((g, i) => [`gate.grants.${i}.detail`, g.detail] as const),
+    ['view.viewDeny', h.view.viewDeny ?? ''] as const,
     ['architect.lastAdvice', h.architect.lastAdvice] as const,
     ...h.architect.consults.map((c, i) => [`architect.consults.${i}.via`, c.via] as const),
     ...h.roster.architectTypes.map((t, i) => [`roster.architectTypes.${i}`, t] as const),

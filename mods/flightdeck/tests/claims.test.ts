@@ -433,7 +433,7 @@ describe('what a reset empties and keeps', () => {
     values.set('flightdeck/usage/', { value: usage, version: 1 })
     values.set('flightdeck/main/', { value: { ...DEFAULT_MAIN, model: 'claude-opus-5-5', mode: 'plan' }, version: 1 })
     values.set('flightdeck/turn/', { value: { ...DEFAULT_TURN, edits: 3, errors: 2, startedAt: 5 }, version: 1 })
-    values.set('flightdeck/gate/', { value: { ...DEFAULT_GATE, totals: { ...DEFAULT_GATE.totals, shell: { rule: 4, ask: 0, cleared: 1, deny: 2 } } }, version: 1 })
+    values.set('flightdeck/gate/', { value: { ...DEFAULT_GATE, totals: { ...DEFAULT_GATE.totals, shell: { rule: 4, granted: 0, ask: 0, cleared: 1, deny: 2 } } }, version: 1 })
     await $.command.run({ command: 'flightdeck', args: 'reset' } as never)
     const s = state(values)
     expect([s.usage, s.turn, s.gate]).toEqual([{ ...usage, pct: null, tokens: null }, DEFAULT_TURN, DEFAULT_GATE])
@@ -456,8 +456,9 @@ describe('what a reset empties and keeps', () => {
 
   const metas: [label: string, meta: unknown, kept: number][] = [
     ['version 2', { schemaVersion: 2 }, 0],
-    ['version 3', { schemaVersion: 3 }, 1],
-    ['version 4', { schemaVersion: 4 }, 0],
+    ['version 3', { schemaVersion: 3 }, 0],
+    ['version 4', { schemaVersion: 4 }, 1],
+    ['version 5', { schemaVersion: 5 }, 0],
     ['no meta, as upstream flightdeck wrote it', undefined, 0],
     ['an empty meta', {}, 0],
     ['a meta that is not an object', 'v3', 0],
@@ -512,19 +513,12 @@ test('with matchDescriptions, an offered type whose description matches joins th
   expect([s.roster.architectTypes, s.architect.ids, s.agents ?? []]).toEqual([['reviewer-bot'], ['rd1'], []])
 })
 
-test('a check made inside a subagent call is marked as such, and the gate draws it dim', async ($, on) => {
+test("a check keeps the loop its tool.check names: the subagent's id, or null for the main loop", async ($, on) => {
   const values = engine(on)
-  on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: 'ns1' }))
   on('tool.check', () => ({ decision: 'allow' as const }))
-  on('tool.call', async (_$, e) => {
-    await $.tool.check({ tool: e.tool, input: { command: 'ls' }, tool_use_id: e.tool_use_id })
-    return { result: {}, text: 'ok' }
-  })
-  await $.turn.start({ text: 'go', turnId: 'Z1' })
-  await $.agent.spawn(spawn('general-purpose', 'list'))
-  await $.tool.call({ tool: 'Bash', command: 'ls', agentId: 'ns1', tool_use_id: 'zk1' } as never)
-  await $.tool.call({ tool: 'Bash', command: 'ls', tool_use_id: 'zk2' } as never)
-  expect(state(values).gate.recent.map(c => c.inSubagent)).toEqual([true, false])
+  await $.tool.check({ tool: 'Bash', input: { command: 'ls' }, tool_use_id: 'zk1', agentId: 'ns1' })
+  await $.tool.check({ tool: 'Bash', input: { command: 'ls' }, tool_use_id: 'zk2' })
+  expect(state(values).gate.recent.map(c => c.agentId)).toEqual(['ns1', null])
 })
 
 test('/flightdeck audit lists the text fields under gate, architect and roster too', async ($, on) => {

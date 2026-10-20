@@ -20,6 +20,8 @@ import {
   afterCall,
   applyStep,
   bucketOf,
+  checkOf,
+  denyCause,
   cardTitle,
   titleLines,
   consultTimeline,
@@ -70,7 +72,7 @@ import {
   textFields,
   toolDetail,
 } from './core'
-import type { Config, Panel } from './core'
+import type { Config, Panel, Settle } from './core'
 
 const PANE = 'flightdeck'
 const TITLE = 'Flightdeck'
@@ -133,8 +135,8 @@ async function getHygiene($: EngineInterface): Promise<Hygiene> {
 }
 
 async function audit($: EngineInterface) {
-  const [l, a, g, ar, r, h] = await Promise.all([getLog($), getCards($), getGate($), getArchitect($), getRoster($), getHygiene($)])
-  const fields = textFields({ log: l, agents: a, gate: g, architect: ar, roster: r })
+  const [l, a, g, ar, r, v, h] = await Promise.all([getLog($), getCards($), getGate($), getArchitect($), getRoster($), getView($), getHygiene($)])
+  const fields = textFields({ log: l, agents: a, gate: g, architect: ar, roster: r, view: v })
   const rows = new Map<string, string[]>()
   for (const f of fields) {
     const [key = '', ...rest] = f.path.split('.')
@@ -265,8 +267,6 @@ async function noteMode($: EngineInterface, mode: string | undefined) {
 export const register: Register = (on, options) => {
   const cfg = parseConfig(options)
   const C = PALETTES[cfg.palette]
-  // tool.check carries no loop id; the tool.call around it does, keyed by the call's id.
-  const callLoop = new Map<string, string | null>()
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -436,15 +436,10 @@ export const register: Register = (on, options) => {
     const verdict = await next(e)
     if (e.tool_use_id) {
       const detail = toolDetail(e.tool, e.input)
-      await tally($, detail)
-      const check: Check = {
-        id: e.tool_use_id,
-        bucket: bucketOf(e.tool),
-        verdict: verdict.decision === 'allow' ? 'rule' : verdict.decision,
-        inSubagent: Boolean(callLoop.get(e.tool_use_id)),
-        detail: detail.text,
-        at: await $.clock.now(),
-      }
+      const cause = kept(denyCause(verdict), CAP.cause)
+      await tally($, detail, cause)
+      const base = { id: e.tool_use_id, bucket: bucketOf(e.tool), detail: detail.text, agentId: e.agentId ?? null, at: await $.clock.now() }
+      const check = checkOf(base, verdict, { isGranted: false, approvable: false, cause: cause.text })
       await update($, gate, g => recordCheck(normalizeGate(g), check))
       // The status line updates when the call settles; only a refusal ends here.
       if (verdict.decision === 'deny') {
@@ -456,13 +451,13 @@ export const register: Register = (on, options) => {
   })
 
   on('tool.call', async ($, e, next) => {
-    callLoop.set(e.tool_use_id, e.agentId ?? null)
-    const ran = await next(e).finally(() => callLoop.delete(e.tool_use_id))
+    const ran = await next(e)
     const didRun = ran.deny === undefined
+    const settle: Settle = didRun ? { didRun } : { didRun, isHeld: false, epoch: '' }
     // Settle this call's pending ask, if it had one; skip the write (and the redraw) otherwise.
     const g0 = await getGate($)
-    const isSettled = settleCheck(g0, e.tool_use_id, didRun) !== g0
-    if (isSettled) await update($, gate, g => settleCheck(normalizeGate(g), e.tool_use_id, didRun))
+    const isSettled = settleCheck(g0, e.tool_use_id, settle) !== g0
+    if (isSettled) await update($, gate, g => settleCheck(normalizeGate(g), e.tool_use_id, settle))
     // A background agent hands its report back through this tool; an architect's report is its advice.
     if (String(e.tool) === 'SubagentHandback') {
       const message = (e as unknown as { message?: unknown }).message
@@ -793,7 +788,7 @@ export const register: Register = (on, options) => {
           <Box>
             {strip.length === 0 ? <Text color={C.faint}>no checks yet</Text> : null}
             {strip.map(c => (
-              <Text color={verdictColor(c)} dimColor={c.inSubagent}>
+              <Text color={verdictColor(c)} dimColor={c.agentId !== null}>
                 {c.verdict === 'deny' ? '✗' : '■'}
               </Text>
             ))}
@@ -805,7 +800,7 @@ export const register: Register = (on, options) => {
             <Text dimColor>{` ${s.cleared} ${decider}  `}</Text>
             {s.ask > 0 ? <Text color={C.amber}>{`■ ${s.ask} pending  `}</Text> : null}
             <Text color={s.deny > 0 ? C.warn : C.dim}>{`✗ ${s.deny} denied`}</Text>
-            {w >= 80 && g.recent.some(c => c.inSubagent) ? <Text color={C.faint}>{'  dim: in subagents'}</Text> : null}
+            {w >= 80 && g.recent.some(c => c.agentId !== null) ? <Text color={C.faint}>{'  dim: in subagents'}</Text> : null}
           </Text>
           <Box columnGap={2}>
             {(['file', 'shell', 'other'] as const).map((b: Bucket) => {
@@ -831,7 +826,7 @@ export const register: Register = (on, options) => {
                   <Text wrap="truncate">
                     <Text color={verdictColor(c)}>{c.verdict === 'deny' ? '✗ ' : '■ '}</Text>
                     <Text color={C.dim}>{`${(c.verdict === 'rule' ? 'allowed' : c.verdict === 'cleared' ? decider : c.verdict === 'ask' ? 'pending' : 'denied').padEnd(10)} `}</Text>
-                    <Text dimColor={c.inSubagent}>{shorten(c.detail, Math.max(10, w - 18))}</Text>
+                    <Text dimColor={c.agentId !== null}>{shorten(c.detail, Math.max(10, w - 18))}</Text>
                   </Text>
                 ))
             : null}
@@ -1118,7 +1113,7 @@ export const register: Register = (on, options) => {
             <Box>
               <Text dimColor>{`${cfg.gateLabel.toLowerCase()} `}</Text>
               {strip.map(c => (
-                <Text color={verdictColor(c)} dimColor={c.inSubagent}>
+                <Text color={verdictColor(c)} dimColor={c.agentId !== null}>
                   {c.verdict === 'deny' ? '✗' : '■'}
                 </Text>
               ))}

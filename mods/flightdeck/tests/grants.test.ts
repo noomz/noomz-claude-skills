@@ -1,9 +1,11 @@
 import type { AgentStatus } from 'claude-code'
 import { describe, expect, test } from 'claude-code/testing'
 
-import { askSubject, grantMemory, grantedVerdict, identityOf, isPlainAsk, retryPlan, retryText } from '../hooks/grants'
-import type { Subject } from '../hooks/grants'
+import { DEFAULT_GATE, recordCheck, settleCheck } from '../hooks/core'
+import { approve, askSubject, clearGrants, denialRows, grantMemory, grantedVerdict, identityOf, isPlainAsk, markRetried, retryPlan, retryText, useGrant } from '../hooks/grants'
+import type { DenialRow, RetryPlan, Subject } from '../hooks/grants'
 import { scrub } from '../hooks/hygiene'
+import type { Check, Gate } from '../types'
 
 type Verdict = Parameters<typeof isPlainAsk>[0]
 
@@ -144,19 +146,81 @@ describe('the memory', () => {
   })
 })
 
+const EPOCH = 'e1'
+const DETAIL = scrub('Bash → git', 64).text
+
+/** A gate holding one refusal of call `id`: of a plain ask held in EPOCH unless said otherwise. */
+const refusedGate = (id: string, o: { agentId?: string | null; isHeld?: boolean; isPlain?: boolean } = {}) => {
+  const ask: Check = { id, bucket: 'shell', detail: DETAIL, agentId: o.agentId ?? null, at: 1, verdict: 'ask', approvable: o.isPlain ?? true }
+  return settleCheck(recordCheck(DEFAULT_GATE, ask), id, { didRun: false, isHeld: o.isHeld ?? true, epoch: EPOCH })
+}
+
+const rowOf = (g: Gate, epoch = EPOCH) => denialRows(g, 4, epoch)[0] as DenialRow
+
+describe('a refusal in the denied list', () => {
+  test('a plain ask refused with its identity held is approvable; approving it records one grant, twice still one', () => {
+    const g = refusedGate('d1')
+    expect(rowOf(g).status).toBe('approvable')
+    const once = approve(g, 'd1', 5, EPOCH, [])
+    expect([rowOf(once).status, once.grants]).toEqual(['approved', [{ denialId: 'd1', bucket: 'shell', detail: DETAIL, at: 5, uses: 0, epoch: EPOCH }]])
+    expect(approve(once, 'd1', 6, EPOCH, [])).toBe(once)
+  })
+
+  const blocked: [label: string, g: Gate][] = [
+    ['a refusal of a non-plain ask', refusedGate('d1', { isPlain: false })],
+    ['a refusal whose identity the memory did not keep', refusedGate('d1', { isHeld: false })],
+    ['a deny from a settings rule', recordCheck(DEFAULT_GATE, { id: 'd1', bucket: 'shell', detail: DETAIL, agentId: null, at: 1, verdict: 'deny', by: 'rule', cause: scrub('Bash(git push:*)', 40).text })],
+    ['a deny from a hook', recordCheck(DEFAULT_GATE, { id: 'd1', bucket: 'shell', detail: DETAIL, agentId: null, at: 1, verdict: 'deny', by: 'hook', cause: scrub('PreToolUse', 40).text })],
+    ['a deny from the mode or a check', recordCheck(DEFAULT_GATE, { id: 'd1', bucket: 'shell', detail: DETAIL, agentId: null, at: 1, verdict: 'deny', by: 'policy', cause: scrub('', 40).text })],
+  ]
+  for (const [label, g] of blocked) {
+    test(`${label} is blocked, and approve leaves the gate as it was`, () => {
+      expect(rowOf(g).status).toBe('blocked')
+      expect(approve(g, 'd1', 5, EPOCH, [])).toBe(g)
+    })
+  }
+
+  test('a refusal or a grant from another epoch reads as expired and cannot be approved or retried', () => {
+    const g = approve(refusedGate('d1'), 'd1', 5, EPOCH, [])
+    expect(rowOf(g, 'e2').status).toBe('expired')
+    expect(approve(refusedGate('d1'), 'd1', 5, 'e2', [])).toEqual(refusedGate('d1'))
+    expect(markRetried(g, 'd1', 9, 'e2')).toBe(g)
+  })
+
+  test('a retry is marked once: the second press finds it retried', () => {
+    const g = approve(refusedGate('d1'), 'd1', 5, EPOCH, [])
+    const once = markRetried(g, 'd1', 9, EPOCH)
+    expect(rowOf(once).status).toBe('retried')
+    expect(markRetried(once, 'd1', 10, EPOCH)).toBe(once)
+    expect(markRetried(refusedGate('d1'), 'd1', 9, EPOCH)).toEqual(refusedGate('d1'))
+  })
+
+  test('a grant the memory evicted is dropped, uses count up, and clearing empties them', () => {
+    let g = approve(refusedGate('d1'), 'd1', 5, EPOCH, [])
+    g = useGrant(useGrant(g, 'd1'), 'd1')
+    expect(g.grants.map(x => x.uses)).toEqual([2])
+    const two = settleCheck(recordCheck(g, { id: 'd2', bucket: 'shell', detail: DETAIL, agentId: null, at: 2, verdict: 'ask', approvable: true }), 'd2', { didRun: false, isHeld: true, epoch: EPOCH })
+    expect(approve(two, 'd2', 6, EPOCH, ['d1']).grants.map(x => x.denialId)).toEqual(['d2'])
+    expect(clearGrants(g).grants).toEqual([])
+  })
+})
+
 describe('a retry', () => {
-  type Plan = [label: string, d: Parameters<typeof retryPlan>[0], status: AgentStatus | undefined, plan: ReturnType<typeof retryPlan>]
+  const approved = (agentId: string | null) => rowOf(approve(refusedGate('d1', { agentId }), 'd1', 5, EPOCH, []))
+  type Plan = [label: string, row: DenialRow, status: AgentStatus | undefined, plan: RetryPlan]
   const plans: Plan[] = [
-    ['not approved', { agentId: null, isApproved: false, retriedAt: null }, undefined, { kind: 'none', why: 'not approved' }],
-    ['already retried', { agentId: null, isApproved: true, retriedAt: 5 }, undefined, { kind: 'none', why: 'already retried' }],
-    ['the main loop', { agentId: null, isApproved: true, retriedAt: null }, undefined, { kind: 'main' }],
-    ['an agent not listed', { agentId: 'a1', isApproved: true, retriedAt: null }, undefined, { kind: 'none', why: 'agent gone' }],
+    ['not approved', rowOf(refusedGate('d1')), undefined, { kind: 'none', why: 'not approved' }],
+    ['blocked', rowOf(refusedGate('d1', { isPlain: false })), undefined, { kind: 'none', why: 'not approved' }],
+    ['expired', rowOf(approve(refusedGate('d1'), 'd1', 5, EPOCH, []), 'e2'), undefined, { kind: 'none', why: 'not approved' }],
+    ['already retried', rowOf(markRetried(approve(refusedGate('d1'), 'd1', 5, EPOCH, []), 'd1', 9, EPOCH)), undefined, { kind: 'none', why: 'already retried' }],
+    ['the main loop', approved(null), undefined, { kind: 'main' }],
+    ['an agent not listed', approved('a1'), undefined, { kind: 'none', why: 'agent gone' }],
     ...(['pending', 'running', 'waiting', 'idle', 'completed', 'failed', 'killed'] as const).map((s): Plan => {
       const resumes = s === 'completed' || s === 'failed' || s === 'killed'
-      return [`a ${s} agent${resumes ? ' resumes' : ''}`, { agentId: 'a1', isApproved: true, retriedAt: null }, s, { kind: 'agent', agentId: 'a1', resumes }]
+      return [`a ${s} agent${resumes ? ' resumes' : ''}`, approved('a1'), s, { kind: 'agent', agentId: 'a1', resumes }]
     }),
   ]
-  for (const [label, d, status, plan] of plans) test(label, () => expect(retryPlan(d, status)).toEqual(plan))
+  for (const [label, row, status, plan] of plans) test(label, () => expect(retryPlan(row, status)).toEqual(plan))
 
   test('the text holds the scrubbed detail and nothing else from the session', () => {
     const detail = scrub('Bash → curl', 64).text

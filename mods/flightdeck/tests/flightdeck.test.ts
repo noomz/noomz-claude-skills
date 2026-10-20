@@ -5,6 +5,7 @@ import {
   DEFAULT_ARCHITECT,
   DEFAULT_GATE,
   DEFAULT_TURN,
+  NO_TEXT,
   afterCall,
   applyStep,
   consultTimeline,
@@ -164,22 +165,23 @@ test('a URL tool detail keeps the host alone', () => {
   expect(toolDetail('WebSearch', { query: 'my password is hunter2' }).text).toBe('WebSearch')
 })
 
-const check = (id: string, verdict: Check['verdict'], bucket: Check['bucket'] = 'shell'): Check => ({
-  id,
-  bucket,
-  verdict,
-  inSubagent: false,
-  detail: toolDetail('Bash', { command: 'ls' }).text,
-  at: 1,
-})
+const check = (id: string, verdict: 'rule' | 'ask' | 'deny', bucket: Check['bucket'] = 'shell', approvable = false): Check => {
+  const base = { id, bucket, agentId: null, detail: toolDetail('Bash', { command: 'ls' }).text, at: 1 }
+  if (verdict === 'ask') return { ...base, verdict, approvable }
+  if (verdict === 'deny') return { ...base, verdict, by: 'policy', cause: NO_TEXT }
+  return { ...base, verdict }
+}
+
+const ran = { didRun: true } as const
+const refused = { didRun: false, isHeld: false, epoch: 'e1' } as const
 
 test('an ask is settled by the call that follows: cleared if it ran, deny if refused', () => {
   let g = recordCheck(DEFAULT_GATE, check('a', 'ask'))
   g = recordCheck(g, check('b', 'ask'))
   g = recordCheck(g, check('c', 'rule', 'file'))
-  g = settleCheck(g, 'a', true)
-  g = settleCheck(g, 'b', false)
-  g = settleCheck(g, 'zzz', true) // not an ask: unchanged
+  g = settleCheck(g, 'a', ran)
+  g = settleCheck(g, 'b', refused)
+  g = settleCheck(g, 'zzz', ran) // not an ask: unchanged
   const s = gateSummary(g)
   expect([s.rule, s.ask, s.cleared, s.deny, s.total]).toEqual([1, 0, 1, 1, 3])
   expect(g.recent.map(c => c.verdict)).toEqual(['cleared', 'deny', 'rule'])
@@ -191,12 +193,12 @@ test('the gate tallies a mixed run of verdicts per family', () => {
   g = recordCheck(g, check('a1', 'ask', 'shell'))
   g = recordCheck(g, check('a2', 'ask', 'shell'))
   g = recordCheck(g, check('d1', 'deny', 'other'))
-  g = settleCheck(g, 'a1', true)
-  g = settleCheck(g, 'a2', false)
-  expect(g.totals.file).toEqual({ rule: 1, ask: 0, cleared: 0, deny: 0 })
-  expect(g.totals.shell).toEqual({ rule: 0, ask: 0, cleared: 1, deny: 1 })
+  g = settleCheck(g, 'a1', ran)
+  g = settleCheck(g, 'a2', refused)
+  expect(g.totals.file).toEqual({ rule: 1, granted: 0, ask: 0, cleared: 0, deny: 0 })
+  expect(g.totals.shell).toEqual({ rule: 0, granted: 0, ask: 0, cleared: 1, deny: 1 })
   expect(g.totals.other.deny).toBe(1)
-  expect(gateSummary(g)).toEqual({ rule: 1, ask: 0, cleared: 1, deny: 2, total: 4 })
+  expect(gateSummary(g)).toEqual({ rule: 1, granted: 0, ask: 0, cleared: 1, deny: 2, total: 4 })
   expect(gateSummary(DEFAULT_GATE).total).toBe(0)
 })
 
@@ -213,9 +215,19 @@ test('a pending ask is never trimmed out before it settles', () => {
   for (let i = 0; i < 120; i += 1) g = recordCheck(g, check(`r${i}`, 'rule', 'file'))
   expect(g.recent.length).toBe(80)
   expect(g.recent.some(c => c.id === 'old-ask')).toBe(true)
-  g = settleCheck(g, 'old-ask', true)
+  g = settleCheck(g, 'old-ask', ran)
   expect(gateSummary(g).ask).toBe(0)
   expect(trimRecent([check('a', 'rule'), check('b', 'rule')], 5).length).toBe(2)
+})
+
+test('the newest 8 approvable refusals outlast a burst of other checks; older ones and blocked denials do not', () => {
+  const approvable = (id: string) => settleCheck(recordCheck(DEFAULT_GATE, check(id, 'ask', 'shell', true)), id, { didRun: false, isHeld: true, epoch: 'e1' }).recent
+  let g = DEFAULT_GATE
+  for (let i = 0; i < 10; i += 1) g = { ...g, recent: [...g.recent, ...approvable(`ok${i}`)] }
+  g = recordCheck(g, check('blocked', 'deny'))
+  for (let i = 0; i < 120; i += 1) g = recordCheck(g, check(`r${i}`, 'rule', 'file'))
+  expect(g.recent.filter(c => c.verdict === 'deny').map(c => c.id)).toEqual(['ok2', 'ok3', 'ok4', 'ok5', 'ok6', 'ok7', 'ok8', 'ok9'])
+  expect(g.recent.length).toBe(80)
 })
 
 test('edits count from every loop; errors only from the main loop', () => {
@@ -844,7 +856,7 @@ for (const [how, end] of [
     const once = JSON.stringify(flightdeck(values))
     expect(textFields(values)).toEqual([])
     expect(flightdeck(values).roster).toEqual({ architectTypes: [] })
-    expect(flightdeck(values).meta).toEqual({ schemaVersion: 3 })
+    expect(flightdeck(values).meta).toEqual({ schemaVersion: 4 })
     expect(flightdeck(values).hygiene).toEqual({ masked: 0, rejected: 0 })
     await end($)
     expect(JSON.stringify(flightdeck(values))).toBe(once)
