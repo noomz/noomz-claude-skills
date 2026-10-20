@@ -7,7 +7,6 @@ export type Moment = 'before a plan' | 'error repeats' | 'before done'
 
 export type Bucket = 'file' | 'shell' | 'other'
 
-
 export type Main = {
   model: string
   effort: string

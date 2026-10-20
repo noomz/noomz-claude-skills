@@ -75,7 +75,7 @@ import {
   toolDetail,
 } from './core'
 import type { Config, Panel, Settle } from './core'
-import { approve, askSubject, clearGrants, DENIED_ROWS, denialRows, grantMemory, grantedVerdict, isPlainAsk, markRetried, retryPlan, retryText, useGrant } from './grants'
+import { approve, askSubject, clearGrants, DENIED_ROWS, denialRows, grantMemory, grantedVerdict, markRetried, retryPlan, retryText, useGrant } from './grants'
 import type { DenialRow, GrantMemory } from './grants'
 
 const PANE = 'flightdeck'
@@ -512,7 +512,7 @@ export const register: Register = (on, options) => {
 
   on('tool.check', async ($, e, next) => {
     const verdict = await next(e)
-    const subject = isPlainAsk(verdict) ? askSubject(verdict, e.tool, e.input, (await getMain($)).mode) : null
+    const subject = askSubject(verdict, e.tool, e.input, (await getMain($)).mode)
     const grantFrom = subject === null ? null : memory.allows(subject)
     const detail = toolDetail(e.tool, e.input)
     const answer = grantFrom === null ? verdict : grantedVerdict(detail.text)

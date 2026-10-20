@@ -67,6 +67,24 @@ describe('a grant never changes a verdict but a plain ask outside plan mode', ()
     })
   }
 
+  test('the same command with the sandbox turned off is asked again', () => {
+    expect(answer(granted(), { decision: 'ask' }, 'Bash', { ...call.input, dangerouslyDisableSandbox: true })).toEqual({ decision: 'ask' })
+  })
+
+  test('the same command with another description, timeout or background flag is allowed', () => {
+    const input = { ...call.input, description: 'Push main', timeout: 5000, run_in_background: true }
+    expect(answer(granted(), { decision: 'ask' }, 'Bash', input).decision).toBe('allow')
+  })
+
+  test('an MCP call whose description differs is asked again', () => {
+    const memory = grantMemory()
+    memory.hold('m1', identityOf('mcp__s__post', { channel: 'c', description: 'hello' }) as Subject)
+    memory.settle('m1', false)
+    memory.approve('m1')
+    expect(answer(memory, { decision: 'ask' }, 'mcp__s__post', { channel: 'c', description: 'hello' }).decision).toBe('allow')
+    expect(answer(memory, { decision: 'ask' }, 'mcp__s__post', { channel: 'c', description: 'rm -rf' })).toEqual({ decision: 'ask' })
+  })
+
   test('the same command under another shell tool is asked again', () => {
     expect(answer(granted(), { decision: 'ask' }, 'PowerShell', call.input)).toEqual({ decision: 'ask' })
   })
@@ -93,8 +111,9 @@ describe('which calls have an identity', () => {
     expect(identityOf('WebFetch', { url: 'https://a.example/x' })).not.toBe(identityOf('WebFetch', { url: 'https://a.example/x?y' }))
   })
 
-  test('any other tool keys on its whole input in any key order, less its description', () => {
-    expect(identityOf('mcp__s__t', { a: 1, b: { c: 2, d: 3 }, description: 'one' })).toBe(identityOf('mcp__s__t', { b: { d: 3, c: 2 }, a: 1, description: 'two' }))
+  test('any other tool keys on its whole input in any key order, its description included', () => {
+    expect(identityOf('mcp__s__t', { a: 1, b: { c: 2, d: 3 } })).toBe(identityOf('mcp__s__t', { b: { d: 3, c: 2 }, a: 1 }))
+    expect(identityOf('mcp__s__t', { a: 1, description: 'one' })).not.toBe(identityOf('mcp__s__t', { a: 1, description: 'two' }))
     expect(identityOf('mcp__s__t', { a: 1 })).not.toBe(identityOf('mcp__s__t', { a: 2 }))
   })
 })

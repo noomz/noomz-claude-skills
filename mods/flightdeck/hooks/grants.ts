@@ -10,6 +10,7 @@ const NEVER_GRANTED: ReadonlySet<string> = new Set(['AskUserQuestion', 'ExitPlan
 const FILE_PATH_TOOLS: ReadonlySet<string> = new Set(['Read', 'Edit', 'Write', 'NotebookEdit'])
 const SEARCH_TOOLS: ReadonlySet<string> = new Set(['Glob', 'Grep'])
 const SHELL_TOOLS: ReadonlySet<string> = new Set(['Bash', 'PowerShell'])
+const SHELL_HARMLESS: ReadonlySet<string> = new Set(['description', 'timeout', 'run_in_background'])
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 
@@ -30,12 +31,12 @@ export const identityOf = (tool: string, input: unknown): Subject | null => {
   if (NEVER_GRANTED.has(tool) || !isObject(input)) return null
   const str = (k: string) => (typeof input[k] === 'string' ? (input[k] as string) : null)
   const of = (...parts: (string | null)[]) => (parts.every(p => p !== null) ? ([tool, ...parts].join('\0') as Subject) : null)
-  if (SHELL_TOOLS.has(tool)) return of(str('command'))
+  if (SHELL_TOOLS.has(tool))
+    return str('command') === null ? null : of(stable(Object.fromEntries(Object.entries(input).filter(([k]) => !SHELL_HARMLESS.has(k)))))
   if (FILE_PATH_TOOLS.has(tool)) return of(str('file_path') ?? str('notebook_path'))
   if (SEARCH_TOOLS.has(tool)) return of(str('path') ?? '', str('pattern'))
   if (tool === 'WebFetch') return of(str('url'))
-  const { description: _, ...rest } = input
-  return of(stable(rest))
+  return of(stable(input))
 }
 
 export const askSubject = (v: ToolCheckResult, tool: string, input: unknown, mode: string): Subject | null =>
