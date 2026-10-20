@@ -355,6 +355,7 @@ const engine = (on: On) => {
   on('ui.status', () => ({ value: undefined }))
   on('turn.start', (_$, e) => ({ turnId: e.turnId }))
   on('turn.complete', () => ({ text: '' }))
+  on('ui.view', () => ({ value: { deny: 'no agent holds the id' } }))
   return clock
 }
 

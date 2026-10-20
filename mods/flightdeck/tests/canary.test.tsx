@@ -50,6 +50,7 @@ async function seed($: Engine, on: On) {
   on('turn.start', (_$, e) => ({ turnId: e.turnId }))
   on('turn.complete', () => ({ text: '' }))
   on('agent.offer', () => ({ isOffered: true }) as never)
+  on('ui.view', () => ({ value: { deny: `no agent holds password=hunter2 ${ESC}[31m` } }))
   on('tool.check', () => ({ decision: 'deny' as const, reason: 'rule' }) as never)
   on('tool.call', () => ({ result: { stdout: '', stderr: 'boom', interrupted: false }, text: 'boom', isError: true }) as never)
   let n = 0

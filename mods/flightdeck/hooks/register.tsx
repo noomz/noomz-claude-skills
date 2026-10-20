@@ -73,6 +73,8 @@ import {
   toolDetail,
 } from './core'
 import type { Config, Panel, Settle } from './core'
+import { approve, askSubject, clearGrants, denialRows, grantMemory, grantedVerdict, isPlainAsk, markRetried, retryPlan, retryText, useGrant } from './grants'
+import type { DenialRow, GrantMemory } from './grants'
 
 const PANE = 'flightdeck'
 const TITLE = 'Flightdeck'
@@ -262,11 +264,73 @@ async function noteMode($: EngineInterface, mode: string | undefined) {
   if (mode) await update($, main, m => (normalize(DEFAULT_MAIN, m).mode === mode ? normalize(DEFAULT_MAIN, m) : { ...normalize(DEFAULT_MAIN, m), mode }))
 }
 
+// Every grant ends with the session: whatever ends it, and whatever the next start finds.
+async function forgetSession($: EngineInterface, memory: GrantMemory) {
+  memory.reset()
+  await update($, gate, g => clearGrants(normalizeGate(g)))
+}
+
+async function approveDenial($: EngineInterface, memory: GrantMemory, row: DenialRow) {
+  const granted = memory.approve(row.check.id)
+  if (!granted.isApproved) return say($, 'gate', `cannot approve, call forgotten · ${row.check.detail}`, 'error')
+  const at = await $.clock.now()
+  await update($, gate, g => approve(normalizeGate(g), row.check.id, at, memory.epoch, granted.evicted))
+  await say($, 'gate', `approved for this session · ${row.check.detail}`)
+}
+
+async function retryDenial($: EngineInterface, memory: GrantMemory, row: DenialRow) {
+  const agentId = row.check.agentId
+  const status = agentId === null ? undefined : (await $.agent.list()).find(a => a.id === agentId)?.status
+  const plan = retryPlan(row, status)
+  if (plan.kind === 'none') return say($, 'gate', `no retry, ${plan.why} · ${row.check.detail}`, 'error')
+  const at = await $.clock.now()
+  // Marked before it is sent, inside the write: a second press finds it retried and sends nothing.
+  let isMarked = false
+  await update($, gate, g => {
+    const before = normalizeGate(g)
+    const after = markRetried(before, row.check.id, at, memory.epoch)
+    isMarked = after !== before
+    return after
+  })
+  if (!isMarked) return
+  const text = retryText(row.check.detail)
+  if (plan.kind === 'main') {
+    // It resolves only when that turn starts; a press must return well before.
+    void $.prompt.submit({ text }).catch(() => undefined)
+    return say($, 'gate', `retry queued for main · ${row.check.detail}`)
+  }
+  const sent = await $.session.send({ to: { agentId: plan.agentId }, text })
+  if (!sent.isDelivered) return say($, 'gate', `retry not delivered · ${sent.reason}`, 'error', plan.agentId)
+  await say($, 'gate', `${plan.resumes ? 'retry resumes agent' : 'retry sent'} · ${row.check.detail}`, 'info', plan.agentId)
+}
+
+async function forgetGrants($: EngineInterface, memory: GrantMemory) {
+  memory.forgetGrants()
+  await update($, gate, g => clearGrants(normalizeGate(g)))
+  await say($, 'gate', 'approvals forgotten')
+}
+
+/** Shows the agent's transcript in the main view, or back to main if it is shown; a refusal opens its summary. */
+async function toggleView($: EngineInterface, id: string, viewed: string | null) {
+  if (viewed === id) {
+    await $.ui.view({})
+    return
+  }
+  if (viewed === null && (await getView($)).expanded === id) {
+    await update($, view, x => ({ ...normalize(DEFAULT_VIEW, x), expanded: null, viewDeny: null }))
+    return
+  }
+  const shown = await $.ui.view({ agentId: id })
+  const viewDeny = shown.deny === undefined ? null : await scrubAndTally($, shown.deny, CAP.viewDeny)
+  await update($, view, x => ({ ...normalize(DEFAULT_VIEW, x), expanded: viewDeny === null ? null : id, viewDeny }))
+}
+
 // ---------------------------------------------------------------- hooks
 
 export const register: Register = (on, options) => {
   const cfg = parseConfig(options)
   const C = PALETTES[cfg.palette]
+  const memory = grantMemory()
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -275,6 +339,7 @@ export const register: Register = (on, options) => {
       argumentHint: '[open|close|reset|audit|layout auto|compact|wide|mini]',
     })
     await resetUnlessCurrentSchema($)
+    await forgetSession($, memory)
     // A host without usage (headless, an SDK host, a session not yet bound) just starts without it.
     const u = await $.session.usage().catch(() => null)
     if (u) {
@@ -293,6 +358,7 @@ export const register: Register = (on, options) => {
   })
 
   on('session.end', async ($, e, next) => {
+    await forgetSession($, memory)
     if (e.reason === 'clear' || e.reason === 'resume') {
       await resetSession($)
       await refreshStatus($, cfg)
@@ -307,6 +373,7 @@ export const register: Register = (on, options) => {
       return { text: 'Flightdeck closed.' }
     }
     if (verb === 'reset') {
+      await forgetSession($, memory)
       await resetSession($)
       await refreshStatus($, cfg)
       return { text: 'Flightdeck reset.' }
@@ -324,7 +391,7 @@ export const register: Register = (on, options) => {
     }
     const opened = await openPane($)
     if (!opened.isPlaced) return { text: `Flightdeck is not shown yet: ${opened.reason}` }
-    return { text: 'Flightdeck opened. Focus it with ctrl+x tab; 1-6 expand cards, f/s/o open the gate rows.' }
+    return { text: 'Flightdeck opened. Focus it with ctrl+x tab; 1-6 show a subagent conversation, f/s/o open the gate rows, d the denied calls.' }
   })
 
   const sources = promptSources()
@@ -432,28 +499,39 @@ export const register: Register = (on, options) => {
     return done
   })
 
+  // The one place flightdeck can change a verdict: a plain ask of a call you approved becomes allow.
   on('tool.check', async ($, e, next) => {
     const verdict = await next(e)
+    const subject = isPlainAsk(verdict) ? askSubject(verdict, e.tool, e.input, (await getMain($)).mode) : null
+    const grantFrom = subject === null ? null : memory.allows(subject)
+    const detail = toolDetail(e.tool, e.input)
+    const answer = grantFrom === null ? verdict : grantedVerdict(detail.text)
     if (e.tool_use_id) {
-      const detail = toolDetail(e.tool, e.input)
+      const isHeld = subject !== null && grantFrom === null
+      if (isHeld) memory.hold(e.tool_use_id, subject)
       const cause = kept(denyCause(verdict), CAP.cause)
       await tally($, detail, cause)
       const base = { id: e.tool_use_id, bucket: bucketOf(e.tool), detail: detail.text, agentId: e.agentId ?? null, at: await $.clock.now() }
-      const check = checkOf(base, verdict, { isGranted: false, approvable: false, cause: cause.text })
-      await update($, gate, g => recordCheck(normalizeGate(g), check))
+      const check = checkOf(base, verdict, { isGranted: grantFrom !== null, approvable: isHeld, cause: cause.text })
+      await update($, gate, g => {
+        const recorded = recordCheck(normalizeGate(g), check)
+        return grantFrom === null ? recorded : useGrant(recorded, grantFrom)
+      })
+      if (grantFrom !== null) await say($, 'gate', `allowed by your approval · ${check.detail}`, 'info', check.agentId)
       // The status line updates when the call settles; only a refusal ends here.
-      if (verdict.decision === 'deny') {
-        await say($, 'gate', `denied by rule · ${check.detail}`, 'error')
+      if (check.verdict === 'deny') {
+        await say($, 'gate', `denied by ${check.by} · ${check.detail}`, 'error', check.agentId)
         await refreshStatus($, cfg)
       }
     }
-    return verdict
+    return answer
   })
 
   on('tool.call', async ($, e, next) => {
     const ran = await next(e)
     const didRun = ran.deny === undefined
-    const settle: Settle = didRun ? { didRun } : { didRun, isHeld: false, epoch: '' }
+    const isHeld = memory.settle(e.tool_use_id, didRun)
+    const settle: Settle = didRun ? { didRun } : { didRun, isHeld, epoch: memory.epoch }
     // Settle this call's pending ask, if it had one; skip the write (and the redraw) otherwise.
     const g0 = await getGate($)
     const isSettled = settleCheck(g0, e.tool_use_id, settle) !== g0
@@ -773,7 +851,57 @@ export const register: Register = (on, options) => {
     // ---- gate
     const s = gateSummary(g)
     const verdictColor = (c: Check) =>
-      c.verdict === 'rule' ? C.gate : c.verdict === 'cleared' ? C.cleared : c.verdict === 'ask' ? C.amber : C.warn
+      c.verdict === 'rule' ? C.gate : c.verdict === 'cleared' ? C.cleared : c.verdict === 'granted' ? C.main : c.verdict === 'ask' ? C.amber : C.warn
+    const verdictLabel = (c: Check) =>
+      c.verdict === 'rule' ? 'allowed' : c.verdict === 'cleared' ? decider : c.verdict === 'granted' ? 'approved' : c.verdict === 'ask' ? 'pending' : 'denied'
+    const toggleGate = (to: Bucket | 'denied') => () =>
+      update($, view, x => ({ ...normalize(DEFAULT_VIEW, x), gateOpen: normalize(DEFAULT_VIEW, x).gateOpen === to ? null : to }))
+    const causeLabel = (d: DenialRow['check']) => (d.by === 'refused' || d.by === 'policy' ? d.by : `${d.by} ${d.cause}`)
+    const rowLabel = (r: DenialRow) =>
+      r.status === 'expired'
+        ? 'expired'
+        : r.status === 'blocked' || r.status === 'approvable' || !r.grant
+          ? ''
+          : `${r.status} · ${r.grant.uses === 0 ? 'not used yet' : `used ${r.grant.uses}×`}`
+    // Four rows and a footer: the same five rows an open bucket takes.
+    const deniedList = (w: number) => {
+      const rows = denialRows(g, 4, memory.epoch)
+      const newestApprovable = rows.find(r => r.status === 'approvable')
+      const newestRetryable = rows.find(r => r.status === 'approved')
+      const live = g.grants.filter(x => x.epoch === memory.epoch).length
+      return (
+        <Box flexDirection="column">
+          {rows.length === 0 ? <Text color={C.faint}>no denials yet</Text> : null}
+          {rows.map(r => {
+            const card = r.check.agentId === null ? undefined : cards.find(c => c.id === r.check.agentId)
+            const where = r.check.agentId === null ? '' : ` · ${card ? shorten(cardTitle(card), 12) : 'agent'}`
+            const label = rowLabel(r)
+            return (
+              <Box columnGap={1}>
+                <Box flexShrink={1}>
+                  <Text wrap="truncate">
+                    <Text color={C.warn}>✗ </Text>
+                    <Text color={C.dim}>{`${shorten(causeLabel(r.check), 18)} `}</Text>
+                    <Text dimColor={r.check.agentId !== null}>{`${r.check.detail}${where}`}</Text>
+                  </Text>
+                </Box>
+                {label ? <Text color={r.status === 'expired' ? C.faint : C.main}>{label}</Text> : null}
+                {r.status === 'approvable' ? (
+                  <Button key={`ok-${r.check.id}`} plain label="approve" hotkey={r === newestApprovable ? 'a' : undefined} onPress={() => approveDenial($, memory, r)} />
+                ) : null}
+                {r.status === 'approved' ? (
+                  <Button key={`re-${r.check.id}`} plain label="retry" hotkey={r === newestRetryable ? 'r' : undefined} onPress={() => retryDenial($, memory, r)} />
+                ) : null}
+              </Box>
+            )
+          })}
+          <Box columnGap={2}>
+            <Text dimColor>{`${live} approved this session${w >= 56 ? ' · only the exact call' : ''}`}</Text>
+            {live > 0 ? <Button key="gate-forget" plain hotkey="x" label="forget all" onPress={() => forgetGrants($, memory)} /> : null}
+          </Box>
+        </Box>
+      )
+    }
     const gatePanel = (w: number) => {
       const strip = g.recent.slice(-Math.max(8, w - 4))
       const open = v.gateOpen
@@ -798,6 +926,7 @@ export const register: Register = (on, options) => {
             <Text dimColor>{` ${s.rule} allowed  `}</Text>
             <Text color={C.cleared}>■</Text>
             <Text dimColor>{` ${s.cleared} ${decider}  `}</Text>
+            {s.granted > 0 ? <Text color={C.main}>{`■ ${s.granted} approved  `}</Text> : null}
             {s.ask > 0 ? <Text color={C.amber}>{`■ ${s.ask} pending  `}</Text> : null}
             <Text color={s.deny > 0 ? C.warn : C.dim}>{`✗ ${s.deny} denied`}</Text>
             {w >= 80 && g.recent.some(c => c.agentId !== null) ? <Text color={C.faint}>{'  dim: in subagents'}</Text> : null}
@@ -805,31 +934,25 @@ export const register: Register = (on, options) => {
           <Box columnGap={2}>
             {(['file', 'shell', 'other'] as const).map((b: Bucket) => {
               const tl = g.totals[b]
-              const n = tl.rule + tl.ask + tl.cleared + tl.deny
-              return (
-                <Button
-                  key={`gate-${b}`}
-                  plain
-                  hotkey={b[0]}
-                  label={`${b} ${n}${open === b ? ' ▾' : ''}`}
-                  dimColor={n === 0}
-                  onPress={() => update($, view, x => ({ ...normalize(DEFAULT_VIEW, x), gateOpen: normalize(DEFAULT_VIEW, x).gateOpen === b ? null : b }))}
-                />
-              )
+              const n = tl.rule + tl.granted + tl.ask + tl.cleared + tl.deny
+              return <Button key={`gate-${b}`} plain hotkey={b[0]} label={`${b} ${n}${open === b ? ' ▾' : ''}`} dimColor={n === 0} onPress={toggleGate(b)} />
             })}
+            <Button key="gate-denied" plain hotkey="d" label={`denied ${s.deny}${open === 'denied' ? ' ▾' : ''}`} dimColor={s.deny === 0} onPress={toggleGate('denied')} />
           </Box>
-          {open
-            ? g.recent
-                .filter(c => c.bucket === open)
-                .slice(-5)
-                .map(c => (
-                  <Text wrap="truncate">
-                    <Text color={verdictColor(c)}>{c.verdict === 'deny' ? '✗ ' : '■ '}</Text>
-                    <Text color={C.dim}>{`${(c.verdict === 'rule' ? 'allowed' : c.verdict === 'cleared' ? decider : c.verdict === 'ask' ? 'pending' : 'denied').padEnd(10)} `}</Text>
-                    <Text dimColor={c.agentId !== null}>{shorten(c.detail, Math.max(10, w - 18))}</Text>
-                  </Text>
-                ))
-            : null}
+          {open === 'denied'
+            ? deniedList(w)
+            : open
+              ? g.recent
+                  .filter(c => c.bucket === open)
+                  .slice(-5)
+                  .map(c => (
+                    <Text wrap="truncate">
+                      <Text color={verdictColor(c)}>{c.verdict === 'deny' ? '✗ ' : '■ '}</Text>
+                      <Text color={C.dim}>{`${verdictLabel(c).padEnd(10)} `}</Text>
+                      <Text dimColor={c.agentId !== null}>{shorten(c.detail, Math.max(10, w - 18))}</Text>
+                    </Text>
+                  ))
+              : null}
         </Box>
       )
     }
@@ -837,8 +960,7 @@ export const register: Register = (on, options) => {
     // ---- agents: cards up to the limit, swimlanes beyond it
     const statusColor = (c: AgentCard) => (c.status === 'failed' ? C.warn : c.status === 'done' ? C.gate : C.agent)
     const glyph = (c: AgentCard) => (c.status === 'running' ? '◐' : c.status === 'done' ? '✓' : c.status === 'failed' ? '✗' : '■')
-    const expandOnPress = (id: string) => () =>
-      update($, view, x => ({ ...normalize(DEFAULT_VIEW, x), expanded: normalize(DEFAULT_VIEW, x).expanded === id ? null : id }))
+    const viewOnPress = (id: string) => () => toggleView($, id, viewed)
 
     const agentsPanel = (w: number) => {
       // Cards need 20 columns each; when the pane can't hold the limit, lanes take over.
@@ -847,7 +969,11 @@ export const register: Register = (on, options) => {
       const header = (
         <Box justifyContent="space-between" width={w}>
           <Text bold>{`agents · ${running.length} running · ${cards.length} total`}</Text>
-          {cards.length > 0 ? <Text color={C.faint}>1-{Math.min(cards.length, useLanes ? 6 : fit)} expand</Text> : null}
+          {viewed ? (
+            <Button key="view-main" plain hotkey="m" label="main view" onPress={() => $.ui.view({})} />
+          ) : cards.length > 0 ? (
+            <Text color={C.faint}>1-{Math.min(cards.length, useLanes ? 6 : fit)} conversation</Text>
+          ) : null}
         </Box>
       )
       if (cards.length === 0) {
@@ -873,7 +999,7 @@ export const register: Register = (on, options) => {
                 <Box>
                   <Text color={statusColor(c)} bold={isViewed}>{`${isViewed ? '▶' : glyph(c)} `}</Text>
                   <Box width={17}>
-                    <Button key={`card-${c.id}`} plain hotkey={String(i + 1)} label={shorten(cardTitle(c), 14)} onPress={expandOnPress(c.id)} />
+                    <Button key={`card-${c.id}`} plain hotkey={String(i + 1)} label={shorten(cardTitle(c), 14)} onPress={viewOnPress(c.id)} />
                   </Box>
                   <Text color={C.faint}>{' ' + '·'.repeat(gm?.before ?? 0)}</Text>
                   <Text color={statusColor(c)}>{'━'.repeat(gm?.bar ?? 1)}</Text>
@@ -905,7 +1031,7 @@ export const register: Register = (on, options) => {
                   width={cardW}
                   paddingX={1}
                 >
-                  <Button key={`card-${c.id}`} plain hotkey={String(i + 1)} label={titleLines(cardTitle(c), cardW - 7, cardW - 4)[0]} onPress={expandOnPress(c.id)} />
+                  <Button key={`card-${c.id}`} plain hotkey={String(i + 1)} label={titleLines(cardTitle(c), cardW - 7, cardW - 4)[0]} onPress={viewOnPress(c.id)} />
                   <Text bold wrap="truncate">
                     {titleLines(cardTitle(c), cardW - 7, cardW - 4)[1]}
                   </Text>
@@ -930,10 +1056,16 @@ export const register: Register = (on, options) => {
       )
     }
 
-    const expandedCard = cards.find(c => c.id === v.expanded)
+    // The viewed agent's summary, or the one whose transcript Claude Code would not show, and why.
+    const expandedCard = cards.find(c => c.id === (viewed ?? v.expanded))
     const expandedPanel = (w: number) =>
       expandedCard ? (
         <Box flexDirection="column" borderStyle="single" borderColor={C.agent} paddingX={1} width={w}>
+          {viewed === expandedCard.id ? (
+            <Text color={C.agent} wrap="truncate">transcript in main view · its number or m returns</Text>
+          ) : v.viewDeny ? (
+            <Text color={C.amber} wrap="truncate">{`not shown: ${v.viewDeny}`}</Text>
+          ) : null}
           <Text bold wrap="wrap">
             {expandedCard.description || expandedCard.type}
           </Text>
@@ -993,7 +1125,7 @@ export const register: Register = (on, options) => {
 
     // ---- log: whatever rows the other panels leave, 4 to 8
     // The main box's speed line and the gap above the log are a row each.
-    const used = 2 + 5 + (speed ? 1 : 0) + 1 + (showArchitect ? 6 : 0) + 6 + (v.gateOpen ? 5 : 0) + (cards.length > cfg.maxCards ? 3 + Math.min(6, cards.length) : 8) + (expandedCard ? 8 : 0) + (lp.length ? 1 : 0) + 3
+    const used = 2 + 5 + (speed ? 1 : 0) + 1 + (showArchitect ? 6 : 0) + 6 + (v.gateOpen ? 5 : 0) + (cards.length > cfg.maxCards ? 3 + Math.min(6, cards.length) : 8) + (expandedCard ? 9 : 0) + (lp.length ? 1 : 0) + 3
     const bodyRows = e.props.scroll?.bodyRows ?? e.viewport?.rows ?? 40
     const nLog = logRows(bodyRows, used)
     const shownLines = (viewed ? lines.filter(l => l.agentId === viewed) : lines).slice(-nLog)
@@ -1091,7 +1223,7 @@ export const register: Register = (on, options) => {
     const isMini = layout === 'mini' || (layout === 'auto' && e.props.placement === 'inline')
     if (isMini) {
       const live = [...cards.filter(c => c.status === 'running'), ...cards.filter(c => c.status !== 'running').reverse()].slice(0, 3)
-      const counts = ` ${s.rule} allowed · ${s.cleared} ${decider}${s.ask > 0 ? ` · ${s.ask} pending` : ''} · ${s.deny} denied`
+      const counts = ` ${s.rule} allowed · ${s.cleared} ${decider}${s.granted > 0 ? ` · ${s.granted} approved` : ''}${s.ask > 0 ? ` · ${s.ask} pending` : ''} · ${s.deny} denied`
       const strip = g.recent.slice(-Math.max(4, W - cfg.gateLabel.length - 1 - counts.length))
       const mg = u.pct !== null ? gauge(u.pct, 6) : null
       return (

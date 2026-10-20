@@ -152,6 +152,7 @@ const base = (on: On) => {
   on('turn.complete', () => ({ text: '' }))
   on('session.end', (_$, e) => ({ sessionId: e.sessionId }))
   on('agent.offer', () => ({ isOffered: true }))
+  on('ui.view', () => ({ value: { deny: 'no agent holds the id' } }))
 }
 
 const engine = (on: On) => {
@@ -339,7 +340,7 @@ describe('the masked count adds the masks scrub() finds each time flightdeck rea
 
   test('a denied check counts 1: the gate detail, and the denial row built from it adds nothing', async ($, on) => {
     const values = engine(on)
-    on('tool.check', () => ({ decision: 'deny' as const, reason: 'rule' }))
+    on('tool.check', () => ({ decision: 'deny' as const, reason: 'rule', rule: 'Bash(curl:*)' }))
     await $.tool.check({ tool: 'Bash', input: { command: 'AKIAABCDEFGHIJKLMNOP' }, tool_use_id: 'dk1' })
     const s = state(values)
     expect([s.gate.recent.map(c => c.detail), s.log.map(l => l.text), s.hygiene.masked]).toEqual([['Bash → [masked]'], ['denied by rule · Bash → [masked]'], 1])
