@@ -46,6 +46,11 @@
       "description": "Audit Claude Code JSONL transcripts for CLAUDE.md compliance, delegation, cost, and stall patterns."
     },
     {
+      "name": "meeting-secretary",
+      "source": "./skills/meeting-secretary",
+      "description": "On-device live meeting transcription (macOS, Thai and English) with Claude as real-time secretary — answers questions from project sources, flags contradictions, logs decisions — then a fact-checked meeting note. /start-meeting, /end-meeting, /meeting-vocab."
+    },
+    {
       "name": "bang-actions",
       "source": "./mods/bang-actions",
       "description": "Claude Code mod: turns Claude's `! cmd` suggestions into one-press Run buttons above the prompt (runs with bash in the session folder; the output is submitted as the plugin's prompt, so Claude's next turn starts on it and the message stays in the transcript). Commands your Bash permission rules or hooks deny, or over 8 rows or too tall for the band as drawn (wrapped lines counted), take two presses. A `sudo` password is asked in a desktop dialog and goes to sudo alone."

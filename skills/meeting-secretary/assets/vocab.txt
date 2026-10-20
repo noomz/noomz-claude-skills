@@ -1,0 +1,44 @@
+# Generic terms that Thai/English meeting speech often mangles.
+# One per line. Project names and people belong in <project>/.claude/meeting-vocab.txt
+# (run /meeting-vocab), one meeting's agenda terms in <meeting>/vocab-extra.txt.
+GitHub
+pull request
+PR
+issue
+merge
+branch
+commit
+deploy
+release
+hotfix
+rollback
+staging
+UAT
+production
+prod
+API
+backend
+frontend
+database
+dashboard
+CMS
+login
+OTP
+webhook
+cron
+sprint
+backlog
+deadline
+timeline
+roadmap
+requirement
+scope
+estimate
+action item
+follow up
+sign-off
+stakeholder
+Slack
+Google Meet
+Zoom
+Microsoft Teams

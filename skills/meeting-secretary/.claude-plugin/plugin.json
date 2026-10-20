@@ -1,0 +1,21 @@
+{
+  "name": "meeting-secretary",
+  "description": "On-device live meeting transcription (macOS, Thai and English) with Claude as real-time secretary — answers questions from project sources, flags contradictions, logs decisions — then an accurate re-transcription and a fact-checked meeting note. Commands: /start-meeting, /end-meeting, /meeting-vocab.",
+  "version": "0.1.0",
+  "author": {
+    "name": "noomz",
+    "email": "lazym0m3nt@gmail.com"
+  },
+  "homepage": "https://github.com/noomz/noomz-claude-skills",
+  "license": "MIT",
+  "keywords": [
+    "meeting",
+    "transcription",
+    "speech-to-text",
+    "thai",
+    "meeting-notes",
+    "fact-check",
+    "on-device",
+    "macos"
+  ]
+}
