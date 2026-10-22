@@ -110,6 +110,11 @@ describe('scrub masks the rest of a value glued after a quoted part and a whole 
 test('a tool named after a key shows its name alone, not the value passed as its command', () => {
   expect(toolDetail('mcp__secrets__set_password', { command: 'abc123def456' }).text).toBe('mcp__secrets__set_password')
   expect(toolDetail('mcp__tokens__list', { command: 'all' }).text).toBe('mcp__tokens__list → all')
+  expect(toolDetail('mcp__vault__setPassword', { command: 'hunter2xyz' }).text).toBe('mcp__vault__setPassword')
+  expect(toolDetail('mcp__vault__XMLPassword', { command: 'hunter2xyz' }).text).toBe('mcp__vault__XMLPassword')
+  expect(toolDetail('mcp__vault__set\uff30assword', { command: 'hunter2xyz' }).text).toBe('mcp__vault__setPassword')
+  expect(toolDetail('mcp__vault__setPassword', { command: 'ls' }).text).toBe('mcp__vault__setPassword → ls')
+  expect(toolDetail('mcp__files__listAll', { command: 'hunter2xyz' }).text).toBe('mcp__files__listAll → hunter2xyz')
 })
 
 describe('scrub masks a PASS or PAT value that starts with a PEM armor word', () => {
@@ -258,10 +263,15 @@ describe("an architect's advice", () => {
     expect(adviceLine('-----BEGIN PRIVATE KEY-----MIIEvQIBADANBgkqhkiG9w0BAQEFAASC-----END PRIVATE KEY-----').text).toBe('BEGIN PRIVATE KEY-----[masked]-----END PRIVATE KEY-----')
   })
 
-  test('masks the first word when the line before, skipped or not, leaves a value open', () => {
+  test('masks the head of a line that a value the line before, skipped or not, left open runs into', () => {
     expect(adviceLine('[x] password:\nhunter2 rotate it')).toEqual({ text: '[masked] rotate it', masked: 1 })
     expect(adviceLine("[architect] PGPASSWORD='Vckb\nf2lyk'")).toEqual({ text: '[masked]', masked: 1 })
+    expect(adviceLine('[x] password:\n- hunter2xyz')).toEqual({ text: '[masked]', masked: 1 })
+    expect(adviceLine('[x] password: "\ncorrect horse battery staple"')).toEqual({ text: '[masked]', masked: 1 })
+    expect(adviceLine('<b>password:</b>\n> hunter2xyz')).toEqual({ text: '[masked]', masked: 1 })
+    expect(adviceLine('[x] password:\nhunter2xyz and more words')).toEqual({ text: '[masked] and more words', masked: 1 })
     expect(adviceLine('## Plan\nShip it').text).toBe('Plan')
+    expect(adviceLine('[x] done\nShip it')).toEqual({ text: 'Ship it', masked: 0 })
   })
 
   test('skips a line that is only marks', async ($, on) => {

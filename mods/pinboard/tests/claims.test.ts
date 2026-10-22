@@ -163,13 +163,15 @@ describe('a link label for a host near 80 characters', () => {
 })
 
 describe('a link in command output', () => {
-  test('keeps a non-ASCII digit, mark, dash or URL full stop, and ends at an ASCII control', async ($, on) => {
+  test('keeps a non-ASCII digit or mark, ends at a dash or an ASCII control, and pins nothing cut before a URL full stop', async ($, on) => {
     const { value } = stateStore(on)
     on('ui.open', () => ({ value: { isPlaced: true } }))
     const outputs = [
       'https://github.com/o/r/pull/8\uff13 x\n',
       'https://github.com/o/r/pull/9\u0301 x\n',
       'https://github.com\u3002evil.test/o/r/pull/12\n',
+      'https://github.com/o/r/pull/13\uff0e\n',
+      'https://github.com/o/r/pull/14\u2014ready\n',
       'https://ex.com/wiki/Foo\u2013Bar\n',
       '\x1b[32mhttps://github.com/o/r/pull/5\x1b[0m\n',
     ]
@@ -177,11 +179,11 @@ describe('a link in command output', () => {
       const text = outputs.shift() ?? ''
       return { result: { stdout: text, stderr: '', interrupted: false }, text }
     })
-    for (let i = 0; i < 5; i++) await $.tool.call({ tool: 'Bash', command: 'gh pr create --fill' })
+    for (let i = 0; i < 7; i++) await $.tool.call({ tool: 'Bash', command: 'gh pr create --fill' })
     expect(value('links')).toEqual([
       { href: 'https://github.com/o/r/pull/5', label: 'r PR #5' },
-      { href: 'https://ex.com/wiki/Foo%E2%80%93Bar', label: 'ex.com/wiki/Foo%E2%80%93Bar' },
-      { href: 'https://github.com.evil.test/o/r/pull/12', label: 'github.com.evil.test/o/r/pull/12' },
+      { href: 'https://ex.com/wiki/Foo', label: 'ex.com/wiki/Foo' },
+      { href: 'https://github.com/o/r/pull/14', label: 'r PR #14' },
       { href: 'https://github.com/o/r/pull/9%CC%81', label: 'github.com/o/r/pull/9%CC%81' },
       { href: 'https://github.com/o/r/pull/8%EF%BC%93', label: 'github.com/o/r/pull/8%EF%BC%93' },
     ])

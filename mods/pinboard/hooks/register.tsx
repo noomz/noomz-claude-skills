@@ -185,9 +185,10 @@ const MAKING_VERBS = new Set(['create', 'draft', 'send', 'publish', 'share', 'up
 const makesMcp = (tool: string): boolean =>
   (MCP_TOOL.exec(tool)?.[1] ?? '').split(WORD_BREAK).some(word => MAKING_VERBS.has(word.toLowerCase()))
 
-// An ASCII control ends a link. A non-ASCII dash, or a full stop that URL parsing reads as `.`, stays in
-// it: cutting there would pin another page (`github.com。evil.test` is the host github.com.evil.test).
-const URL_IN_TEXT = /https:\/\/(?:[^\s<>"'`\p{Cc}\P{ASCII}]|[\p{L}\p{N}\p{M}\p{Pd}\u3002\uFF0E\uFF61])+/gu
+const URL_IN_TEXT = /https:\/\/(?:[^\s<>"'`\p{Cc}\P{ASCII}]|[\p{L}\p{N}\p{M}])+/gu
+// URL parsing reads these as `.`, so a link cut before one pins nothing: `github.com。evil.test` is the
+// host github.com.evil.test, and pinning `github.com` would point somewhere else.
+const URL_FULL_STOP = /[\u3002\uFF0E\uFF61]/
 const GITHUB_ITEM = /^\/[\w.-]+\/([\w.-]+)\/(pull|issues)\/([1-9]\d{0,9})\/?$/
 const GITHUB_ANCHOR = /^#(?:issuecomment-\d{1,12}|discussion_r\d{1,12})$/
 const LABEL_CAP = 80
@@ -254,7 +255,9 @@ export function parsePin(href: string): Pin | null {
 }
 
 const pinsIn = (text: string): Pin[] => {
-  const pins = [...text.matchAll(URL_IN_TEXT)].flatMap(m => parsePin(m[0].replace(/[)\].,;:'!?*]+$/, '')) ?? [])
+  const pins = [...text.matchAll(URL_IN_TEXT)].flatMap(m =>
+    URL_FULL_STOP.test(text.charAt(m.index + m[0].length)) ? [] : (parsePin(m[0].replace(/[)\].,;:'!?*]+$/, '')) ?? []),
+  )
   return pins.filter((pin, i) => pins.findIndex(p => p.href === pin.href) === i)
 }
 

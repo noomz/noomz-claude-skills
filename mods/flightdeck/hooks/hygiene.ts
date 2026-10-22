@@ -58,8 +58,8 @@ function* flightdeckUrlCredentials(text: string): Iterable<Found> {
     if (start < 0) continue
     const colon = reach(HOST_RUN, host, schemeEnd + 3)
     if (colon === schemeEnd + 3 || text[colon] !== ':') continue
-    const runEnd = reach(USERINFO_RUN, userinfo, colon + 1)
-    const at = text.lastIndexOf('@', runEnd - 1)
+    const userinfoEnd = reach(USERINFO_RUN, userinfo, colon + 1)
+    const at = text.lastIndexOf('@', userinfoEnd - 1)
     if (at <= colon + 1) continue
     after = at + 1
     yield Object.assign([text.slice(start, after), text.slice(start, colon + 1)], { index: start })
@@ -241,7 +241,7 @@ class Reader {
 }
 
 const WORDY = /[\p{L}\p{N}]/u
-const FILLER_WORD = /^is:?$/
+const FILLER_WORD = /^(?:is:?|<\/[A-Za-z][A-Za-z0-9]{0,9}>)$/
 const LOOKS_PLAIN = /^[A-Za-z .,;:!?'"()[\]]*$/
 
 const SIGN_IN_WORD = /[A-Za-z][.,;:!?"()[\]]+[A-Za-z]|[A-Za-z]!$/
@@ -249,6 +249,12 @@ const SIGN_IN_WORD = /[A-Za-z][.,;:!?"()[\]]+[A-Za-z]|[A-Za-z]!$/
 const looksSecret = (word: string) => word.length >= 20 || !LOOKS_PLAIN.test(word) || SIGN_IN_WORD.test(word)
 
 type Looks = (word: string) => boolean
+
+// `token` and `secret` also name a count, as in `token 4096` or `| secret | 42 |`, so a plain number after them is not a value.
+const COUNTED_KEY = /\b(?:token|secret)\b/i
+const NUMBER = /^\d+(?:[.,]\d+)*$/
+
+const looksFor = (key: string): Looks => (COUNTED_KEY.test(key) ? word => !NUMBER.test(word) && looksSecret(word) : looksSecret)
 
 const value = (reader: Reader, at: number, looks?: Looks): Span | null => {
   const { text } = reader
@@ -293,7 +299,7 @@ const linkingAt = (text: string, at: number, prose: boolean): number => {
   return LINKING.exec(text)?.[0].length ?? 0
 }
 
-const CLOSERS = /[*_`'"\]}\\]{0,4}/y
+const CLOSERS = /(?:[*_`'"\]}\\]|<\/[A-Za-z][A-Za-z0-9]{0,9}>){0,4}/y
 
 const closersEnd = (text: string, end: number): number => {
   CLOSERS.lastIndex = end
@@ -458,7 +464,7 @@ const KEYED_RULES: readonly Rule[] = [
   }),
   keyed(String.raw`(?:^|[ \t])--?pass(?==)`, 'i', (reader, end) => assigned(reader, end)),
   keyed(String.raw`(?:^|[^A-Za-z0-9_-])pw(?![A-Za-z0-9_-])`, 'i', (reader, end) => assigned(reader, end)),
-  keyed(String.raw`\|[ \t]*[*_\x60]*(?:password|passwd|passphrase|pass|pwd|secret|token|api[ _-]?key|access[ _-]?key|private[ _-]?key)[*_\x60]*[ \t]*\|[ \t]*`, 'i', (reader, end) => value(reader, end)),
+  keyed(String.raw`\|[ \t]*[*_\x60]*(?:password|passwd|passphrase|pwd|secret|token|api[ _-]?key|access[ _-]?key|private[ _-]?key)[*_\x60]*[ \t]*\|[ \t]*`, 'i', (reader, end, key) => value(reader, end, looksFor(key))),
   keyed(String.raw`\benv:[A-Za-z0-9_]{1,64}[^;|&\n]{0,120}? -Value `, 'i', (reader, end, key) => (isSecretName(ENV_NAME.exec(key)![1]!.toUpperCase()) ? value(reader, end) : null)),
   keyed(
     'api[_-]?key|secret_access_key|account[_-]?key|shared[_-]?access[_-]?key|access[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|client[_-]?secret|secret[_-]?key|private[_-]?key|github_pat',
@@ -467,7 +473,7 @@ const KEYED_RULES: readonly Rule[] = [
   ),
   keyed('token|secret|password|passwd|pwd|passphrase', 'i', (reader, end, key, start) => {
     const was = spoken(reader.text, end, isWordStart(reader.text, start))
-    return was && value(reader, was.at, was.assigned ? undefined : looksSecret)
+    return was && value(reader, was.at, was.assigned ? undefined : looksFor(key))
   }),
   keyed(String.raw`\b(?:api|access|secret|private) key\b`, 'i', (reader, end) => {
     const was = spoken(reader.text, end, true)
@@ -671,14 +677,23 @@ const LINE_BREAK = /[\u0085\u2028\u2029]/
 const SPLITS = /[\p{Cc}\p{Cf}\p{Co}]/u
 const SPLIT = '\uFFFF'
 const ZWJ = '\u200D'
+const PICTOGRAPH = /^\p{Extended_Pictographic}$/u
+const EMOJI_TRAIL = /^[\uFE0F\p{Emoji_Modifier}]$/u
 
 const shownAs = (c: string): string => {
   const code = c.charCodeAt(0)
   if (code > 0x20 && code < 0x7f) return c
   if (code === 0x20 || (code >= 0x09 && code <= 0x0d)) return ' '
   if (LINE_BREAK.test(c)) return FILLER
-  if (c !== ZWJ && SPLITS.test(c)) return SPLIT
+  if (SPLITS.test(c)) return SPLIT
   return INVISIBLE.test(c) ? '' : SPACE.test(c) ? ' ' : c
+}
+
+// A zero width joiner between two pictographs joins an emoji sequence; anywhere else it splits like any format character.
+const joinsPictographs = (chars: string[], at: number): boolean => {
+  let before = at - 1
+  while (before >= 0 && EMOJI_TRAIL.test(chars[before]!)) before--
+  return before >= 0 && PICTOGRAPH.test(chars[before]!) && PICTOGRAPH.test(chars[at + 1] ?? '')
 }
 
 const oneLine = (source: string): Line => {
@@ -692,7 +707,8 @@ const oneLine = (source: string): Line => {
     }
   }
   const put = (piece: string, start: number, end: number) => {
-    for (const c of piece) add(shownAs(c), start, end)
+    const chars = [...piece]
+    chars.forEach((c, at) => add(c === ZWJ && joinsPictographs(chars, at) ? '' : shownAs(c), start, end))
   }
   const lead = source.startsWith(ELLIPSIS) ? 1 : 0
   const tail = source.length > lead && source.endsWith(ELLIPSIS) ? 1 : 0

@@ -381,7 +381,7 @@ describe('scrub masks the gaps issues #19 and #20 listed', () => {
     ['token ghx_abc123def456', 'token [masked]', 1],
     ['pwd abc123def456', 'pwd [masked]', 1],
     ['secret abc123def456', 'secret [masked]', 1],
-    ...[0x0, 0x1, 0x7f, 0x202e, 0xfeff].map((code): [string, string, number] => [`password${char(code)}hunter2xyz`, 'password[masked]', 1]),
+    ...[0x0, 0x1, 0x7f, 0x200d, 0x202e, 0xfeff].map((code): [string, string, number] => [`password${char(code)}hunter2xyz`, 'password[masked]', 1]),
     ['pass\u0085word=hunter2x', 'pass word=[masked]', 1],
     ['pass\ue000word=hunter2', 'password=[masked]', 1],
     ['mysql -p"hun"ter2', 'mysql -p"[masked]', 1],
@@ -405,6 +405,12 @@ describe('scrub masks the gaps issues #19 and #20 listed', () => {
     ['**--token** abc123def456', '**--token** [masked]', 1],
     ['| Password | hunter2xyz |', '| Password | [masked] |', 1],
     ['| **API key** | abc123def456 |', '| **API key** | [masked] |', 1],
+    ['| password | 123456 |', '| password | [masked] |', 1],
+    ['<b>Password:</b> hunter2xyz', '<b>Password:[masked]', 1],
+    ['<b>password</b>: hunter2xyz', '<b>password</b>: [masked]', 1],
+    ['| secret | 42abc |', '| secret | [masked] |', 1],
+    ['password 123456', 'password [masked]', 1],
+    ['token=4096', 'token=[masked]', 1],
     ['password: (correct horse9)', 'password: [masked]', 1],
     ['PGPASSWORD=$(printf %s hunter2)', 'PGPASSWORD=[masked]', 1],
     ['Use `password`: hunter2zz', 'Use `password`: [masked]', 1],
@@ -445,9 +451,22 @@ describe('scrub still leaves the ordinary text near the new rules alone', () => 
     'the password for the release notes is wrong',
     'Bearer: token auth',
     '| Name | Value |',
+    '| pass | 12 |',
+    '| token | scope |',
+    '| token | 4096 |',
+    'token 4096',
+    'per token 0.5',
+    'secret 1,000',
+    'the password</b> field',
   ]) {
     test(input, () => expect(scrub(input, 200).text).toContain(input.includes('"user":"bob"') ? '"user":"bob"' : input))
   }
+
+  test('a zero width joiner between two pictographs joins an emoji and masks nothing', () => {
+    for (const emoji of ['\u{1F468}\u200d\u{1F469}\u200d\u{1F467}', '\u2764\ufe0f\u200d\u{1F525}', '\u{1F44D}\u{1F3FD}\u200d\u{1F44D}']) {
+      expect(scrub(`password ${emoji} ok`, 200)).toEqual({ text: `password ${emoji.replace(/[\u200d\ufe0f]/gu, '')} ok`, masked: 0 })
+    }
+  })
 })
 
 describe('scrub tries a secret variable glued after another assignment', () => {

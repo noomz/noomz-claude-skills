@@ -41,13 +41,14 @@ export const NO_TEXT = '' as SafeText
 
 const UNCUT = Number.MAX_SAFE_INTEGER
 
-export const kept = (raw: unknown, cap: number, derive: (masked: SafeText) => string = s => s): Scrubbed => {
-  const whole = scrub(raw, UNCUT)
+const fitted = (whole: Scrubbed, cap: number, derive: (masked: SafeText) => string = s => s): Scrubbed => {
   const text = derive(whole.text)
   if (text === whole.text && text.length <= cap) return { text: text as SafeText, masked: whole.masked }
   const again = scrub(text, cap)
   return { text: again.text, masked: whole.masked + again.masked }
 }
+
+export const kept = (raw: unknown, cap: number, derive?: (masked: SafeText) => string): Scrubbed => fitted(scrub(raw, UNCUT), cap, derive)
 
 // ---------------------------------------------------------------- defaults
 
@@ -373,17 +374,35 @@ const toolName = (tool: string): Scrubbed => {
   return name
 }
 
-// A tool named after a key, such as mcp__secrets__set_password, would show its value beside the key.
-const namesKey = (tool: string, part: string) => {
-  const words = tool.replace(/_+/g, ' ')
-  return scrub(`${words} ${part}`, UNCUT).masked > scrub(words, UNCUT).masked + scrub(part, UNCUT).masked
+// Every word a scrub() rule that lets a space sit between key and value starts from. A name that does not read as one cannot key the value after it.
+const KEY_WORD = /pass|pw|token|secret|key|auth|bearer|login|sql|maria|user|-u|value|pat|sig|code|sid|session/i
+
+const KEY_NAMES = new Map<string, { words: string; masked: number } | null>()
+
+const keyName = (tool: string) => {
+  const known = KEY_NAMES.get(tool)
+  if (known !== undefined) return known
+  if (KEY_NAMES.size >= 64) KEY_NAMES.clear()
+  const words = tool.normalize('NFKC').replace(/_+/g, ' ').replace(/(?<=\p{Ll})(?=\p{Lu})|(?<=\p{Lu})(?=\p{Lu}\p{Ll})/gu, ' ')
+  const read = scrub(words, UNCUT)
+  const named = KEY_WORD.test(read.text) ? { words, masked: read.masked } : null
+  KEY_NAMES.set(tool, named)
+  return named
+}
+
+// A tool named after a key, such as mcp__secrets__set_password or mcp__vault__setPassword, would show its value beside the key.
+const namesKey = (tool: string, part: string, partMasked: number) => {
+  const named = keyName(tool)
+  return named !== null && scrub(`${named.words} ${part}`, UNCUT).masked > named.masked + partMasked
 }
 
 const detailOf = (tool: string, part: string, derive?: (masked: SafeText) => string): Scrubbed => {
   const name = toolName(tool)
   const room = CAP.detail - name.text.length - FRAME.length
-  if (!part || room < 1 || namesKey(tool, part)) return name
-  const shown = kept(part, room, derive)
+  if (!part || room < 1) return name
+  const whole = scrub(part, UNCUT)
+  if (namesKey(tool, part, whole.masked)) return name
+  const shown = fitted(whole, room, derive)
   return shown.text ? { text: `${name.text}${FRAME}${shown.text}` as SafeText, masked: name.masked + shown.masked } : name
 }
 
@@ -723,19 +742,31 @@ export const handbackOf = (text: string): { from: string; body: string } | null 
   return body ? { from, body } : null
 }
 
-const PROBE = 'Zq7x9Qv2'
+const sharedTail = (a: string, b: string): number => {
+  let length = 0
+  while (length < a.length && length < b.length && a[a.length - 1 - length] === b[b.length - 1 - length]) length++
+  return length
+}
 
-// A line can leave a value for the next one: a key with nothing after it, or a quote it opened.
-const leavesValue = (line: string) => line !== '' && !scrub(`${line} ${PROBE}`, UNCUT).text.includes(PROBE)
+// A line can leave a value for the next one: a key with nothing after it, or a quote it opened. The
+// two lines are read as one, and the head of the line that reading changes is one mask.
+const afterLine = (before: string, line: string): Scrubbed => {
+  const alone = scrub(line, UNCUT)
+  if (!before) return alone
+  const joined = scrub(`${before} ${line}`, UNCUT)
+  const tail = sharedTail(joined.text, alone.text)
+  if (tail === alone.text.length) return alone
+  const masked = Math.max(1, joined.masked - scrub(before, UNCUT).masked)
+  return { text: (MASK + alone.text.slice(alone.text.length - tail)) as SafeText, masked }
+}
 
 export const adviceLine = (report: string): Scrubbed => {
   let before = ''
   for (const line of report.split('\n')) {
     const raw = line.trim()
     if (raw && !raw.startsWith('[') && !raw.startsWith('<')) {
-      const isValue = leavesValue(before)
-      const found = kept(isValue ? raw.replace(/^\S+/, MASK) : raw, CAP.advice, masked => masked.replace(/\*\*|__/g, '').replace(/^[#>*\s-]+/, ''))
-      if (found.text) return isValue ? { ...found, masked: found.masked + 1 } : found
+      const found = fitted(afterLine(before, raw), CAP.advice, masked => masked.replace(/\*\*|__/g, '').replace(/^[#>*\s-]+/, ''))
+      if (found.text) return found
     }
     if (raw) before = raw
   }
