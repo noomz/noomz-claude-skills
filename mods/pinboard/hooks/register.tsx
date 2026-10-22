@@ -185,7 +185,10 @@ const MAKING_VERBS = new Set(['create', 'draft', 'send', 'publish', 'share', 'up
 const makesMcp = (tool: string): boolean =>
   (MCP_TOOL.exec(tool)?.[1] ?? '').split(WORD_BREAK).some(word => MAKING_VERBS.has(word.toLowerCase()))
 
-const URL_IN_TEXT = /https:\/\/(?:[^\s<>"'`\P{ASCII}]|[\p{L}\p{N}\p{M}])+/gu
+const URL_IN_TEXT = /https:\/\/(?:[^\s<>"'`\p{Cc}\P{ASCII}]|[\p{L}\p{N}\p{M}])+/gu
+// URL parsing reads these as `.`, so a link cut before one pins nothing: `github.com。evil.test` is the
+// host github.com.evil.test, and pinning `github.com` would point somewhere else.
+const URL_FULL_STOP = /[\u3002\uFF0E\uFF61]/
 const GITHUB_ITEM = /^\/[\w.-]+\/([\w.-]+)\/(pull|issues)\/([1-9]\d{0,9})\/?$/
 const GITHUB_ANCHOR = /^#(?:issuecomment-\d{1,12}|discussion_r\d{1,12})$/
 const LABEL_CAP = 80
@@ -252,7 +255,9 @@ export function parsePin(href: string): Pin | null {
 }
 
 const pinsIn = (text: string): Pin[] => {
-  const pins = [...text.matchAll(URL_IN_TEXT)].flatMap(m => parsePin(m[0].replace(/[)\].,;:'!?*]+$/, '')) ?? [])
+  const pins = [...text.matchAll(URL_IN_TEXT)].flatMap(m =>
+    URL_FULL_STOP.test(text.charAt(m.index + m[0].length)) ? [] : (parsePin(m[0].replace(/[)\].,;:'!?*]+$/, '')) ?? []),
+  )
   return pins.filter((pin, i) => pins.findIndex(p => p.href === pin.href) === i)
 }
 
@@ -298,23 +303,44 @@ const clearRetired = async ($: EngineInterface) => {
   await $.state.set(RETIRED_HYGIENE, null)
 }
 
+const recheckLinks = (raw: unknown): Pin[] => storedList(raw).flatMap(pin => (typeof pin.href === 'string' && parsePin(pin.href)) || []).slice(0, MAX_LINKS)
+
+// What reaches the prompt, the audit and the pane goes through the session-start checks on every read,
+// so a board or links another tool wrote into state never show unchecked. One read is remembered.
+let lastBoard: { raw: string; checked: Pinboard } | null = null
+let lastLinks: { raw: string; checked: Pin[] } | null = null
+
+const checkedBoard = async ($: EngineInterface): Promise<Pinboard> => {
+  const stored = await read($, board)
+  const raw = JSON.stringify(stored)
+  if (lastBoard?.raw !== raw) lastBoard = { raw, checked: recheckBoard(stored) }
+  return lastBoard.checked
+}
+
+const checkedLinks = async ($: EngineInterface): Promise<Pin[]> => {
+  const stored = await read($, links)
+  const raw = JSON.stringify(stored)
+  if (lastLinks?.raw !== raw) lastLinks = { raw, checked: recheckLinks(stored) }
+  return lastLinks.checked
+}
+
 const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`
 
 async function audit($: EngineInterface): Promise<string[]> {
-  const stored = await read($, board)
+  const stored = await checkedBoard($)
   const { masked, rejected } = stored.hygiene
   return [
     'Pinboard audit. The pinboard:board section, exactly as the model reads it:',
     describeBoard(stored),
-    `Stored: ${plural(stored.todos.length, 'todo')}, ${plural(stored.decisions.length, 'decision')}, ${plural((await read($, links)).length, 'link')}.`,
+    `Stored: ${plural(stored.todos.length, 'todo')}, ${plural(stored.decisions.length, 'decision')}, ${plural((await checkedLinks($)).length, 'link')}.`,
     `Hygiene: ${masked} masked, ${rejected} rejected.`,
     `Dropped: ${plural(stored.dropped, 'open todo')} removed before done.`,
   ].flatMap(text => text.split('\n'))
 }
 
 const isEmpty = async ($: EngineInterface) => {
-  const { todos, decisions } = await read($, board)
-  return todos.length + decisions.length + (await read($, links)).length === 0
+  const { todos, decisions } = await checkedBoard($)
+  return todos.length + decisions.length + (await checkedLinks($)).length === 0
 }
 
 // Runs a capture; opens the pane when it puts the first thing on an empty board
@@ -361,7 +387,7 @@ export const register: Register = on => {
     })
     await $.tool.register({ name: 'update', description: DESCRIPTION, inputSchema: SCHEMA })
     await foldRetiredUnlessWritten($)
-    await update($, links, old => storedList(old).flatMap(pin => (typeof pin.href === 'string' && parsePin(pin.href)) || []).slice(0, MAX_LINKS))
+    await update($, links, recheckLinks)
     return next(e)
   })
 
@@ -382,7 +408,7 @@ export const register: Register = on => {
   // The board rides at the end of the system prompt, so it never has to be repeated in replies
   on('prompt.compose', async ($, e, next) => {
     const { sections } = await next(e)
-    return { sections: [...sections, { id: 'pinboard:board', text: describeBoard(await read($, board)), scope: 'session' }] }
+    return { sections: [...sections, { id: 'pinboard:board', text: describeBoard(await checkedBoard($)), scope: 'session' }] }
   })
 
   on('tool.call', { tool: TOOL }, async ($, e) => {
@@ -446,8 +472,8 @@ export const register: Register = on => {
     const { Box, Text, Button, Link } = $.ui.resolve(e)
     // One cell of padding on every side
     const inner = Math.max(10, e.props.bodyColumns - 2)
-    const { todos: allTodos, decisions: allDecisions, hygiene, dropped } = await read($, board)
-    const allLinks = await read($, links)
+    const { todos: allTodos, decisions: allDecisions, hygiene, dropped } = await checkedBoard($)
+    const allLinks = await checkedLinks($)
     const doneCount = allTodos.filter(t => t.isDone).length
 
     const header = (title: string, count: string) => (

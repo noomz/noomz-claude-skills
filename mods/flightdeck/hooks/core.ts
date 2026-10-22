@@ -41,13 +41,14 @@ export const NO_TEXT = '' as SafeText
 
 const UNCUT = Number.MAX_SAFE_INTEGER
 
-export const kept = (raw: unknown, cap: number, derive: (masked: SafeText) => string = s => s): Scrubbed => {
-  const whole = scrub(raw, UNCUT)
+const fitted = (whole: Scrubbed, cap: number, derive: (masked: SafeText) => string = s => s): Scrubbed => {
   const text = derive(whole.text)
   if (text === whole.text && text.length <= cap) return { text: text as SafeText, masked: whole.masked }
   const again = scrub(text, cap)
   return { text: again.text, masked: whole.masked + again.masked }
 }
+
+export const kept = (raw: unknown, cap: number, derive?: (masked: SafeText) => string): Scrubbed => fitted(scrub(raw, UNCUT), cap, derive)
 
 // ---------------------------------------------------------------- defaults
 
@@ -373,12 +374,18 @@ const toolName = (tool: string): Scrubbed => {
   return name
 }
 
+// Masked apart, a tool named after a key, such as mcp__vault__setPassword, still reads the part beside it as its value.
+const readsApart = (name: SafeText, shown: SafeText) => {
+  const line = `${name}${FRAME}${shown}`
+  return scrub(line, UNCUT).text === line
+}
+
 const detailOf = (tool: string, part: string, derive?: (masked: SafeText) => string): Scrubbed => {
   const name = toolName(tool)
   const room = CAP.detail - name.text.length - FRAME.length
   if (!part || room < 1) return name
   const shown = kept(part, room, derive)
-  return shown.text ? { text: `${name.text}${FRAME}${shown.text}` as SafeText, masked: name.masked + shown.masked } : name
+  return shown.text && readsApart(name.text, shown.text) ? { text: `${name.text}${FRAME}${shown.text}` as SafeText, masked: name.masked + shown.masked } : name
 }
 
 export const toolDetail = (tool: string, input: unknown): Scrubbed => {
@@ -407,6 +414,7 @@ export const subjectLine = (tool: string, input: unknown, mark: string): Scrubbe
   // Cut the masked text in the middle: a file name or a command's last argument tells two calls apart.
   const middle = (s: string) => (s.length <= room ? s : `${s.slice(0, Math.ceil((room - 3) / 2))}...${s.slice(s.length - Math.floor((room - 3) / 2))}`)
   const shown = kept(raw, room, middle)
+  if (!readsApart(name.text, shown.text)) return { text: head as SafeText, masked: name.masked + shown.masked }
   return { text: `${head}${FRAME}${shown.text}` as SafeText, masked: name.masked + shown.masked }
 }
 
@@ -717,12 +725,48 @@ export const handbackOf = (text: string): { from: string; body: string } | null 
   return body ? { from, body } : null
 }
 
+const sharedTail = (a: string, b: string): number => {
+  let length = 0
+  while (length < a.length && length < b.length && a[a.length - 1 - length] === b[b.length - 1 - length]) length++
+  return length
+}
+
+// A line can leave a value for the next one: a key with nothing after it, or a quote it opened. The
+// line is read after the lines before it together, and after each of the last few alone, since a skipped
+// line between a key and its value reads as the value. The longest head of the line a reading changes
+// is one mask.
+const afterLines = (befores: string[], line: string): Scrubbed => {
+  const alone = scrub(line, UNCUT)
+  let tail = alone.text.length
+  let masked = 0
+  for (const before of befores) {
+    const joined = scrub(`${before} ${line}`, UNCUT)
+    const shared = sharedTail(joined.text, alone.text)
+    if (shared >= tail) continue
+    tail = shared
+    masked = Math.max(1, joined.masked - scrub(before, UNCUT).masked)
+  }
+  if (tail === alone.text.length) return alone
+  return { text: (MASK + alone.text.slice(alone.text.length - tail)) as SafeText, masked }
+}
+
+const BEFORE_CAP = 512
+const BEFORE_LINES = 4
+
+// The lines before, cut at a space to their last 512 characters.
+const lastWords = (text: string) => (text.length <= BEFORE_CAP ? text : text.slice(text.indexOf(' ', text.length - BEFORE_CAP) + 1))
+
 export const adviceLine = (report: string): Scrubbed => {
+  const before: string[] = []
   for (const line of report.split('\n')) {
     const raw = line.trim()
-    if (!raw || raw.startsWith('[') || raw.startsWith('<')) continue
-    const found = kept(raw, CAP.advice, masked => masked.replace(/\*\*|__/g, '').replace(/^[#>*\s-]+/, ''))
-    if (found.text) return found
+    if (raw && !raw.startsWith('[') && !raw.startsWith('<')) {
+      const recent = before.slice(-BEFORE_LINES).map(lastWords)
+      const befores = before.length > 1 ? [lastWords(before.join(' ')), ...recent] : recent
+      const found = fitted(afterLines(befores, raw), CAP.advice, masked => masked.replace(/\*\*|__/g, '').replace(/^[#>*\s-]+/, ''))
+      if (found.text) return found
+    }
+    if (raw) before.push(raw)
   }
   return { text: NO_TEXT, masked: 0 }
 }

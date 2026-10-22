@@ -330,7 +330,7 @@ describe('scrub leaves look-alike names and prose alone', () => {
 describe('scrub over-masks on the safe side where the README says so', () => {
   const cases: [input: string, text: string][] = [
     ['Add PASSWORD_MIN_LENGTH=12 to .env.example', 'Add PASSWORD_MIN_LENGTH=[masked] to .env.example'],
-    ['docker run -u $(id -u):$(id -g)', 'docker run -u $(id -u):[masked] -g)'],
+    ['docker run -u $(id -u):$(id -g)', 'docker run -u $(id -u):[masked]'],
     ['Fix sk-learn-pipeline import', 'Fix [masked] import'],
     ['https://h.example/x?code=python', 'https://h.example/x?code=[masked]'],
     ['MONKEY=banana', 'MONKEY=[masked]'],
@@ -338,7 +338,7 @@ describe('scrub over-masks on the safe side where the README says so', () => {
     ['password == hunter2', 'password =[masked]'],
     ['https://h.example/cb?token=abc&state=xyz', 'https://h.example/cb?token=[masked]'],
     ['see https://example.com:8443/package/@scope/pkg', 'see https://example.com:[masked]@scope/pkg'],
-    ['-----BEGIN PRIVATE KEY----- MIIEvQIBADAN ghp_abcdefghij-----END PRIVATE KEY----- then rotate it', '-----BEGIN PRIVATE KEY-----[masked]----- then rotate it'],
+    ['-----BEGIN PRIVATE KEY----- MIIEvQIBADAN ghp_abcdefghij-----END PRIVATE KEY----- then rotate it', '-----BEGIN PRIVATE KEY-----[masked]'],
     ['password: "" (none)', 'password: [masked]'],
     ['Deprecate the ?api_key= query param', 'Deprecate the ?api_key= [masked] param'],
     ['docs;key=value', 'docs;key=[masked]'],
@@ -350,32 +350,134 @@ describe('scrub over-masks on the safe side where the README says so', () => {
 describe('scrub misses what the README lists as not caught', () => {
   for (const input of [
     'the creds are hunter2',
-    'pw=hunter2',
-    'password--hunter2',
     'password >> hunter2',
     'password -> Hunter?',
     'my password is Sunshine.',
-    'Bearer: abc123xyz',
-    'post to hooks.slack.com/services/T0001/B0002/XXXXXXXX',
-    'token ghx_abc123def456',
-    'the password for the old admin account is hunter2',
     '\u0440\u0430ssword=hunter2',
     'my password is sunshine',
-    'password \u21d2 hunter2',
+    'The **password** is x',
+    'the password for the very old shared staging admin account is hunter2',
+    '**Credentials**: admin:hunter2xyz',
   ]) {
     test(input, () => expect(scrub(input, 200)).toEqual({ text: input.normalize('NFKC'), masked: 0 }))
   }
 
   const shown: [input: string, text: string, masked: number][] = [
-    ...[0x0, 0x1, 0x7f, 0x202e, 0xfeff].map((code): [string, string, number] => [`password${char(code)}hunter2xyz`, 'passwordhunter2xyz', 0]),
-    ['pass\u0085word=hunter2x', 'pass word=hunter2x', 0],
-    ['mysql -p"hun"ter2', 'mysql -p"[masked]"ter2', 1],
-    ['sshpass -p "hun"ter2', 'sshpass -p "[masked]"ter2', 1],
     ['https://u:\u2022@h then password=x', 'https://u:\u2022@h then password=[masked]', 1],
     ['https://u:[masked]@h then password=x', 'https://u:[masked]@h then password=[masked]', 1],
-    ['DB_PASS=x-----y', 'DB_PASS=[masked]-----y', 1],
+    ['https://app:correct horse9@db', 'https://app:correct horse9@db', 0],
   ]
   for (const [input, text, masked] of shown) test(JSON.stringify(input), () => expect(scrub(input, 200)).toEqual({ text, masked }))
+})
+
+describe('scrub masks the gaps issues #19 and #20 listed', () => {
+  const cases: [input: string, text: string, masked: number][] = [
+    ['pw=hunter2', 'pw=[masked]', 1],
+    ['password--hunter2', 'password--[masked]', 1],
+    ['password \u21d2 hunter2', 'password \u21d2 [masked]', 1],
+    ['the password for the old admin account is hunter2', 'the password for the old admin account is [masked]', 1],
+    ['Bearer: abc123xyz', 'Bearer: [masked]', 1],
+    ['post to hooks.slack.com/services/T0001/B0002/XXXXXXXX', 'post to hooks.slack.com/[masked]', 1],
+    ['token ghx_abc123def456', 'token [masked]', 1],
+    ['pwd abc123def456', 'pwd [masked]', 1],
+    ['secret abc123def456', 'secret [masked]', 1],
+    ...[0x0, 0x1, 0x7f, 0x200d, 0x202e, 0xfeff].map((code): [string, string, number] => [`password${char(code)}hunter2xyz`, 'password[masked]', 1]),
+    ['pass\u0085word=hunter2x', 'pass word=[masked]', 1],
+    ['pass\ue000word=hunter2', 'password=[masked]', 1],
+    ['mysql -p"hun"ter2', 'mysql -p"[masked]', 1],
+    ['sshpass -p "hun"ter2', 'sshpass -p "[masked]', 1],
+    ["DB_PASS='hun'ter2", "DB_PASS='[masked]", 1],
+    ['DB_PASS=x-----y', 'DB_PASS=[masked]', 1],
+    ['DB_PASS=-----BEGINhunter2!', 'DB_PASS=[masked]', 1],
+    ['GH_PAT: -----BEGINabc', 'GH_PAT: [masked]', 1],
+    ['curl -u :hunter2 x', 'curl -u :[masked] x', 1],
+    ['curl -u "":hunter2 x', 'curl -u "":[masked] x', 1],
+    ['curl -u "ad"min:hunter2 x', 'curl -u "ad"min:[masked] x', 1],
+    ['curl -u "admin:hun"ter2 x', 'curl -u "admin:[masked] x', 1],
+    ['curl -u "ad:min":"pw" x', 'curl -u "ad:min":[masked] x', 1],
+    ['api key abc123def456', 'api key [masked]', 1],
+    ['**Password**: hunter2xyz', '**Password**: [masked]', 1],
+    ['Set **DB_PASSWORD**=S3cretPass99', 'Set **DB_PASSWORD**=[masked]', 1],
+    ['__password__=x', '__password__=[masked]', 1],
+    ['The **password** is hunter2', 'The **password** is [masked]', 1],
+    ['*Password*: hunter2xyz', '*Password*: [masked]', 1],
+    ['_Password_: hunter2xyz', '_Password_: [masked]', 1],
+    ['**--token** abc123def456', '**--token** [masked]', 1],
+    ['| Password | hunter2xyz |', '| Password | [masked] |', 1],
+    ['| **API key** | abc123def456 |', '| **API key** | [masked] |', 1],
+    ['| password | 123456 |', '| password | [masked] |', 1],
+    ['<b>Password:</b> hunter2xyz', '<b>Password:[masked]', 1],
+    ['| password | correct horse battery |', '| password | [masked] |', 1],
+    ['ghp_\u200b\u2800abcdefgh12345', '[masked]', 1],
+    ['sk-\u00adabc\u3164defgh12345', '[masked]', 1],
+    ['password (hunter2 and then the rest of a long sentence goes on', 'password [masked] and then the rest of a long sentence goes on', 1],
+    ['https://u:p@host/path@x see', 'https://u:[masked]@host/path@x see', 1],
+    ['https://u:p/x@h', 'https://u:[masked]@h', 1],
+    ['<b>password</b>: hunter2xyz', '<b>password</b>: [masked]', 1],
+    ['| secret | 42abc |', '| secret | [masked] |', 1],
+    ['password 123456', 'password [masked]', 1],
+    ['token=4096', 'token=[masked]', 1],
+    ['password: (correct horse9)', 'password: [masked]', 1],
+    ['PGPASSWORD=$(printf %s hunter2)', 'PGPASSWORD=[masked]', 1],
+    ['Use `password`: hunter2zz', 'Use `password`: [masked]', 1],
+    ["config['password']='hunter2'", "config['password']='[masked]'", 1],
+    ['{\\"password\\":\\"hunter2\\"}', '{\\"password\\":\\"[masked]\\"}', 1],
+    ['https://app:p@ssw0rd9@db', 'https://app:[masked]@db', 1],
+    ['mysqldump --pass=S3cretPass99 db', 'mysqldump --pass=[masked] db', 1],
+    ['run -pass=S3cretPass99 now', 'run -pass=[masked] now', 1],
+    ['${env:API_KEY}="abc123def456"', '${env:API_KEY}="[masked]"', 1],
+    ["$env:PGPASSWORD+='hunter2x'", "$env:PGPASSWORD+='[masked]'", 1],
+    ['DefaultEndpointsProtocol=https;AccountName=acct;AccountKey=ZHVtbXlkdW1teQ==', 'DefaultEndpointsProtocol=https;AccountName=acct;AccountKey=[masked]', 1],
+    ['_eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJkdW1teSJ9.c2lnZHVtbXlzaWdkdW1teQ_', '_[masked]', 1],
+    ['-eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJkdW1teSJ9.c2ln', '-[masked]', 1],
+    ['glpat-dummyDUMMYdummy1234', '[masked]', 1],
+    ['npm_dummyDUMMYdummyDUMMYdummy12345678', '[masked]', 1],
+    ['Set-Item -Path env:API_KEY -Value dummySecret123', 'Set-Item -Path env:API_KEY -Value [masked]', 1],
+    ['AUTH_HEADER=token abc123def456hunter2', 'AUTH_HEADER=token [masked]', 1],
+  ]
+  for (const [input, text, masked] of cases) test(JSON.stringify(input), () => expect(scrub(input, 200)).toEqual({ text, masked }))
+
+  test('the credential after an ApiKey, Digest or Negotiate scheme word', () => {
+    for (const scheme of ['ApiKey', 'Digest', 'Negotiate']) {
+      expect(scrub(`Authorization: ${scheme} dummycred123456`, 200).text).not.toContain('dummycred123456')
+    }
+  })
+})
+
+describe('scrub still leaves the ordinary text near the new rules alone', () => {
+  for (const input of [
+    'api key rotation is due',
+    'the token count is 5',
+    'keep the secret sauce',
+    'password--visible',
+    'echo $TOKEN | base64 -d',
+    'grep password | wc -l',
+    'run pwd now',
+    '{"password":"x","user":"bob"}',
+    'the password for the release notes is wrong',
+    'Bearer: token auth',
+    '| Name | Value |',
+    '| pass | 12 |',
+    '| token | scope |',
+    '| token | 4096 |',
+    'token 4096',
+    'per token 0.5',
+    'secret 1,000',
+    'the password</b> field',
+    '| password | string | required |',
+    'password (see the docs for the details)',
+    'pwd /Users/me/project',
+    'echo token /tmp/abc.txt',
+    'cd ~/secret and pwd ./build',
+  ]) {
+    test(input, () => expect(scrub(input, 200).text).toContain(input.includes('"user":"bob"') ? '"user":"bob"' : input))
+  }
+
+  test('a zero width joiner between two pictographs joins an emoji and masks nothing', () => {
+    for (const emoji of ['\u{1F468}\u200d\u{1F469}\u200d\u{1F467}', '\u2764\ufe0f\u200d\u{1F525}', '\u{1F44D}\u{1F3FD}\u200d\u{1F44D}']) {
+      expect(scrub(`password ${emoji} ok`, 200)).toEqual({ text: `password ${emoji.replace(/[\u200d\ufe0f]/gu, '')} ok`, masked: 0 })
+    }
+  })
 })
 
 describe('scrub tries a secret variable glued after another assignment', () => {
@@ -469,7 +571,7 @@ describe('scrub writes one mask per secret run and counts what it shows', () => 
   const cases: [input: string, text: string][] = [
     ['masked;,AKIAABCDEFGHIJKLMNOPghp_abcdefghij', 'masked;,[masked]'],
     ['AKIAABCDEFGHIJKLMNOPsk-abcdefghij', '[masked]'],
-    ['-----BEGIN PRIVATE KEY-----?token=@-----END-----BEGIN PRIVATE KEY-----', '-----BEGIN PRIVATE KEY-----[masked]-----'],
+    ['-----BEGIN PRIVATE KEY-----?token=@-----END-----BEGIN PRIVATE KEY-----', '-----BEGIN PRIVATE KEY-----[masked]'],
   ]
   for (const [input, text] of cases) test(input, () => expect(scrub(input, 4096)).toEqual({ text, masked: 1 }))
 })
@@ -761,8 +863,8 @@ describe('scrub reads a symbol that compatibility turns into letters as letters,
     expect(scrub(`password: ${char(0x249c)} hunter2`, 200)).toEqual({ text: 'password: [masked] hunter2', masked: 1 })
   })
 
-  test('a value in brackets masks its first word only', () => {
-    expect(scrub('password: (correct horse9)', 200)).toEqual({ text: 'password: [masked] horse9)', masked: 1 })
+  test('a value in brackets is masked whole', () => {
+    expect(scrub('password: (correct horse9)', 200)).toEqual({ text: 'password: [masked]', masked: 1 })
   })
 })
 

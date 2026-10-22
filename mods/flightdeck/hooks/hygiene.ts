@@ -28,6 +28,7 @@ const all = (pattern: RegExp): Finder => ({
 const SCHEME_RUN = /[a-z0-9+.-]+/gi
 const HOST_RUN = /[^\s/:@]*/y
 const USERINFO_RUN = /[^\s@]*/y
+const AUTHORITY_RUN = /[^\s/?#]*/y
 
 const runEnd = (run: RegExp, text: string, from: number): number => {
   run.lastIndex = from
@@ -41,6 +42,7 @@ function* flightdeckUrlCredentials(text: string): Iterable<Found> {
   let after = 0
   const host = { from: -1, to: -1 }
   const userinfo = { from: -1, to: -1 }
+  const authority = { from: -1, to: -1 }
   const reach = (run: RegExp, memo: { from: number; to: number }, from: number) => {
     if (from < memo.from || from > memo.to) Object.assign(memo, { from, to: runEnd(run, text, from) })
     return memo.to
@@ -58,8 +60,10 @@ function* flightdeckUrlCredentials(text: string): Iterable<Found> {
     if (start < 0) continue
     const colon = reach(HOST_RUN, host, schemeEnd + 3)
     if (colon === schemeEnd + 3 || text[colon] !== ':') continue
-    const at = reach(USERINFO_RUN, userinfo, colon + 1)
-    if (at === colon + 1 || text[at] !== '@') continue
+    // The last `@` before the path, so a password may hold one, and never short of the first, as redact() reads it.
+    const first = reach(USERINFO_RUN, userinfo, colon + 1)
+    const at = Math.max(text[first] === '@' ? first : -1, text.lastIndexOf('@', reach(AUTHORITY_RUN, authority, colon + 1) - 1))
+    if (at <= colon + 1) continue
     after = at + 1
     yield Object.assign([text.slice(start, after), text.slice(start, colon + 1)], { index: start })
   }
@@ -185,6 +189,8 @@ const QUOTES: readonly [open: string, close: string][] = [
   ['"', '"'],
   ["'", "'"],
   ['`', '`'],
+  ['$(', ')'],
+  ['(', ')'],
   ['\u201C', '\u201D'],
   ['\u2018', '\u2019'],
   ['\u201A', '\u2018'],
@@ -229,7 +235,7 @@ class Reader {
     let open: string | undefined
     for (const [opener, closer] of QUOTES) {
       if (!this.text.startsWith(opener, at)) continue
-      open ??= opener
+      if (closer !== ')') open ??= opener
       const close = this.next(closer, at + opener.length)
       if (close >= 0) return { inner: [at + opener.length, close], end: close + closer.length }
     }
@@ -238,7 +244,7 @@ class Reader {
 }
 
 const WORDY = /[\p{L}\p{N}]/u
-const FILLER_WORD = /^is:?$/
+const FILLER_WORD = /^(?:is:?|<\/[A-Za-z][A-Za-z0-9]{0,9}>)$/
 const LOOKS_PLAIN = /^[A-Za-z .,;:!?'"()[\]]*$/
 
 const SIGN_IN_WORD = /[A-Za-z][.,;:!?"()[\]]+[A-Za-z]|[A-Za-z]!$/
@@ -246,6 +252,17 @@ const SIGN_IN_WORD = /[A-Za-z][.,;:!?"()[\]]+[A-Za-z]|[A-Za-z]!$/
 const looksSecret = (word: string) => word.length >= 20 || !LOOKS_PLAIN.test(word) || SIGN_IN_WORD.test(word)
 
 type Looks = (word: string) => boolean
+
+// `token` and `secret` also name a count, as in `token 4096` or `| secret | 42 |`, so a plain number after them is not a value.
+const COUNTED_KEY = /\b(?:token|secret)\b/i
+const NUMBER = /^\d+(?:[.,]\d+)*$/
+// A path after a key, as in `pwd /Users/me/project`, is not its value.
+const PATH = /^(?:~|\.{1,2})?\//
+
+const looksFor = (key: string): Looks => {
+  const counted = COUNTED_KEY.test(key)
+  return word => !PATH.test(word) && !(counted && NUMBER.test(word)) && looksSecret(word)
+}
 
 const value = (reader: Reader, at: number, looks?: Looks): Span | null => {
   const { text } = reader
@@ -258,16 +275,19 @@ const value = (reader: Reader, at: number, looks?: Looks): Span | null => {
     const inner = text.slice(innerStart, innerEnd)
     const isValue = WORDY.test(inner) && (quoted !== null || !FILLER_WORD.test(inner))
     if (start < 0) start = innerStart
-    const span: Span = [start, innerEnd]
+    const span: Span = [start, quoted && WORDY.test(text[end] ?? '') ? reader.wordEnd(end) : innerEnd]
     if (!isValue && quoted && reader.quotedAt(end)) from = end
-    else if (looks) return isValue && (quoted !== null || looks(inner)) ? span : null
+    else if (looks) {
+      const bracketed = quoted !== null && (text[from] === '(' || text[from] === '$')
+      return isValue && ((quoted !== null && !bracketed) || (bracketed ? inner.split(' ').some(looks) : looks(inner))) ? span : null
+    }
     else if (isValue || text[end] !== ' ' || end + 1 >= text.length) return span
     else from = end + 1
   }
 }
 
-const SEPARATOR = /[-=:~>\u2013\u2014\u2192]{1,8}(?![-=:~>\u2013\u2014\u2192])/y
-const ENDS_SEPARATOR = /[=:~>\u2013\u2014\u2192]$/
+const SEPARATOR = /[-=:~>\u2013\u2014\u2192\u21d2]{1,8}(?![-=:~>\u2013\u2014\u2192\u21d2])/y
+const ENDS_SEPARATOR = /[=:~>\u2013\u2014\u2192\u21d2]$/
 
 const separatorAt = (text: string, at: number): number => {
   SEPARATOR.lastIndex = at
@@ -276,6 +296,7 @@ const separatorAt = (text: string, at: number): number => {
   if (run[0] !== '-') return run.length
   const next = text[at + run.length] ?? ''
   if (run.length === 1 && next !== ' ') return 0
+  if (/^-+$/.test(run)) return run.length
   return ENDS_SEPARATOR.test(run) || !/[A-Za-z0-9]/.test(next) ? run.length : 0
 }
 
@@ -289,10 +310,19 @@ const linkingAt = (text: string, at: number, prose: boolean): number => {
   return LINKING.exec(text)?.[0].length ?? 0
 }
 
+const CLOSERS = /(?:[*_`'"\]}\\]|<\/[A-Za-z][A-Za-z0-9]{0,9}>){0,4}/y
+
+const closersEnd = (text: string, end: number): number => {
+  CLOSERS.lastIndex = end
+  CLOSERS.test(text)
+  return CLOSERS.lastIndex
+}
+
 const said = (text: string, end: number, bare: boolean, prose = false): Said | null => {
-  let at = text[end] === '"' || text[end] === "'" ? end + 1 : end
+  let at = closersEnd(text, end)
   const sign = text[at] === ' ' ? at + 1 : at
-  if (text[sign] === '=' || text[sign] === ':') return { at: text[sign + 1] === ' ' ? sign + 2 : sign + 1, assigned: true }
+  const plus = text[sign] === '+' && text[sign + 1] === '=' ? 1 : 0
+  if (text[sign + plus] === '=' || text[sign] === ':') return { at: text[sign + plus + 1] === ' ' ? sign + plus + 2 : sign + plus + 1, assigned: true }
   let separators = 0
   for (let next = at; separators < 3; separators++) {
     const start = text[next] === ' ' ? next + 1 : next
@@ -311,11 +341,11 @@ const said = (text: string, end: number, bare: boolean, prose = false): Said | n
     return { at, assigned: false }
   }
   if (separators > 0) return { at: text[at] === ' ' ? at + 1 : at, assigned: false }
-  return bare && text[end] === ' ' ? { at: end + 1, assigned: false } : null
+  return bare && text[at] === ' ' ? { at: at + 1, assigned: false } : null
 }
 
 const CLAUSE = ' for '
-const CLAUSE_WORDS = 3
+const CLAUSE_WORDS = 6
 const WORD_STOP = /[ :=]/g
 
 const clause = (text: string, end: number): Said | null => {
@@ -352,10 +382,9 @@ const strong = (reader: Reader, end: number, bare: boolean): Span | null => {
   return was && value(reader, was.at)
 }
 
-const SCHEME = /^(?:bearer|basic|token) (?=[^ ])/i
+const SCHEME = /^(?:bearer|basic|token|apikey|digest|negotiate|ntlm) (?=[^ ])/i
 const HIDDEN_SCHEME = /^token/i
 const BEARER_TOKEN = /^[A-Za-z0-9._~+/-]{8}/
-const SPOKEN = /^(?:password|passwd|passphrase)$/i
 const SPOKEN_IDENT = /^secret_access_key$/i
 const UID = /^\d+:\d+$/
 const NAME_ENDS = ['KEY', 'TOKEN', 'SECRET', 'PASSWORD']
@@ -368,30 +397,52 @@ const isSecretName = (name: string): boolean => {
   return NAME_LAST.has(parts.at(-1)!) || parts.slice(0, -1).some(part => NAME_PART.has(part))
 }
 
+const ENV_NAME = /^env:([A-Za-z0-9_]+)/i
+
 const isWordStart = (text: string, at: number) => at === 0 || !/\w/.test(text[at - 1]!)
 
-const USER_RUN = /[^ :'"]{1,256}/y
+// The end of a run of closed quoted parts and plain characters, at a space or the first `stop` outside quotes.
+const pairEnd = (reader: Reader, at: number, stop: string): number => {
+  const { text } = reader
+  let end = at
+  while (end < text.length && text[end] !== ' ' && text[end] !== stop) {
+    const quoted = reader.quotedAt(end)
+    end = quoted && quoted.inner[1] < text.length ? quoted.end : end + 1
+  }
+  return end
+}
 
 const userPassword = (reader: Reader, at: number): Span | null => {
   const { text } = reader
-  const quoted = reader.quotedAt(at)
-  if (quoted) {
+  const user = pairEnd(reader, at, ':')
+  if (text[user] !== ':') {
+    // The whole pair in one quoted part: "admin:hunter2".
+    const quoted = reader.quotedAt(at)
+    if (!quoted) return null
     const [start, end] = quoted.inner
     const colon = reader.next(':', start)
-    if (colon >= start && colon < end - 1) return UID.test(text.slice(start, end)) ? null : [colon + 1, end]
+    if (colon < start || colon >= end - 1) return null
+    return UID.test(text.slice(start, end)) ? null : [colon + 1, user > quoted.end ? user : end]
   }
-  USER_RUN.lastIndex = at
-  const user = quoted ? text.slice(...quoted.inner) : USER_RUN.exec(text)?.[0]
-  const from = quoted ? quoted.end + 1 : at + (user?.length ?? 0) + 1
-  if (!user || text[from - 1] !== ':' || from >= text.length || text[from] === ' ') return null
-  const password = reader.quotedAt(from)
-  const end = password?.end ?? reader.wordEnd(from)
-  return UID.test(`${user}:${text.slice(...(password?.inner ?? [from, end]))}`) ? null : [from, end]
+  const from = user + 1
+  if (from >= text.length || text[from] === ' ') return null
+  const end = pairEnd(reader, from, ' ')
+  return UID.test(text.slice(at, end).replace(/["']/g, '')) ? null : [from, end]
 }
 
 const emptyUserPassword = (reader: Reader, from: number): Span | null => {
   const at = reader.next('@', from)
   return at > from && at < reader.wordEnd(from) ? [from, at] : null
+}
+
+// A table cell runs to the next `|`. More than one word, or one that looks secret, is a value, so a passphrase is caught.
+const tableCell = (reader: Reader, end: number, key: string): Span | null => {
+  const { text } = reader
+  const bar = reader.next('|', end)
+  let stop = bar < 0 ? text.length : bar
+  while (stop > end && text[stop - 1] === ' ') stop--
+  const cell = text.slice(end, stop)
+  return WORDY.test(cell) && (cell.includes(' ') || looksFor(key)(cell)) ? [end, stop] : null
 }
 
 const assigned = (reader: Reader, end: number, looks?: Looks): Span | null => {
@@ -422,24 +473,31 @@ const KEYED_RULES: readonly Rule[] = [
   keyed('authorization', 'i', (reader, end) => {
     const was = said(reader.text, end, false)
     if (!was?.assigned) return null
-    const scheme = SCHEME.exec(reader.text.slice(was.at, was.at + 8))
+    const scheme = SCHEME.exec(reader.text.slice(was.at, was.at + 12))
     const span = value(reader, scheme ? was.at + scheme[0].length : was.at)
     return span && scheme && HIDDEN_SCHEME.test(scheme[0]) ? [was.at, span[1]] : span
   }),
-  keyed(String.raw`\bbearer `, 'i', (reader, end) => value(reader, end, word => looksSecret(word) || BEARER_TOKEN.test(word))),
+  keyed(String.raw`\bbearer:? `, 'i', (reader, end) => value(reader, end, word => looksSecret(word) || BEARER_TOKEN.test(word))),
   keyed(String.raw`(?:^| )(?:-u|--user)(?:[ =]|(?=[^ -]))`, '', (reader, end) => userPassword(reader, end)),
-  keyed('--(?:token|password|api-key|secret)', 'i', (reader, end) => strong(reader, end, false) ?? (reader.text[end] === ' ' ? value(reader, end + 1) : null)),
+  keyed('--(?:token|password|api-key|secret)', 'i', (reader, end) => {
+    const after = closersEnd(reader.text, end)
+    return strong(reader, end, false) ?? (reader.text[after] === ' ' ? value(reader, after + 1) : null)
+  }),
+  keyed(String.raw`(?:^|[ \t])--?pass(?==)`, 'i', (reader, end) => assigned(reader, end)),
+  keyed(String.raw`(?:^|[^A-Za-z0-9_-])pw(?![A-Za-z0-9_-])`, 'i', (reader, end) => assigned(reader, end)),
+  keyed(String.raw`\|[ \t]*[*_\x60]*(?:password|passwd|passphrase|pwd|secret|token|api[ _-]?key|access[ _-]?key|private[ _-]?key)[*_\x60]*[ \t]*\|[ \t]*`, 'i', (reader, end, key) => tableCell(reader, end, key)),
+  keyed(String.raw`\benv:[A-Za-z0-9_]{1,64}[^;|&\n]{0,120}? -Value `, 'i', (reader, end, key) => (isSecretName(ENV_NAME.exec(key)![1]!.toUpperCase()) ? value(reader, end) : null)),
   keyed(
-    'api[_-]?key|secret_access_key|access[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|client[_-]?secret|secret[_-]?key|private[_-]?key|github_pat',
+    'api[_-]?key|secret_access_key|account[_-]?key|shared[_-]?access[_-]?key|access[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|client[_-]?secret|secret[_-]?key|private[_-]?key|github_pat',
     'i',
     (reader, end, key, start) => strong(reader, end, SPOKEN_IDENT.test(key) && reader.text.slice(start - 4, start).toLowerCase() === 'aws_' && isWordStart(reader.text, start - 4)),
   ),
   keyed('token|secret|password|passwd|pwd|passphrase', 'i', (reader, end, key, start) => {
-    const was = spoken(reader.text, end, SPOKEN.test(key) && isWordStart(reader.text, start))
-    return was && value(reader, was.at, was.assigned ? undefined : looksSecret)
+    const was = spoken(reader.text, end, isWordStart(reader.text, start))
+    return was && value(reader, was.at, was.assigned ? undefined : looksFor(key))
   }),
   keyed(String.raw`\b(?:api|access|secret|private) key\b`, 'i', (reader, end) => {
-    const was = spoken(reader.text, end, false)
+    const was = spoken(reader.text, end, true)
     return was && value(reader, was.at, looksSecret)
   }),
   keyed(String.raw`[A-Za-z0-9][_-](?:pass|pat)(?![A-Za-z0-9])`, 'i', (reader, end) => assigned(reader, end)),
@@ -447,14 +505,16 @@ const KEYED_RULES: readonly Rule[] = [
   keyed(String.raw`\b(?:sshpass|login|mysql|mysqldump|mysqladmin|mariadb)\b`, 'i', (reader, end, key) => flagPassword(reader, end, PROMPTLESS.test(key))),
   keyed('(?:^|[^A-Za-z0-9_])[A-Z][A-Z0-9_]*(?==)', '', (reader, end, key) => (isSecretName(key.replace(/^[^A-Z]/, '')) ? strong(reader, end, false) : null)),
   grouped(String.raw`[?&;#](?:key|api_?key|sig|signature|token|access_token|x-amz-signature|code|j?session_?id|sid)=([^&#; "']+)`, 'i'),
-  grouped(String.raw`https?:\/\/(?:www\.)?(?:hooks\.slack\.com\.?\/|(?:ptb\.|canary\.)?discord(?:app)?\.com\.?\/api\/+(?:v\d+\/+)?webhooks\/)([^ "']+)`, 'i'),
+  grouped(String.raw`(?:https?:\/\/|(?<![A-Za-z0-9./-]))(?:www\.)?(?:hooks\.slack\.com\.?\/|(?:ptb\.|canary\.)?discord(?:app)?\.com\.?\/api\/+(?:v\d+\/+)?webhooks\/)([^ "']+)`, 'i'),
 ]
 
 const SHAPE_RULES: readonly Rule[] = [
-  shaped('^|[^A-Za-z0-9_-]', String.raw`eyJ[A-Za-z0-9_-]{1,256}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*`),
+  shaped('^|[^A-Za-z0-9]', String.raw`eyJ[A-Za-z0-9_-]{1,256}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*`),
   shaped('^|[^A-Z0-9]', '(?:AKIA|ASIA)[0-9A-Z]{16}(?![A-Z0-9])'),
   shaped('^|[^A-Za-z0-9]', '(?:gh[pousr]|github_pat|xox[abprs])[-_][A-Za-z0-9_-]{8,}'),
   shaped('^|[^A-Za-z0-9_]', '[spr]k[-_][A-Za-z0-9_-]{8,}'),
+  shaped('^|[^A-Za-z0-9_-]', 'glpat-[A-Za-z0-9_-]{16,}'),
+  shaped('^|[^A-Za-z0-9_]', 'npm_[A-Za-z0-9]{30,}(?![A-Za-z0-9])'),
 ]
 
 const RULES: readonly Rule[] = [...KEYED_RULES, ...SHAPE_RULES]
@@ -483,14 +543,16 @@ const widen = (text: string, [start, end]: Span): Span => {
   return [start, end]
 }
 
+const PEM_HEADER = /-{5}(?:BEGIN|END) [A-Z0-9 ]{1,60}-{5}/g
+
 const armorsIn = (text: string): number[] => {
   const at: number[] = []
-  for (let i = text.indexOf(ARMOR); i >= 0; i = text.indexOf(ARMOR, i + 1)) at.push(i)
+  if (text.includes(ARMOR)) for (const header of text.matchAll(PEM_HEADER)) at.push(header.index)
   return at
 }
 
 const LEADING_DASHES = /-*/y
-const PEM_ARMOR = /-{5,}(?:BEGIN|END)/y
+const PEM_ARMOR = /-{5,}(?:BEGIN|END) [A-Z0-9 ]{1,60}-{5}/y
 
 const armorSearchStart = (text: string, start: number): number => {
   PEM_ARMOR.lastIndex = start
@@ -617,21 +679,42 @@ const shorten = (text: string, cap: number): string => {
 
 type Line = { text: string; from: number[]; to: number[] }
 
-const BREAK = /[\t-\r\u0085\u2028\u2029]/
 const SPACE = /\s/
 const INVISIBLE = /[\p{Cc}\p{Cf}\p{Cs}\p{Default_Ignorable_Code_Point}]/u
 const NON_ASCII = /[^\x00-\x7f]+/g
 const COMBINING = /^\p{M}/u
 
 const PLAIN_LINE = /^[!-~]+(?: [!-~]+)*$/
-const CHANGED_IN_LINE = /^ | $|  |[^\S ]|[\p{Cc}\p{Cf}\p{Cs}\p{Default_Ignorable_Code_Point}\p{M}\u115F\u1160\u180E\u2800\u3164\uFFA0\u2026]/u
+const CHANGED_IN_LINE = /^ | $|  |[^\S ]|[\p{Cc}\p{Cf}\p{Co}\p{Cs}\p{Default_Ignorable_Code_Point}\p{M}\u115F\u1160\u180E\u2800\u3164\uFFA0\u2026]/u
 
 const isPlainLine = (source: string) => PLAIN_LINE.test(source) || (!CHANGED_IN_LINE.test(source) && source.normalize('NFKC') === source)
+
+// Characters that read two ways (see maskReadings). A blank filler, or a line break outside ASCII, is
+// shown as a space and also read as nothing. A control, format or private-use character is shown as
+// nothing and also read as a space, since it may sit between a key and its value.
+const BLANK_FILLER = /[\u115F\u1160\u180E\u2800\u3164\uFFA0]/g
+const FILLER = '\u2800'
+const LINE_BREAK = /[\u0085\u2028\u2029]/
+const SPLITS = /[\p{Cc}\p{Cf}\p{Co}]/u
+const SPLIT = '\uFFFF'
+const ZWJ = '\u200D'
+const PICTOGRAPH = /^\p{Extended_Pictographic}$/u
+const EMOJI_TRAIL = /^[\uFE0F\p{Emoji_Modifier}]$/u
 
 const shownAs = (c: string): string => {
   const code = c.charCodeAt(0)
   if (code > 0x20 && code < 0x7f) return c
-  return code === 0x20 || BREAK.test(c) ? ' ' : INVISIBLE.test(c) ? '' : SPACE.test(c) ? ' ' : c
+  if (code === 0x20 || (code >= 0x09 && code <= 0x0d)) return ' '
+  if (LINE_BREAK.test(c)) return FILLER
+  if (SPLITS.test(c)) return SPLIT
+  return INVISIBLE.test(c) ? '' : SPACE.test(c) ? ' ' : c
+}
+
+// A zero width joiner between two pictographs joins an emoji sequence; anywhere else it splits like any format character.
+const joinsPictographs = (chars: string[], at: number): boolean => {
+  let before = at - 1
+  while (before >= 0 && EMOJI_TRAIL.test(chars[before]!)) before--
+  return before >= 0 && PICTOGRAPH.test(chars[before]!) && PICTOGRAPH.test(chars[at + 1] ?? '')
 }
 
 const oneLine = (source: string): Line => {
@@ -645,7 +728,8 @@ const oneLine = (source: string): Line => {
     }
   }
   const put = (piece: string, start: number, end: number) => {
-    for (const c of piece) add(shownAs(c), start, end)
+    const chars = [...piece]
+    chars.forEach((c, at) => add(c === ZWJ && joinsPictographs(chars, at) ? '' : shownAs(c), start, end))
   }
   const lead = source.startsWith(ELLIPSIS) ? 1 : 0
   const tail = source.length > lead && source.endsWith(ELLIPSIS) ? 1 : 0
@@ -676,16 +760,13 @@ const inLine = ({ from, to }: Line, spans: Span[], length: number): Span[] =>
     return span[1] > span[0] ? [span] : []
   })
 
-const BLANK_FILLER = /[\u115F\u1160\u180E\u2800\u3164\uFFA0]/g
-const FILLER = '\u2800'
-
 type Reading = { text: string; from: number[] }
 
-const reading = (line: string, fill: string): Reading => {
+const reading = (line: string, filler: string, split: string): Reading => {
   let text = ''
   const from: number[] = []
   for (let at = 0; at < line.length; at++) {
-    const c = line[at] === FILLER ? fill : line[at]!
+    const c = line[at] === FILLER ? filler : line[at] === SPLIT ? split : line[at]!
     if (c === '' || (c === ' ' && (text === '' || text.endsWith(' ')))) continue
     text += c
     from.push(at)
@@ -697,13 +778,21 @@ const reading = (line: string, fill: string): Reading => {
   return { text, from }
 }
 
+// Every pairing of the two readings, so a token broken by a filler and a zero-width character together still joins.
+const OTHER_READINGS: readonly [filler: string, split: string][] = [
+  ['', ' '],
+  ['', ''],
+  [' ', ' '],
+]
+
 const maskReadings = (line: string, upstream: Span[]): Masked => {
-  const spaced = reading(line, ' ')
-  const joined = reading(line, '')
+  const shown = reading(line, ' ', '')
   const inReading = ({ from }: Reading, spans: Span[]): Span[] => spans.map(([start, end]) => [from[start]!, from[end - 1]! + 1])
-  const seeds = [...upstream, ...inReading(joined, mask(joined.text).spans)]
-  const inSpaced = seeds.map(([start, end]): Span => [firstAtOrAfter(spaced.from, start), firstAtOrAfter(spaced.from, end)])
-  return mask(spaced.text, inSpaced.filter(([start, end]) => end > start))
+  const others = new Map(OTHER_READINGS.map(([filler, split]) => reading(line, filler, split)).map(other => [other.text, other]))
+  others.delete(shown.text)
+  const seeds = [...upstream, ...[...others.values()].flatMap(other => inReading(other, mask(other.text).spans))]
+  const inShown = seeds.map(([start, end]): Span => [firstAtOrAfter(shown.from, start), firstAtOrAfter(shown.from, end)])
+  return mask(shown.text, inShown.filter(([start, end]) => end > start))
 }
 
 export function scrub(raw: unknown, cap: number): Scrubbed {
@@ -713,6 +802,6 @@ export function scrub(raw: unknown, cap: number): Scrubbed {
   let text = line?.text ?? source
   if (full.length > LIMIT || text.length > LIMIT) text = dropCutWord(text.slice(0, LIMIT))
   const upstream = line === null ? [] : inLine(line, flightdeckSpans(source), text.length)
-  const masked = text.includes(FILLER) ? maskReadings(text, upstream) : mask(text, upstream)
+  const masked = text.includes(FILLER) || text.includes(SPLIT) ? maskReadings(text, upstream) : mask(text, upstream)
   return { text: shorten(masked.text, cap) as SafeText, masked: masked.spans.length }
 }
