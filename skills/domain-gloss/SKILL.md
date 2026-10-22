@@ -29,54 +29,18 @@ Never assume a language. Resolve in this order, most specific first:
 4. **Project, shared** — same variable in the committed `.claude/settings.json` env block.
 5. **User default** — same variable in `~/.claude/settings.json` env block.
 6. **Unset** — ask once, then continue.
-
+Values are BCP-47 tags (`th`, `ja`, `zh-Hant`, `pt-BR`); keep region and script.
 Rungs 3 through 5 arrive as an environment variable. Read it with exactly:
 
 ```bash
 printenv CLAUDE_GLOSS_LANG || echo unset
 ```
 
-Values are BCP-47 tags — `th`, `ja`, `zh-Hant`, `pt-BR`. Region and script are not
-decoration: `zh-Hans` and `zh-Hant` are different scripts, and `pt-BR` and `pt-PT`
-diverge in exactly the legal vocabulary this skill glosses.
+Unset, unavailable, or malformed: ask once, never guess. An English tag: do not
+activate. A comma list is a fallback chain — gloss into the first tag only. Do not
+write a settings file on your own initiative.
 
-Two values need explicit handling:
-
-- **A comma-separated list is a fallback chain, not a request for two glosses.** Gloss into the first tag. Use a later tag only when you cannot render the first one confidently. Never stack two languages in one gloss — that breaks rules 6 and 7 below.
-- **`simple-en` means the anchor is a plain-English definition** rather than a translation, and the micro-definition form is dropped as redundant: `subrogation (insurer pays you first, then pursues the other party)`.
-
-**When resolution fails, do not guess.** Each failure has one correct response:
-
-| Situation | Do this |
-|---|---|
-| `printenv` unavailable or not permitted | Treat as unset — fall to rung 6 |
-| Unset | Ask once, then continue |
-| Unrecognised or malformed tag (`thai`, `Thai`, `th-TH-x-junk`) | Ask which language was meant; never infer from a near-miss |
-| Value is `en` or any English tag | Do not activate. There is nothing to anchor to — suggest `simple-en`, or explain-clear if the goal is simpler English |
-
-When nothing is configured, ask once — then offer to persist to rung 3 and let the
-user do it. Do not write to a settings file on your own initiative.
-
-### Excluding categories
-
-Glossing is not restricted to business domains. Software and infrastructure are
-lockable domains too, so `singleflight` and `cache stampede` are legitimate Band 2
-terms in a Redis repo. That is the default and it is deliberate — a developer
-reading a second language is not only reading insurance contracts.
-
-When a category is unwanted, name it in `CLAUDE_GLOSS_SKIP`, resolved through the
-same six rungs as the language:
-
-```bash
-printenv CLAUDE_GLOSS_SKIP || echo none
-```
-
-Comma-separated free-text labels, matched against the locked domain — `software`,
-`infra`, `frontend`, `finance`, `legal`, `medical`. When the locked domain matches
-a skip entry, glossing is off for that domain entirely, Band 2 and Band 3 alike. A
-term still glosses if it belongs to a second locked domain that is not skipped: in
-an insurance repo skipping `software`, `subrogation` is glossed and `singleflight`
-is not.
+**Read [reference/language-resolution.md](reference/language-resolution.md) when** the value is a comma list, `simple-en`, malformed, English, or `printenv` fails, and for the `CLAUDE_GLOSS_SKIP` category exclusion (software, infra, legal, ...) and software-domain locking. Skip variable: `printenv CLAUDE_GLOSS_SKIP || echo none`; a skipped locked domain gets no Band 2 or Band 3 glosses.
 
 ## Lock the domain before the first token
 
@@ -92,10 +56,6 @@ turn, not once per term. Read signals strongest-first:
 **Two agreeing signals lock the domain.** If the repo spans two domains, hold both
 and resolve per-sentence from the surrounding lines. If nothing locks, gloss Band 2
 only and disable Band 3 entirely.
-
-Any subject-matter domain is lockable, software included — `ioredis` and `express`
-lock infrastructure the same way `stripe` and `hl7` lock payments and healthcare.
-Breadth is the default; `CLAUDE_GLOSS_SKIP` is how a reader narrows it.
 
 ## The three bands
 
@@ -131,34 +91,14 @@ definitions, expect Band 3 coverage to degrade and lean harder on (a).
 
 ## Opaque identifiers in explanations
 
-A table or field code can block understanding without being an English word.
-Handle these separately from the three vocabulary bands whenever an identifier
-supports a finding, comparison, or decision in chat:
+Tables, columns, enum values, and status codes that support a finding get the
+literal in backticks plus a role anchor on the **first mention per response**:
+`PAYHDR` (ข้อมูลรายการจ่าย). Ground the role in inspected schema or evidence; if
+unresolved, say so beside the identifier. Never invent an expansion. Mappings do
+not consume the five-gloss budget. Past six inline anchors, emit a `Term | Gloss`
+table instead. Identifiers stay exact in SQL, code, and artifacts.
 
-- Keep the literal in backticks and anchor its **first mention per response**:
-  `PAYHDR` (ข้อมูลรายการจ่าย). This describes its role, not a guessed expansion.
-- Ground the role in inspected schema, a data dictionary, queries, or supplied
-  evidence. If the meaning is unresolved, say so beside the identifier. An opaque
-  spelling alone does not establish a meaning or an acronym expansion.
-- Cover tables, columns, enum values, and status codes. For a related field group,
-  give one shared role only when the evidence establishes that role for every
-  member; otherwise map each member separately.
-- For dense passages, put a dedicated `Term | Gloss` table **before** their first
-  use in the narrative. Every identifier used as evidence gets a mapping; keep
-  unknown meanings visibly unresolved. Inline anchors follow the rendering rules
-  below; the dedicated table uses separate term and gloss cells.
-- Identifier mappings are required reading aids and do not consume the five-gloss
-  vocabulary budget. Category exclusions still apply.
-- **Cap inline anchors at six per response.** Past six, stop annotating inline and
-  emit the dedicated table instead — a paragraph carrying a dozen parenthesised
-  roles buries the finding it was meant to support.
-- **Retire an identifier once a glossary table in this thread has mapped it**,
-  and re-anchor it if it later appears in a different role. Repetition alone
-  never retires an identifier that has only ever been anchored inline.
-
-These are conversation annotations. The underlying identifier remains exact in
-SQL, schema, code, and artifacts. A pasted passage submitted for correction is
-evidence of a readability problem, not evidence that the reader owns its terms.
+**Read [reference/identifiers.md](reference/identifiers.md) when** an identifier supports a finding, comparison, or decision, or a passage is dense with codes.
 
 ## Gloss forms
 
@@ -172,23 +112,13 @@ term (gloss — short definition)   Band 2 on first encounter, when it fits
 **The anchor is mandatory; the micro-definition is not.** When the two will not fit
 on one line, drop the definition and keep the anchor. Rule 7 wins over this form.
 
-Rendering rules, which hold across every writing system:
+Rendering rules (one line, 60 columns max): ASCII space and ASCII parentheses
+`term (gloss)`; no fullwidth（）; no spaces inside an unspaced-script gloss; separator
+` — `; gloss outside backticks; one gloss per line, never inside a mixed table cell;
+RTL languages use an indented `↳` continuation line; never emit bidi or invisible
+control characters.
 
-1. **ASCII space and ASCII parentheses, always** — `term (gloss)`. The parentheses belong to the English sentence, not to the gloss, and staying ASCII keeps one grep pattern working.
-2. **Reject fullwidth（）even for CJK.** Ambiguous-width glyphs break monospace alignment. Correct: `subrogation (代位求償 — 保険会社が先に払い、後で相手方に請求する)`.
-3. **Never add spaces inside the gloss** for unspaced scripts (Thai, Lao, Khmer, CJK). The ASCII space sits only at the English/paren junction.
-4. **Separator is always ` — `** — space, em dash, space. Never a script-local dash.
-5. **Gloss outside backticks** — `` `subrogation` (การรับช่วงสิทธิ์) ``, never `` `subrogation (การรับช่วงสิทธิ์)` ``. The code span is the copy-paste and double-click unit; keep it pure.
-6. **One gloss per line**, and never inside a mixed markdown table cell — wide and combining characters destroy column alignment. A dedicated `Term | Gloss` table is fine.
-7. **Keep it to one visual line — 60 columns.** If the term, anchor, and definition will not fit, drop the definition and keep the bare anchor. Never wrap a gloss across lines.
-8. **RTL languages break the inline form.** Arabic, Hebrew, and Persian glosses reorder against following English and visually detach the sentence tail. End the sentence, then use an indented continuation:
-
-```
-Insurer exercises subrogation after payout.
-  ↳ الحلول محل المؤمن — تدفع الشركة أولاً ثم تطالب الطرف الآخر
-```
-
-9. **Never emit bidi or invisible control characters** — RLM, LRM, FSI, PDI, ZWJ. Terminal support is inconsistent, they are grep-hostile, and they trip trojan-source scanners. Rule 8 achieves the same result visibly.
+**Read [reference/rendering-and-placement.md](reference/rendering-and-placement.md) when** rendering a gloss in CJK, Thai, or RTL script, or when unsure whether a location may carry a gloss.
 
 ## Do
 
@@ -212,54 +142,16 @@ Insurer exercises subrogation after payout.
 - Don't gloss Band 1 to fill an unused budget.
 - Don't gloss protocol or library acronyms — `HTTP`, `JWT`, `ORM`.
 
+
 ### Where a gloss must never appear
 
-The rule is an artifact/conversation split. Anything committed, logged, transmitted,
-or read by someone who does not share the language is English-only.
+Chat prose only. Anything committed, logged, transmitted, or read by someone who
+does not share the language is English-only: code and comments, fenced blocks,
+commits and PRs, error and log text, config, SQL and schema, tests, repository docs,
+external payloads, plan files on disk, and tool-call parameters. The full list is in
+[reference/rendering-and-placement.md](reference/rendering-and-placement.md).
 
-- Code you write — identifiers, string literals, comments — including scratch files.
-- Inside fenced code blocks. Put the gloss in the prose line above the fence.
-- Commit messages, branch names, PR titles and bodies, review comments.
-- Error messages, log lines, exception text, and user-facing UI copy. Those have their own i18n path and a gloss forks it.
-- Config keys and values, JSON, YAML, env var names, filenames, paths.
-- Migrations, SQL, and schema contents, including table and column identifiers inside them. When citing those identifiers in chat, preserve the literal and put its gloss outside the backticks.
-- Test names and assertion messages. CI reads those, not the learner.
-- Repository documentation — README, ADR, CONTRIBUTING, docstrings. It reads like prose but it is committed, diffed, and read by teammates who do not share the language. Treat it as source. The one exception is a file the user explicitly designates as the bilingual glossary.
-- Anything sent to an external service, MCP server, API payload, or another agent.
-- Plan, checklist, and handoff files written to disk. Gloss the copy echoed in chat, never the copy written to the file.
-- Tool-call descriptions, parameters, and Bash commands. They are logged and matched against permission rules.
-
-## Examples
-
-Band 2, first encounter — term, anchor, micro-definition:
-
-> The policy lapses before underwriting (การพิจารณารับประกัน — ขั้นตอนที่บริษัทตัดสินใจว่าจะรับประกันหรือไม่) completes.
-
-Band 3, the dangerous case — an easy word, glossed because cue (a) and cue (c) both fired:
-
-> This clause fails because the contract lacks consideration (สิ่งตอบแทนในสัญญา — สิ่งมีมูลค่าที่แลกกัน ไม่ใช่ "การพิจารณา").
-
-Contrast pair, distinction stated once:
-
-> Fire is a peril (ภัย — เหตุที่ทำให้เกิดความเสียหาย); storing fuel indoors is a hazard (สภาพเสี่ยง — สิ่งที่ทำให้ภัยเกิดง่ายขึ้น).
-
-Lifting a column name into prose — gloss the concept, leave the identifier alone:
-
-> The `endorsement_id` column tracks each endorsement (สลักหลังกรมธรรม์ — เอกสารแก้ไขกรมธรรม์ ไม่ใช่ "การรับรอง") applied to the policy.
-
-Correct restraint — Band 1 words left bare, budget unspent:
-
-> The record was left alone deliberately, so the reconciliation job could mitigate the drift on its next pass.
-
-Opaque schema names — given a dictionary identifying a payment table and its
-optional second-recipient fields:
-
-> `PAYHDR` (ข้อมูลรายการจ่าย) has an optional second recipient.
-> `ID2`, `TYPE2`, `NAME2` (ข้อมูลผู้รับเงินคนที่สอง) are blank in the inspected rows.
-
-Unknown status semantics — the spelling alone does not define the workflow:
-
-> `STX9` (ยังไม่ทราบความหมายของสถานะ) is populated, but its values need a dictionary before they can establish an approval step.
+**Read [reference/examples.md](reference/examples.md) when** you need a model of a Band 2, Band 3, contrast-pair, column-name, or opaque-identifier gloss, or of correct restraint.
 
 ## Modes
 
@@ -284,74 +176,18 @@ Before sending, confirm all six:
 5. Every inline rendering is one line, ASCII-parenthesised, and outside backticks; dedicated glossary tables keep the literal and gloss in separate cells.
 6. Every opaque identifier supporting a finding has a first-mention role anchor or an earlier glossary row, including an explicit unknown where evidence is missing. The artifact exclusion and vocabulary budget did not suppress these mappings.
 
+
 ## Standing mode (opt-in hook)
 
-Asking once does not last: a mode set by prose decays across turns. The plugin
-bundles a `UserPromptSubmit` hook ([hooks/hooks.json](hooks/hooks.json) → [scripts/gloss_reminder.py](scripts/gloss_reminder.py))
-that restates the rule on every prompt. It prints **nothing** unless you opt in,
-so installing or updating the plugin changes nothing by default.
+A `UserPromptSubmit` hook ([hooks/hooks.json](hooks/hooks.json) → [scripts/gloss_reminder.py](scripts/gloss_reminder.py))
+restates the rule each prompt. It prints nothing unless `CLAUDE_GLOSS_HOOK=on` is set
+in settings.json `env`. [scripts/gloss_rate.py](scripts/gloss_rate.py) measures glossed rate from transcripts.
 
-Opt in through settings.json `env` (user, project, or local):
-
-```json
-{ "env": { "CLAUDE_GLOSS_LANG": "th", "CLAUDE_GLOSS_HOOK": "on" } }
-```
-
-| Variable | Effect |
-|---|---|
-| `CLAUDE_GLOSS_HOOK` | Trimmed and case-insensitive `on` activates. Anything else, including unset, keeps the hook silent |
-| `CLAUDE_GLOSS_LANG` | Must be a non-English tag; every entry of a comma chain must be well-formed, and the chain at most 80 characters. `simple-en` counts as active |
-| `CLAUDE_GLOSS_SKIP` | Passed into the reminder for the model to apply, sanitized: control characters removed, first 80 characters |
-| `CLAUDE_GLOSS_SUBAGENT_MARKER` | Optional. Prompts starting with this string get no reminder |
-
-When active it adds one line (about 60 tokens) per prompt:
-
-```
-domain-gloss ON (<lang>[; skip: <CLAUDE_GLOSS_SKIP>]): keep each domain term in English; gloss Band 2 on first use and Band 3 false friends once per answer as "term (gloss)". Chat prose only — never in code, commits, files on disk, or text sent to tools or other agents.
-```
-
-The reminder does not load this skill body. Invoke `/domain-gloss` once when the
-band rules or rendering details are needed.
-
-It stays silent inside subagents: Claude Code documents an `agent_id` field inside
-subagent calls, and the hook stays silent when it is present. The marker and
-slash-command guards exist because that field has not been confirmed for every way a
-subagent can start. It also stays silent for prompts starting with
-`CLAUDE_GLOSS_SUBAGENT_MARKER`, for slash-command prompts other than `/domain-gloss`,
-when any `CLAUDE_GLOSS_LANG` entry is malformed, when the primary subtag is `en`,
-`eng`, or `english`, and when the prompt is missing or not text. Headless workers
-(`claude -p`) are new main sessions, so an orchestrator must not hand them
-`CLAUDE_GLOSS_HOOK=on` — unset it or set `off`.
-
-The hook reads the process environment only, meaning what settings.json `env`
-provides. It cannot see a per-turn request or an invocation tag such as
-`/domain-gloss th`; those still work through the skill itself.
-
-Why it exists: on real transcripts, a standing rule in a project `CLAUDE.md` alone
-produced about 10% gloss compliance on Band 3 terms (7% before the rule), decaying
-to about 3% past the tenth prompt.
-
-### Measure it
-
-[scripts/gloss_rate.py](scripts/gloss_rate.py) is a read-only stdlib script that reports the glossed rate
-for a term list from Claude Code JSONL transcripts:
-
-```bash
-python3 <skill-root>/scripts/gloss_rate.py --terms premium,claim
-```
-
-Flags: `--store` (transcript directory), `--terms a,b` or `--terms @file`,
-`--since YYYY-MM-DD`, `--window N` (characters after the term to look for a gloss,
-default 60), `--json PATH`, and `--leak-check` (exits 1 if the reminder string
-appears in any subagent transcript). A missing transcript store exits 2. `--leak-check` counts only hook-injected context records, so a subagent that merely reads this skill's text is not a leak. It cannot detect `simple-en` glosses.
+**Read [reference/standing-mode.md](reference/standing-mode.md) when** setting up, debugging, or measuring the hook.
 
 ## Known limitations
 
-- **Stickiness is best-effort.** This is prompt text with no cross-turn state; across a long session the mode decays. A sentence in `CLAUDE.md` alone measured about 10% compliance on Band 3 terms. For standing mode, use the [opt-in hook](#standing-mode-opt-in-hook); otherwise re-invoke the skill.
-- **No bundled glossary.** Renderings come from model knowledge and will vary slightly between sessions. For a fixed house translation, keep a glossary file in the repo and point at it.
-- **Band 3 depends on repo evidence.** Cue (c) is the strongest signal; in a repo with thin schema and no defined terms, false-friend coverage degrades quietly.
-- **Identifier roles need a source of truth.** With no inspected schema, data dictionary, or query result, most identifiers resolve to an explicit unknown rather than a role. That is the correct output, but a legacy database with no dictionary will produce a page of unknowns instead of a reading aid. Supply a dictionary first, or accept the unknowns as a map of what is undocumented.
-- **The `allowed-tools` entry pins an exact command.** `Bash(printenv CLAUDE_GLOSS_LANG)` is deliberate — the `:*` prefix form would pre-allow bare `printenv` and dump every token and key in the environment into context. If exact-command matching is not honoured, the only symptom is a one-time permission prompt, which is the safe way to fail.
-- **Overlaps with `explain-clear`** (`~/.claude/skills/explain-clear/SKILL.md`), whose `thai` / `th` command has its own bilingual mode. That skill replaces hard words; this one keeps them. If the wrong one activates, name it explicitly.
-- **Breadth is the default.** Any locked domain is glossed, software included, so an ordinary repo with a dependency manifest will produce glosses. Narrow it with `CLAUDE_GLOSS_SKIP` rather than expecting the skill to guess which domains you already know.
-- **Situational auto-firing is not available.** A skill is selected by matching your words, not by ambient facts about the repo, so working in an insurance codebase will not turn this on by itself. The opt-in hook is driven by your environment variables, not by the repo.
+Stickiness is best-effort, there is no bundled glossary, Band 3 depends on repo
+evidence, and this skill overlaps `explain-clear`.
+
+**Read [reference/known-limitations.md](reference/known-limitations.md) when** the user asks why glossing decayed, was missed, or why the wrong skill fired.

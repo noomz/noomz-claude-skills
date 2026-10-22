@@ -27,7 +27,7 @@ Check the current conversation before running any command.
 
 "Real work" means you made an edit, ran a command that changed something, or already have a checklist in progress. Reading one or two files is **not** real work — that is still cold. When genuinely torn, pick cold: a redundant gather costs a few seconds, a wrongly-warm recap silently reports nothing.
 
-Warm mode is the cheap path. Do not run `git` or `gh` in warm mode — the answer is already in your context. Say which mode you used in the readout header.
+Warm mode is the cheap path: do not run `git` or `gh` — the answer is already in context. Say which mode you used in the header.
 
 ## Step 0.5 — resolve the workspace root and identity
 
@@ -55,7 +55,7 @@ echo "identity: $ME"
 git shortlog -sne --all --since="21 days ago" 2>/dev/null | head -10
 ```
 
-Read the `shortlog` table. If more than one line is plainly the same human under different emails, matching the given name (the `--author` filter in step 1) already covers them. If the dev's name is spelled differently across identities, use the shortest common token and say so in `basis:`.
+Read the `shortlog` table: one human under several emails is already covered by the name match in step 1. If the name is spelled differently across identities, use the shortest common token and say so in `basis:`.
 
 If the repo count is `0` you are in the wrong directory — every later step returns empty and looks like a quiet day. Stop and say so.
 
@@ -82,11 +82,11 @@ Pick the window by this rule — do not improvise it:
 | is today | 10 or more | **today only** — a full day already happened; adding yesterday doubles what the dev must read |
 | is not today | any | **that date only** — this is a normal gap (weekend, day off) |
 
-Then **name the covered dates in the readout header**, e.g. `BLANK BRAIN RECAP — 2026-09-06 + 2026-09-07 (cold)`. This is not decoration. The threshold above is a judgment call that can be wrong in either direction, and a header naming the dates turns a wrong window into something the dev can see and correct. A recap that silently covers the wrong day is the worst failure this skill has — it looks complete.
+**Name the covered dates in the readout header**, e.g. `BLANK BRAIN RECAP — 2026-09-06 + 2026-09-07 (cold)`. The `<10` threshold is a judgment call; a header naming the dates lets the dev see and correct a wrong window. A recap that silently covers the wrong day is this skill's worst failure.
 
 Never guess the dates; they come from this command's output.
 
-Two things about that command. It discovers repos with `find`, not with `ls` and not with a `.git */.git` glob. `ls` output can carry colour escapes that make `git -C` fail, and `2>/dev/null` would hide every one of those fatals, leaving an empty table that looks like a quiet fortnight. The glob is worse: under `zsh`, a pattern that matches nothing is a **fatal error**, not an empty list — measured in a single-repo workspace, `for d in .git */.git` aborted with `no matches found: */.git` before the loop body ran once, so the recap reported zero repos. `find` behaves the same in every shell and in every layout. And step 1 filters to **your** commits, while step 2 lists **everyone's** commits on the chosen date. That asymmetry is deliberate: the day is picked by when *you* last worked, but the day's record should include a teammate's or CI bot's merge. If SHIPPED shows work you do not recognise, that is why — say whose it is rather than dropping it.
+Discovery uses `find`, never `ls` or a `*/.git` glob (colour escapes and `zsh` no-match fatals both fail silently into a quiet-looking empty table). Step 1 filters to **your** commits, step 2 lists **everyone's** on the chosen date, deliberately — if SHIPPED shows work you do not recognise, say whose it is rather than dropping it. Detail: [reference/gather-rationale.md](reference/gather-rationale.md).
 
 ## Cold mode — Step 2: gather the four sources IN PARALLEL
 
@@ -120,26 +120,21 @@ done
 exit 0
 ```
 
-Uncommitted files matter as much as commits — they are usually the in-progress item.
+Uncommitted files are usually the in-progress item.
 
-### Why the NOISE filter is mandatory
+**The NOISE filter is mandatory.** Unfiltered dirty entries bury the one real file (observed: 47 entries, 2 real). Four rules:
 
-Observed on a 19-repo workspace: **47 dirty entries, of which 2 were real work.** The other 45 were operational dirs, agent-config tweaks, worktrees, and lockfiles. Unfiltered, the IN PROGRESS section fills with junk and buries the one file that matters — the failure lands exactly when the dev is least able to spot it.
+- **Never drop silently.** The `printf` of `real:N filtered:M` is unconditional — print it for every dirty repo, even when `real:0`. If `filtered` looks surprisingly large, say so in the readout.
+- **The inner date loop makes a two-date window real.** One `--since/--until` pair covers one day; without the loop the header claims both dates while SHIPPED holds one.
+- **Dates go in the `for` list as literals, never a variable.** Under `zsh` unquoted `$VAR` is not word-split. No `for X in $VAR` anywhere.
+- **A tracked modification (` M`) outranks an untracked file (`??`)** — put ` M` items first in IN PROGRESS.
 
-Four rules keep this step honest:
-
-- **Never drop silently — which needs the unconditional `printf`.** An earlier version guarded the print with `[ -n "$kept" ]`, so a repo whose every dirty path was noise printed *nothing at all*: 8 of 19 repos vanished with no `real:0 filtered:N` to show they had been considered. The count line must appear for every dirty repo, empty or not. If `filtered` looks surprisingly large, say so in the readout rather than trusting it.
-- **The inner date loop is what makes a two-date window real.** The window table can ask for two days; a single `--since/--until` pair covers one. Without the loop, the header claims both dates while SHIPPED holds one — the exact silent-wrong-day failure this skill exists to avoid.
-- **Put the dates in the `for` list as literals, never in a variable.** Under `zsh` — a common interactive default — unquoted expansions are not word-split: `DATES='a b'; for D in $DATES` runs **once** with `D='a b'`, so `--since="a b 00:00"` becomes a malformed window that git accepts silently and answers with the wrong day's commits. Same rule anywhere else in this file: no `for X in $VAR`.
-- **A tracked modification (` M`) outranks an untracked file (`??`).** ` M` means the dev edited something that already exists — closer to the live task. Put ` M` items first in IN PROGRESS.
-
-The script ends in `exit 0` on purpose: the last `grep -Ev` returns 1 when it matches nothing, and a non-zero pipeline exit here reads as failure when the output is fine. Judge this step by its printed output, never by its exit status.
+The script ends in `exit 0` on purpose; judge this step by its printed output, never its exit status. Evidence and history: [reference/gather-rationale.md](reference/gather-rationale.md).
 
 **2. Planning notes — STATE and HANDOFF** — the checklist and the resume point.
 
 ```bash
-# Discover, do not assume. NEVER pass a list of *.md globs here — see the
-# warning below. `find` first, then sort the hits by mtime.
+# Discover, do not assume. NEVER pass a list of *.md globs here.
 NOTES=$(find /abs/path/to/workspace -maxdepth 3 -type f -name '*.md' \
         \( -path '*/.planning/*' -o -path '*/docs/planning/*' -o -path '*/notes/*' \) \
         2>/dev/null)
@@ -147,15 +142,13 @@ if [ -z "$NOTES" ]; then echo "(none)"
 else printf '%s\n' "$NOTES" | tr '\n' '\0' | xargs -0 ls -lt | head -8; fi
 ```
 
-If none exist, print `(none)` for this source and move on — many repos keep no planning notes at all, and that is not a failure.
+If none exist, print `(none)` and move on — not a failure.
 
-**A glob list here is a silent-miss bug, not a style choice.** Under `zsh`, one unmatched pattern aborts the **whole** command, so `ls -lt WS/.planning/*.md WS/notes/*.md` prints nothing at all when only `.planning/` is missing — the existing `notes/*.md` never gets listed. Measured: an existing `notes/a.md` went unlisted for exactly that reason, `2>/dev/null` did **not** suppress the error, and the exit status stayed `0`. The miss reads as `(none)`. The `-z "$NOTES"` guard also matters: with empty input, `xargs ls -lt` runs `ls` with no arguments and lists the current directory, which looks like a result.
+**Never use a glob list here** — under `zsh` one unmatched pattern silently aborts the whole command and the miss reads as `(none)`. Keep the `-z "$NOTES"` guard.
 
-**Newest by mtime is often the wrong file.** Observed case: the newest file was a 65 KB technical log, while the actual next action lived in `HANDOFF-<topic>-<date>.md`, the second-newest. Stopping at the newest file alone loses the resume point.
+**Newest by mtime is often the wrong file** (a 65 KB log can outrank the HANDOFF). Open the newest file **and** every `HANDOFF-*` in or near the window. When the two disagree about what comes next, **the HANDOFF wins** — a HANDOFF exists precisely to say "start here". Name the file you took NEXT STEP from in `basis:`.
 
-So: open the newest file **and** every `HANDOFF-*` in or near the window. When the two disagree about what comes next, **the HANDOFF wins** — a HANDOFF exists precisely to say "start here". Name the file you took NEXT STEP from in `basis:`.
-
-**Do not blind-`tail` a large file.** A guessed `tail -100` can sail straight past an in-progress marker sitting earlier. Locate the markers first, then read around the hits:
+**Do not blind-`tail` a large file.** Locate the markers first, then read around the hits:
 
 ```bash
 F=/abs/path/to/workspace/.planning/<file>          # absolute — each block is its own shell
@@ -167,9 +160,7 @@ grep -nE '^[[:space:]]*[-0-9.]*[[:space:]]*\[[ xX]\]' "$F"
 grep -nE '^#{1,3} |NEXT|Resume|BLOCKED|IN PROGRESS' "$F" | tail -20
 ```
 
-Unchecked boxes (`[ ]`) are the live work; the last checked box (`[x]`) is where the dev stopped.
-
-**Never pipe the checkbox grep through `tail`.** Observed on a 65 KB state file: 83 marker hits but only **2** unchecked boxes in the whole file — and a combined `grep … | tail -40` showed **zero** of them, because 40 headings crowded them out. The command reported structure and hid the one thing it exists to find. Two greps, and the checkbox one runs untailed.
+Unchecked boxes (`[ ]`) are the live work; the last checked box (`[x]`) is where the dev stopped. **Never pipe the checkbox grep through `tail`** — headings crowd the unchecked boxes out.
 
 **3. Open pull requests** — what waits on someone else.
 
@@ -187,16 +178,7 @@ done
 exit 0
 ```
 
-Running `gh` from inside each repo lets it infer the remote — no hardcoded repo list to rot. Repos with a non-GitHub remote (GitLab, Gitea, none) are skipped by the `grep -q github.com` guard; **say which repos were skipped**, because their open work is then invisible to this source.
-
-**Check the identity, never change it.** Machines with several authenticated accounts frequently default to the wrong one. `gh auth switch` would mutate global `gh` state and break this skill's read-only promise — so read `gh auth status` instead. If the active account cannot see these repos, every `gh pr list` returns empty or errors, and the rule below would read that as "clean". When the identity looks wrong, say so and tag every PR line `[unverified]`.
-
-`--limit 30` avoids both truncating real PRs and `SIGPIPE`-ing `gh` mid-write with a `head`. `exit 0` for the same reason as source 1: judge by output.
-
-**This lists PRs only, not issues.** A touched-but-unlinked issue never appears here. Source 4 is the only place those surface.
-
-Read `baseRefName` — a PR based on another branch, not the default branch, is a stacked PR and its green CI can be false.
-`no-review` means nobody has reviewed yet; it is **not** an approval. Never print it as an empty bracket.
+Say which repos were skipped (non-GitHub remote). Never `gh auth switch` — read `gh auth status`; if the identity looks wrong, tag every PR line `[unverified]`. PRs only, not issues. Stacked PRs (`baseRefName` not default) can have false-green CI; `no-review` is not approval. **Empty `gh` output means "the repos I could query are clean", never "no blockers exist"** — cross-check against source 4. Detail: [reference/gather-rationale.md](reference/gather-rationale.md).
 
 **Empty `gh` output means "the repos I could query are clean", never "no blockers exist."** So cross-check BLOCKED / WAITING against source 4.
 
@@ -218,53 +200,38 @@ find ~/.claude ~/.ccs -maxdepth 7 -name MEMORY.md 2>/dev/null \
 
 Then read whichever of those exist. If none do, print `(none)` — this source is optional infrastructure, not a requirement.
 
-**Never leave the date pattern as a variable.** Each fenced block runs in a **separate shell**, so a `$D` set in source 1 is empty here — and an empty `grep` pattern matches **every** line. Observed: an unset pattern returned all 137 lines of a decisions log instead of the 2 dated rows, and the whole ledger lands in the readout looking like real signal. Substitute the literal dates from step 1 every time.
+**Never leave the date pattern as a variable.** Each fenced block is a separate shell, so an unset `$D` becomes an empty `grep` pattern that matches **every** line. Substitute the literal dates from step 1.
 
-**Memory records what was true when it was written**, so a PR or issue it calls open may already be merged or closed. Verify any PR or issue number taken from memory before printing it in BLOCKED / WAITING:
+**Memory records what was true when written.** Verify any PR or issue number taken from memory before printing it in BLOCKED / WAITING:
 
 ```bash
 gh pr view <number> --repo <owner/repo> --json state,title,mergedAt 2>&1 | head -5
 ```
 
-If it comes back `MERGED` or `CLOSED`, it is not a blocker — drop it. If you cannot resolve which repo it lives in, print it tagged `[unverified, from memory]` and never as a plain live blocker. Printing a merged PR as still-blocking sends the dev to re-do finished work, which is the most expensive error this skill can make.
+`MERGED` or `CLOSED` means drop it. Unresolvable repo: tag `[unverified, from memory]`, never a plain live blocker.
 
 ## Step 3 — the readout
 
 Fixed shape. Values first, no story. Every figure carries a provenance tag; `basis:` names what produced it.
 
+Shape (values first, one line per item; full worked example in [reference/readout-example.md](reference/readout-example.md)):
+
 ```
-BLANK BRAIN RECAP — 2026-09-06 + 2026-09-07 (cold, today had 4 commits)
-
+BLANK BRAIN RECAP — <dates> (cold, today had N commits)
 SHIPPED
-  api-service     commit a1b2c3d  issue #101 rate-table split
-                  -> deployed to staging                                  (measured)
-  schema          commit e4f5a6b  migration 0007, new payee columns       (measured)
-
 IN PROGRESS
-  #118 phase B2   stopped at: loader cannot reach the mandate record
-                  api-service [main]  M etl/loader.py  (real:1 filtered:2)  (measured)
-
 BLOCKED / WAITING
-  PR #204 api-service     open, 2 owner rulings pending      (gh-verified)
-  pricing-rounding        waiting on analyst answer          [unverified, from memory]
-
 NEXT STEP
-  Do Job 1 in HANDOFF-promote-2026-09-07: write promote_settlement.py,
-  dry-run against staging, then --apply.
-
-basis: git log 19 repos, 2026-09-06 + 2026-09-07; git status --porcelain, noise-filtered;
-       .planning/HANDOFF-promote-2026-09-07.md (next step);
-       .planning/STATE-213-B.md (in-progress item);
-       gh pr list 4 GitHub repos of 19, cross-checked vs MEMORY.md open threads
+basis: <what produced each figure, repos reached per source>
 ```
 
 Rules for the block:
 
 - **Four sections, always, in that order.** An empty section prints `(none)` — never delete it. A missing section makes the dev wonder if you looked.
-- **SHIPPED is one line per feature-level change, never one per commit.** A single active day can produce 38 commits across 3 repos, most of them merges and review-round fixes — that is roughly 5 readout lines, not 38. Collapse by the unit the dev thinks in: the issue or PR (`#142 parties tab`), not the sha chain that delivered it. If a repo had commits but no feature landed, write one line saying work continued and where.
+- **SHIPPED is one line per feature-level change, never one per commit.** Collapse by the unit the dev thinks in: the issue or PR (`#142 parties tab`), not the sha chain that delivered it. If a repo had commits but no feature landed, write one line saying work continued and where.
 - **One line per item.** Three or more facts about one thing → columns, not a comma run-on.
-- **Exactly one NEXT STEP.** A blank brain can hold one action. Extra candidates go in a single line after the block, then stop.
-- **Legend every opaque token on first use** — `a1b2c3d` is a commit sha, `#101` an issue number, `0007` a migration revision. Gloss once, reuse bare.
+- **Exactly one NEXT STEP.** Extra candidates go in a single line after the block, then stop.
+- **Legend every opaque token on first use** (sha, issue number, migration revision). Gloss once, reuse bare.
 - **Name the workspace and repo count in `basis:`**, plus how many repos each source actually reached. "4 GitHub repos of 19" is the difference between a clean report and a blind one.
 
 Warm mode uses the same four sections but drops `basis:` lines that would cite commands you did not run. Header reads `(current session, warm)`.
@@ -281,29 +248,12 @@ Warm mode uses the same four sections but drops `basis:` lines that would cite c
 
 ## Verify before trusting the run
 
-One line, before Step 1: the workspace path printed in step 0.5 is the one you meant, the repo count is not `0`, and the identity is not empty. Those three are what every later step silently depends on. The fuller smoke test lives in [reference/tuning.md](reference/tuning.md).
+One line, before Step 1: the workspace path printed in step 0.5 is the one you meant, the repo count is not `0`, and the identity is not empty. Those three are what every later step silently depends on. The fuller smoke test lives in [reference/tuning.md](reference/tuning.md). Known limits of this skill: [reference/known-gaps.md](reference/known-gaps.md).
 
-## Known gaps
-
-Read these before trusting a readout, and before "improving" the skill.
-
-| Limit | Detail |
-|---|---|
-| The `<10` threshold is arbitrary | No data chose 10. It is a guess that a small commit count means "tail of yesterday". The header prints the count so a wrong call is visible; fix the header before fixing the number. |
-| Warm/cold is untested on a close call | Verified only on an unambiguously fresh session. A mid-session run may pick warm when you wanted cold — the header says which, so check it. |
-| `gh` covers GitHub remotes only | Repos on GitLab, Gitea, or with no remote contribute nothing to BLOCKED. Source 4 is the only thing standing between that and a false "nothing is blocked". |
-| The noise filter is a denylist | It hides what it knows about. A genuinely new junk directory shows up as real work until it is added to `NOISE`. See [reference/tuning.md](reference/tuning.md). |
-| Dates are typed by hand | Step 1 prints the dates; a transcription puts them into step 2. A typo yields an empty gather that looks like a quiet day. Cross-check the header against step 1's table. |
-| Workspace root is inferred | `git rev-parse --show-toplevel` returns one repo, not a multi-repo parent. In a workspace of siblings, run from the parent or name it — otherwise the recap silently covers one repo out of many. |
-| Repo discovery is `find`, not a glob or `ls` | Both alternatives fail silently-ish: `ls` can emit colour escapes that make `git -C` fatal under a swallowed stderr, and under `zsh` a `*/.git` glob matching nothing is a fatal error that kills the loop before its first iteration — measured in a single-repo workspace. Do not "simplify" `find` back to either. |
-| `-maxdepth 2` is one level of siblings | A repo two levels down (`group/team/repo`) is invisible. Raise to 3 for that layout. |
-| Shell word-splitting differs | Under `zsh`, unquoted expansions are not word-split, so any `for X in $VAR` silently collapses to one iteration. Every loop here uses literals or `while read` for that reason. |
-| Glob lists are banned, not discouraged | Under `zsh` one unmatched pattern aborts the whole command, `2>/dev/null` does not suppress it, and the exit status stays `0` — so a missing `.planning/` hides an existing `notes/*.md` and the recap prints `(none)`. Every discovery step here uses `find`. |
-| `allowed-tools` does not cover the compound scripts | Prefix matching applies to single commands, so the multi-line gather blocks still prompt. The frontmatter list helps the one-liners (`gh pr view`, `git shortlog`); expect approval prompts for the rest. |
-| Agent-memory discovery is name-matched | The `grep -i` on the workspace directory name is a heuristic. A host whose slug convention differs returns nothing (safe) or another project's memory (not safe) — check the path before reading it. |
-| Multiple git identities | One human often commits under two emails. Step 0.5 matches the *name*; an identity spelled differently is invisible until you widen the pattern. |
-| Bot and teammate commits count | Step 2 has no author filter, so CI merges and teammate commits appear in SHIPPED. Attribute them rather than dropping them. |
 
 ## Reference
 
-- [Per-workspace tuning](reference/tuning.md) — NOISE list, repo scope, planning-note and ledger paths, identity patterns, and the smoke test to run after changing any of them.
+- [Per-workspace tuning](reference/tuning.md) — read when changing NOISE, repo scope, planning-note and ledger paths, identity patterns, or after editing any command; holds the smoke test.
+- [Gather rationale](reference/gather-rationale.md) — read before changing any cold-mode command, or when a source returns something surprising; why `find`, literals, unconditional prints, and verification steps exist.
+- [Readout example](reference/readout-example.md) — read when writing the Step 3 block for the first time or when unsure of the format.
+- [Known gaps](reference/known-gaps.md) — read before trusting an odd readout, and before "improving" the skill.

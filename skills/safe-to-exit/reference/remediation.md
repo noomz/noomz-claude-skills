@@ -216,3 +216,7 @@ NOT SAFE (1 accepted: midway rebase, recorded in HANDOFF-2026-09-08.md)
 ```
 
 Without that distinction, following rung 6's own advice guarantees a bare NOT SAFE on the re-check and sends the dev to debug a skill that did the right thing.
+
+## Why allowed-tools is read-only
+
+**Every command in `allowed-tools` is read-only, and that is deliberate.** `Bash(git:*)` would have pre-approved `git reset --hard`, `git clean -fd`, and `git push --force` — every operation this skill bans — turning a convenience declaration into a silent grant of exactly the powers the design refuses. So the audit runs without prompting and every secure-mode mutation hits a normal permission prompt instead. That prompt is a second, independent gate on top of the dev's go-ahead. Do not add mutating patterns to `allowed-tools` to make secure mode smoother; the friction is the point.
