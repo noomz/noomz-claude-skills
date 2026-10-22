@@ -1,7 +1,7 @@
 {
   "name": "blank-brain-recap",
   "description": "Rebuild yesterday's working context in any repo or multi-repo workspace — last active day from git, planning STATE and HANDOFF notes, open pull requests, dated ledger and memory rows — reported as one terse readout ending in a single next step. Read-only.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": {
     "name": "noomz",
     "email": "lazym0m3nt@gmail.com"

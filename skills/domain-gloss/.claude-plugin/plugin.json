@@ -1,7 +1,7 @@
 {
   "name": "domain-gloss",
   "description": "Keep English domain terms and schema identifiers exact, with first-language explanations beside jargon, false friends, and opaque table or field names in conversation.",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "author": {
     "name": "noomz",
     "email": "lazym0m3nt@gmail.com"
