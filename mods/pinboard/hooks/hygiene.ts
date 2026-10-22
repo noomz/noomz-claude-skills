@@ -27,7 +27,8 @@ const all = (pattern: RegExp): Finder => ({
 
 const SCHEME_RUN = /[a-z0-9+.-]+/gi
 const HOST_RUN = /[^\s/:@]*/y
-const USERINFO_RUN = /\S*/y
+const USERINFO_RUN = /[^\s@]*/y
+const AUTHORITY_RUN = /[^\s/?#]*/y
 
 const runEnd = (run: RegExp, text: string, from: number): number => {
   run.lastIndex = from
@@ -41,6 +42,7 @@ function* flightdeckUrlCredentials(text: string): Iterable<Found> {
   let after = 0
   const host = { from: -1, to: -1 }
   const userinfo = { from: -1, to: -1 }
+  const authority = { from: -1, to: -1 }
   const reach = (run: RegExp, memo: { from: number; to: number }, from: number) => {
     if (from < memo.from || from > memo.to) Object.assign(memo, { from, to: runEnd(run, text, from) })
     return memo.to
@@ -58,8 +60,9 @@ function* flightdeckUrlCredentials(text: string): Iterable<Found> {
     if (start < 0) continue
     const colon = reach(HOST_RUN, host, schemeEnd + 3)
     if (colon === schemeEnd + 3 || text[colon] !== ':') continue
-    const userinfoEnd = reach(USERINFO_RUN, userinfo, colon + 1)
-    const at = text.lastIndexOf('@', userinfoEnd - 1)
+    // The last `@` before the path, so a password may hold one, and never short of the first, as redact() reads it.
+    const first = reach(USERINFO_RUN, userinfo, colon + 1)
+    const at = Math.max(text[first] === '@' ? first : -1, text.lastIndexOf('@', reach(AUTHORITY_RUN, authority, colon + 1) - 1))
     if (at <= colon + 1) continue
     after = at + 1
     yield Object.assign([text.slice(start, after), text.slice(start, colon + 1)], { index: start })
@@ -232,7 +235,7 @@ class Reader {
     let open: string | undefined
     for (const [opener, closer] of QUOTES) {
       if (!this.text.startsWith(opener, at)) continue
-      open ??= opener
+      if (closer !== ')') open ??= opener
       const close = this.next(closer, at + opener.length)
       if (close >= 0) return { inner: [at + opener.length, close], end: close + closer.length }
     }
@@ -253,8 +256,13 @@ type Looks = (word: string) => boolean
 // `token` and `secret` also name a count, as in `token 4096` or `| secret | 42 |`, so a plain number after them is not a value.
 const COUNTED_KEY = /\b(?:token|secret)\b/i
 const NUMBER = /^\d+(?:[.,]\d+)*$/
+// A path after a key, as in `pwd /Users/me/project`, is not its value.
+const PATH = /^(?:~|\.{1,2})?\//
 
-const looksFor = (key: string): Looks => (COUNTED_KEY.test(key) ? word => !NUMBER.test(word) && looksSecret(word) : looksSecret)
+const looksFor = (key: string): Looks => {
+  const counted = COUNTED_KEY.test(key)
+  return word => !PATH.test(word) && !(counted && NUMBER.test(word)) && looksSecret(word)
+}
 
 const value = (reader: Reader, at: number, looks?: Looks): Span | null => {
   const { text } = reader
@@ -269,7 +277,10 @@ const value = (reader: Reader, at: number, looks?: Looks): Span | null => {
     if (start < 0) start = innerStart
     const span: Span = [start, quoted && WORDY.test(text[end] ?? '') ? reader.wordEnd(end) : innerEnd]
     if (!isValue && quoted && reader.quotedAt(end)) from = end
-    else if (looks) return isValue && ((quoted !== null && text[from] !== '(' && text[from] !== '$') || looks(inner)) ? span : null
+    else if (looks) {
+      const bracketed = quoted !== null && (text[from] === '(' || text[from] === '$')
+      return isValue && ((quoted !== null && !bracketed) || (bracketed ? inner.split(' ').some(looks) : looks(inner))) ? span : null
+    }
     else if (isValue || text[end] !== ' ' || end + 1 >= text.length) return span
     else from = end + 1
   }
@@ -424,6 +435,16 @@ const emptyUserPassword = (reader: Reader, from: number): Span | null => {
   return at > from && at < reader.wordEnd(from) ? [from, at] : null
 }
 
+// A table cell runs to the next `|`. More than one word, or one that looks secret, is a value, so a passphrase is caught.
+const tableCell = (reader: Reader, end: number, key: string): Span | null => {
+  const { text } = reader
+  const bar = reader.next('|', end)
+  let stop = bar < 0 ? text.length : bar
+  while (stop > end && text[stop - 1] === ' ') stop--
+  const cell = text.slice(end, stop)
+  return WORDY.test(cell) && (cell.includes(' ') || looksFor(key)(cell)) ? [end, stop] : null
+}
+
 const assigned = (reader: Reader, end: number, looks?: Looks): Span | null => {
   const was = said(reader.text, end, false)
   return was?.assigned ? value(reader, was.at, looks) : null
@@ -464,7 +485,7 @@ const KEYED_RULES: readonly Rule[] = [
   }),
   keyed(String.raw`(?:^|[ \t])--?pass(?==)`, 'i', (reader, end) => assigned(reader, end)),
   keyed(String.raw`(?:^|[^A-Za-z0-9_-])pw(?![A-Za-z0-9_-])`, 'i', (reader, end) => assigned(reader, end)),
-  keyed(String.raw`\|[ \t]*[*_\x60]*(?:password|passwd|passphrase|pwd|secret|token|api[ _-]?key|access[ _-]?key|private[ _-]?key)[*_\x60]*[ \t]*\|[ \t]*`, 'i', (reader, end, key) => value(reader, end, looksFor(key))),
+  keyed(String.raw`\|[ \t]*[*_\x60]*(?:password|passwd|passphrase|pwd|secret|token|api[ _-]?key|access[ _-]?key|private[ _-]?key)[*_\x60]*[ \t]*\|[ \t]*`, 'i', (reader, end, key) => tableCell(reader, end, key)),
   keyed(String.raw`\benv:[A-Za-z0-9_]{1,64}[^;|&\n]{0,120}? -Value `, 'i', (reader, end, key) => (isSecretName(ENV_NAME.exec(key)![1]!.toUpperCase()) ? value(reader, end) : null)),
   keyed(
     'api[_-]?key|secret_access_key|account[_-]?key|shared[_-]?access[_-]?key|access[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|client[_-]?secret|secret[_-]?key|private[_-]?key|github_pat',
@@ -757,11 +778,19 @@ const reading = (line: string, filler: string, split: string): Reading => {
   return { text, from }
 }
 
+// Every pairing of the two readings, so a token broken by a filler and a zero-width character together still joins.
+const OTHER_READINGS: readonly [filler: string, split: string][] = [
+  ['', ' '],
+  ['', ''],
+  [' ', ' '],
+]
+
 const maskReadings = (line: string, upstream: Span[]): Masked => {
   const shown = reading(line, ' ', '')
-  const other = reading(line, '', ' ')
   const inReading = ({ from }: Reading, spans: Span[]): Span[] => spans.map(([start, end]) => [from[start]!, from[end - 1]! + 1])
-  const seeds = [...upstream, ...inReading(other, mask(other.text).spans)]
+  const others = new Map(OTHER_READINGS.map(([filler, split]) => reading(line, filler, split)).map(other => [other.text, other]))
+  others.delete(shown.text)
+  const seeds = [...upstream, ...[...others.values()].flatMap(other => inReading(other, mask(other.text).spans))]
   const inShown = seeds.map(([start, end]): Span => [firstAtOrAfter(shown.from, start), firstAtOrAfter(shown.from, end)])
   return mask(shown.text, inShown.filter(([start, end]) => end > start))
 }

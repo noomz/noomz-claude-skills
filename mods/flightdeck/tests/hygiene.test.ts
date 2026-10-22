@@ -407,6 +407,12 @@ describe('scrub masks the gaps issues #19 and #20 listed', () => {
     ['| **API key** | abc123def456 |', '| **API key** | [masked] |', 1],
     ['| password | 123456 |', '| password | [masked] |', 1],
     ['<b>Password:</b> hunter2xyz', '<b>Password:[masked]', 1],
+    ['| password | correct horse battery |', '| password | [masked] |', 1],
+    ['ghp_\u200b\u2800abcdefgh12345', '[masked]', 1],
+    ['sk-\u00adabc\u3164defgh12345', '[masked]', 1],
+    ['password (hunter2 and then the rest of a long sentence goes on', 'password [masked] and then the rest of a long sentence goes on', 1],
+    ['https://u:p@host/path@x see', 'https://u:[masked]@host/path@x see', 1],
+    ['https://u:p/x@h', 'https://u:[masked]@h', 1],
     ['<b>password</b>: hunter2xyz', '<b>password</b>: [masked]', 1],
     ['| secret | 42abc |', '| secret | [masked] |', 1],
     ['password 123456', 'password [masked]', 1],
@@ -458,6 +464,11 @@ describe('scrub still leaves the ordinary text near the new rules alone', () => 
     'per token 0.5',
     'secret 1,000',
     'the password</b> field',
+    '| password | string | required |',
+    'password (see the docs for the details)',
+    'pwd /Users/me/project',
+    'echo token /tmp/abc.txt',
+    'cd ~/secret and pwd ./build',
   ]) {
     test(input, () => expect(scrub(input, 200).text).toContain(input.includes('"user":"bob"') ? '"user":"bob"' : input))
   }
