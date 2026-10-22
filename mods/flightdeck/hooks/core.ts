@@ -61,7 +61,7 @@ export const DEFAULT_USAGE: Usage = {
   compactions: 0,
   lastCompactAt: null,
 }
-export const DEFAULT_ARCHITECT: Architect = { consults: [], ids: [], seen: [], lastAdvice: NO_TEXT }
+export const DEFAULT_ARCHITECT: Architect = { consults: [], ids: [], lastAdvice: NO_TEXT }
 const ZERO: Tally = { rule: 0, granted: 0, ask: 0, cleared: 0, deny: 0 }
 export const DEFAULT_GATE: Gate = { recent: [], totals: { file: ZERO, shell: ZERO, other: ZERO }, grants: [] }
 export const DEFAULT_TURN: Turn = { edits: 0, errorStreak: 0, errors: 0, isReviewing: false, startedAt: 0, costAtStart: null }
@@ -639,11 +639,18 @@ export const titleLines = (title: string, first: number, rest: number): [string,
   return [t.slice(0, at).trim(), shorten(t.slice(at), rest)]
 }
 
+// `prompt.submit` origin kinds the engine queues itself; a person's own (composer, bridge, sdk, a
+// Slack ping), a plugin's, and any kind not named here read as typed.
 const ENGINE_TURNS = new Map<string, string>([
-  ['system', 'message delivered'],
-  ['loop_wakeup', 'loop wakeup'],
-  ['schedule_wakeup', 'scheduled task'],
-  ['poll_event', 'event delivered'],
+  ['task-notification', 'message delivered'],
+  ['peer', 'message delivered'],
+  ['peer-send-message', 'message delivered'],
+  ['projects-relay', 'message delivered'],
+  ['coordinator', 'message delivered'],
+  ['channel', 'message delivered'],
+  ['observer', 'message delivered'],
+  ['observer-activity', 'message delivered'],
+  ['scheduled-trigger', 'scheduled task'],
 ])
 
 export const isEngineTurn = (source: string | undefined): source is string => source !== undefined && ENGINE_TURNS.has(source)
@@ -664,7 +671,7 @@ const promptKey = (text: string) => {
 const PENDING_MAX = 32
 const TYPED_MAX = 4096
 
-/** Keyed by prompt text: UserPromptSubmit carries no turn id, and turn.start carries only the text. */
+/** Keyed by prompt text: prompt.submit carries no turn id for an idle session, and turn.start carries only the text. */
 export const promptSources = () => {
   const pending = new Map<number, string>()
   let typed: Set<number> | 'overflowed' = new Set()
