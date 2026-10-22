@@ -373,10 +373,16 @@ const toolName = (tool: string): Scrubbed => {
   return name
 }
 
+// A tool named after a key, such as mcp__secrets__set_password, would show its value beside the key.
+const namesKey = (tool: string, part: string) => {
+  const words = tool.replace(/_+/g, ' ')
+  return scrub(`${words} ${part}`, UNCUT).masked > scrub(words, UNCUT).masked + scrub(part, UNCUT).masked
+}
+
 const detailOf = (tool: string, part: string, derive?: (masked: SafeText) => string): Scrubbed => {
   const name = toolName(tool)
   const room = CAP.detail - name.text.length - FRAME.length
-  if (!part || room < 1) return name
+  if (!part || room < 1 || namesKey(tool, part)) return name
   const shown = kept(part, room, derive)
   return shown.text ? { text: `${name.text}${FRAME}${shown.text}` as SafeText, masked: name.masked + shown.masked } : name
 }
@@ -717,12 +723,21 @@ export const handbackOf = (text: string): { from: string; body: string } | null 
   return body ? { from, body } : null
 }
 
+const PROBE = 'Zq7x9Qv2'
+
+// A line can leave a value for the next one: a key with nothing after it, or a quote it opened.
+const leavesValue = (line: string) => line !== '' && !scrub(`${line} ${PROBE}`, UNCUT).text.includes(PROBE)
+
 export const adviceLine = (report: string): Scrubbed => {
+  let before = ''
   for (const line of report.split('\n')) {
     const raw = line.trim()
-    if (!raw || raw.startsWith('[') || raw.startsWith('<')) continue
-    const found = kept(raw, CAP.advice, masked => masked.replace(/\*\*|__/g, '').replace(/^[#>*\s-]+/, ''))
-    if (found.text) return found
+    if (raw && !raw.startsWith('[') && !raw.startsWith('<')) {
+      const isValue = leavesValue(before)
+      const found = kept(isValue ? raw.replace(/^\S+/, MASK) : raw, CAP.advice, masked => masked.replace(/\*\*|__/g, '').replace(/^[#>*\s-]+/, ''))
+      if (found.text) return isValue ? { ...found, masked: found.masked + 1 } : found
+    }
+    if (raw) before = raw
   }
   return { text: NO_TEXT, masked: 0 }
 }

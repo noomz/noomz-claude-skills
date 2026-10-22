@@ -55,6 +55,18 @@ test('a Bash or PowerShell detail shows the plain word a command opens with', ()
   expect(toolDetail('PowerShell', { command: 'Get-ChildItem -Recurse' }).text).toBe('PowerShell → Get-ChildItem')
 })
 
+test('the opening word: whitespace around it, its characters, one character, and its last segment taken after masking', () => {
+  for (const command of ['\tgit status', '\ngit status', '\r\n git status', 'git\rstatus', 'git\nstatus']) {
+    expect(toolDetail('Bash', { command }).text, JSON.stringify(command)).toBe('Bash → git')
+  }
+  for (const c of [':', '@', '"', "'", '$', '{', '}', '+', ',', '%', '~']) {
+    expect(toolDetail('Bash', { command: `a${c}b x` }).text, c).toBe('Bash')
+  }
+  expect(toolDetail('Bash', { command: 'héllo x' }).text).toBe('Bash')
+  expect(toolDetail('Bash', { command: 'l x' }).text).toBe('Bash → l')
+  expect(toolDetail('Bash', { command: 'hooks.slack.com/services/T0001/B0002/XXXXXXXX x' })).toEqual({ text: 'Bash → [masked]', masked: 1 })
+})
+
 test('a Bash or PowerShell detail shows the tool name alone for a command that does not open with a plain word', () => {
   const failClosed = [
     ['Bash', 'PGPASSWORD=$(echo "a) hunter2xyz") psql'],
