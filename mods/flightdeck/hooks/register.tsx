@@ -274,6 +274,13 @@ async function noteMode($: EngineInterface, mode: string | undefined) {
   if (mode) await update($, main, m => (normalize(DEFAULT_MAIN, m).mode === mode ? normalize(DEFAULT_MAIN, m) : { ...normalize(DEFAULT_MAIN, m), mode }))
 }
 
+// The exit row does not name the mode that follows, so it reads as unknown until the next spawn reports one.
+async function leavePlan($: EngineInterface) {
+  await update($, main, m => (normalize(DEFAULT_MAIN, m).mode === 'plan' ? { ...normalize(DEFAULT_MAIN, m), mode: '' } : normalize(DEFAULT_MAIN, m)))
+}
+
+const PLAN_ROWS = new Set(['plan_mode', 'plan_mode_reentry'])
+
 async function forgetSession($: EngineInterface, memory: GrantMemory) {
   memory.reset()
   await update($, gate, g => clearGrants(normalizeGate(g)))
@@ -445,7 +452,14 @@ export const register: Register = (on, options) => {
   const sources = promptSources()
   // Not classic.UserPromptSubmit: a seated cc-plugin-sec-default skips user plugins on every classic event.
   on('prompt.submit', async ($, e, next) => {
-    sources.submit(e.text, e.origin.kind)
+    sources.submit(e.text, e.origin?.kind)
+    return next(e)
+  })
+
+  // Plan mode adds a row to every main-loop request while it is on, and one exit row when it ends.
+  on('prompt.attachment', async ($, e, next) => {
+    if (!e.agentId && PLAN_ROWS.has(e.type)) await noteMode($, 'plan')
+    else if (!e.agentId && e.type === 'plan_mode_exit') await leavePlan($)
     return next(e)
   })
 
@@ -791,7 +805,7 @@ export const register: Register = (on, options) => {
           <Text color={C.main} bold>
             {m.effort || '—'}
           </Text>
-          {m.mode ? <Text dimColor>{`   mode ${m.mode} (last spawn)`}</Text> : null}
+          {m.mode ? <Text dimColor>{`   mode ${m.mode} (last seen)`}</Text> : null}
           <Text dimColor>{`   ${m.steps} req`}</Text>
         </Text>
         {ctxGauge ? (

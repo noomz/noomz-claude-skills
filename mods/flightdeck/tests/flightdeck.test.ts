@@ -405,8 +405,25 @@ test("the main box shows the mode a main-loop spawn reported, and says when it w
   await $.agent.spawn({ ...spawn('Explore', 'map it'), permissionMode: 'acceptEdits' })
   await $.agent.spawn({ ...spawn('Explore', 'nested'), permissionMode: 'plan', parentAgentId: 'm1' })
   const ui = await $.ui.mount({ ...pane(120), surface: 'terminal' })
-  expect(await ui.find({ text: /mode acceptEdits \(last spawn\)/ })).toBeDefined()
+  expect(await ui.find({ text: /mode acceptEdits \(last seen\)/ })).toBeDefined()
   await ui.unmount()
+})
+
+test('a main-loop plan-mode row shows plan mode, its exit row clears it, and a subagent row changes nothing', async ($, on) => {
+  engine(on)
+  const values = stateStoreWithoutRedraw(on)
+  on('prompt.attachment', (_$, e) => ({ text: e.text }))
+  const mode = () => (flightdeck(values).main as { mode?: string } | undefined)?.mode
+  const row = (type: 'plan_mode' | 'plan_mode_exit', agentId?: string) =>
+    $.prompt.attachment({ type, text: 'x', origin: { kind: 'engine' }, agentId, detail: { reminder: 'full', planFilePath: '/p.md', hasPlan: false } } as never)
+  await row('plan_mode', 'sub1')
+  expect(mode() ?? '').toBe('')
+  await row('plan_mode')
+  expect(mode()).toBe('plan')
+  await row('plan_mode_exit', 'sub1')
+  expect(mode()).toBe('plan')
+  await row('plan_mode_exit')
+  expect(mode()).toBe('')
 })
 
 test('a fresh session draws on every surface and width, empty panels hidden', async ($, on) => {
