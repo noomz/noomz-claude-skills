@@ -414,7 +414,8 @@ export const subjectLine = (tool: string, input: unknown, mark: string): Scrubbe
   // Cut the masked text in the middle: a file name or a command's last argument tells two calls apart.
   const middle = (s: string) => (s.length <= room ? s : `${s.slice(0, Math.ceil((room - 3) / 2))}...${s.slice(s.length - Math.floor((room - 3) / 2))}`)
   const shown = kept(raw, room, middle)
-  if (!readsApart(name.text, shown.text)) return { text: head as SafeText, masked: name.masked + shown.masked }
+  // Checked without the mark, as detailOf checks it: the mark is not part of what a reader takes as the key.
+  if (!readsApart(name.text, shown.text)) return { text: head as SafeText, masked: name.masked }
   return { text: `${head}${FRAME}${shown.text}` as SafeText, masked: name.masked + shown.masked }
 }
 
@@ -737,17 +738,21 @@ const sharedTail = (a: string, b: string): number => {
 // is one mask.
 const afterLines = (befores: string[], line: string): Scrubbed => {
   const alone = scrub(line, UNCUT)
-  let tail = alone.text.length
-  let masked = 0
+  if (befores.length === 0) return alone
+  // Read after a space, as the joined readings read it: a leading `…` is then no cut mark.
+  const reference = scrub(` ${line}`, UNCUT).text
+  let tail = reference.length
+  let widest: { before: string; joined: Scrubbed } | null = null
   for (const before of befores) {
     const joined = scrub(`${before} ${line}`, UNCUT)
-    const shared = sharedTail(joined.text, alone.text)
+    const shared = sharedTail(joined.text, reference)
     if (shared >= tail) continue
     tail = shared
-    masked = Math.max(1, joined.masked - scrub(before, UNCUT).masked)
+    widest = { before, joined }
   }
-  if (tail === alone.text.length) return alone
-  return { text: (MASK + alone.text.slice(alone.text.length - tail)) as SafeText, masked }
+  if (!widest) return alone
+  const masked = Math.max(1, widest.joined.masked - scrub(widest.before, UNCUT).masked)
+  return { text: (MASK + reference.slice(reference.length - tail)) as SafeText, masked }
 }
 
 const BEFORE_CAP = 512

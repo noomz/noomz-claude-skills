@@ -115,7 +115,7 @@ test('a tool named after a key shows its name alone, not the value passed as its
   expect(toolDetail('mcp__vault__set\uff30assword', { command: 'hunter2xyz' }).text).toBe('mcp__vault__setPassword')
   expect(toolDetail('mcp__vault__setPassword', { command: 'ls' }).text).toBe('mcp__vault__setPassword → ls')
   expect(toolDetail('mcp__files__listAll', { command: 'hunter2xyz' }).text).toBe('mcp__files__listAll → hunter2xyz')
-  expect(subjectLine('mcp__vault__set_password', { command: 'hunter2xyz' }, 'ab12').text).toBe('mcp__vault__set_password ab12')
+  expect(subjectLine('mcp__vault__set_password', { command: 'hunter2xyz' }, 'ab12')).toEqual({ text: 'mcp__vault__set_password ab12', masked: 0 })
   expect(subjectLine('mcp__vault__setPassword', { value_text: 'hunter2xyz' }, 'ab12').text).toBe('mcp__vault__setPassword ab12')
   expect(subjectLine('mcp__tokens__list', { command: 'all' }, 'ab12').text).toBe('mcp__tokens__list ab12 → all')
 })
@@ -277,6 +277,8 @@ describe("an architect's advice", () => {
     expect(adviceLine('[x] done\nShip it')).toEqual({ text: 'Ship it', masked: 0 })
     expect(adviceLine('<b>password</b>\n<br>\nhunter2xyz is it')).toEqual({ text: '[masked] is it', masked: 1 })
     expect(adviceLine('[password]:\n[1]\nhunter2xyz is it')).toEqual({ text: '[masked] is it', masked: 1 })
+    expect(adviceLine('<summary>\n\u2026then ship it')).toEqual({ text: '\u2026then ship it', masked: 0 })
+    expect(adviceLine('[1]\n\u2026and done')).toEqual({ text: '\u2026and done', masked: 0 })
   })
 
   test('skips a line that is only marks', async ($, on) => {

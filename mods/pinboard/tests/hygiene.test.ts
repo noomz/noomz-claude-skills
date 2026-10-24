@@ -343,6 +343,8 @@ describe('scrub over-masks on the safe side where the README says so', () => {
     ['Deprecate the ?api_key= query param', 'Deprecate the ?api_key= [masked] param'],
     ['docs;key=value', 'docs;key=[masked]'],
     ['Rotate the password now!', 'Rotate the password [masked]'],
+    ['| API key | Where to find it |', '| API key | [masked] |'],
+    ['| token | per request |', '| token | [masked] |'],
   ]
   for (const [input, text] of cases) test(input, () => expect(scrub(input, 4096).text).toBe(text))
 })
@@ -413,6 +415,10 @@ describe('scrub masks the gaps issues #19 and #20 listed', () => {
     ['password (hunter2 and then the rest of a long sentence goes on', 'password [masked] and then the rest of a long sentence goes on', 1],
     ['https://u:p@host/path@x see', 'https://u:[masked]@host/path@x see', 1],
     ['https://u:p/x@h', 'https://u:[masked]@h', 1],
+    ['the OTP token is 482913', 'the OTP token is [masked]', 1],
+    ['the secret is 48291377', 'the secret is [masked]', 1],
+    ['secret--name_v2', 'secret--[masked]', 1],
+    ['password--hunter2', 'password--[masked]', 1],
     ['<b>password</b>: hunter2xyz', '<b>password</b>: [masked]', 1],
     ['| secret | 42abc |', '| secret | [masked] |', 1],
     ['password 123456', 'password [masked]', 1],
@@ -469,6 +475,11 @@ describe('scrub still leaves the ordinary text near the new rules alone', () => 
     'pwd /Users/me/project',
     'echo token /tmp/abc.txt',
     'cd ~/secret and pwd ./build',
+    'check the token max_tokens setting',
+    'the token `foo` is used',
+    'token--refresh_interval',
+    '| API key | Where to find it | |---|---|',
+    '| Token | Max tokens per request | | :--- | --- |',
   ]) {
     test(input, () => expect(scrub(input, 200).text).toContain(input.includes('"user":"bob"') ? '"user":"bob"' : input))
   }

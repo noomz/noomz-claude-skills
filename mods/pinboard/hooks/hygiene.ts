@@ -214,7 +214,13 @@ const escaped = (text: string, at: number): boolean => {
 class Reader {
   private readonly seen = new Map<string, { from: number; at: number }>()
 
+  private delimiterAt: number | undefined
+
   constructor(readonly text: string) {}
+
+  delimiter(): number {
+    return (this.delimiterAt ??= lastDelimiter(this.text))
+  }
 
   next(needle: string, from: number): number {
     const memo = this.seen.get(needle)
@@ -253,15 +259,18 @@ const looksSecret = (word: string) => word.length >= 20 || !LOOKS_PLAIN.test(wor
 
 type Looks = (word: string) => boolean
 
-// `token` and `secret` also name a count, as in `token 4096` or `| secret | 42 |`, so a plain number after them is not a value.
-const COUNTED_KEY = /\b(?:token|secret)\b/i
+// `token`, `secret` and `pwd` also name a count, a setting or a command. Right after one, with only a space,
+// a glued dash run or a table bar between, a value needs a digit and is not a plain number, so `token 4096`,
+// `token max_tokens` and `token--refresh_interval` stay, while `the OTP token is 482913` is masked.
+const WEAK_KEY = /\b(?:token|secret|pwd)\b/i
 const NUMBER = /^\d+(?:[.,]\d+)*$/
+const DIGIT = /\d/
 // A path after a key, as in `pwd /Users/me/project`, is not its value.
 const PATH = /^(?:~|\.{1,2})?\//
 
-const looksFor = (key: string): Looks => {
-  const counted = COUNTED_KEY.test(key)
-  return word => !PATH.test(word) && !(counted && NUMBER.test(word)) && looksSecret(word)
+const looksFor = (key: string, loose: boolean): Looks => {
+  const weak = loose && WEAK_KEY.test(key)
+  return word => !PATH.test(word) && !(weak && (NUMBER.test(word) || !DIGIT.test(word))) && looksSecret(word)
 }
 
 const value = (reader: Reader, at: number, looks?: Looks): Span | null => {
@@ -300,7 +309,8 @@ const separatorAt = (text: string, at: number): number => {
   return ENDS_SEPARATOR.test(run) || !/[A-Za-z0-9]/.test(next) ? run.length : 0
 }
 
-type Said = { at: number; assigned: boolean }
+// `loose`: the value follows the key with only a space or a glued dash run between.
+type Said = { at: number; assigned: boolean; loose?: boolean }
 
 const LINKING = /(?:is|was|to)(?=[ :])/y
 
@@ -324,10 +334,12 @@ const said = (text: string, end: number, bare: boolean, prose = false): Said | n
   const plus = text[sign] === '+' && text[sign + 1] === '=' ? 1 : 0
   if (text[sign + plus] === '=' || text[sign] === ':') return { at: text[sign + plus + 1] === ' ' ? sign + plus + 2 : sign + plus + 1, assigned: true }
   let separators = 0
+  let glued = false
   for (let next = at; separators < 3; separators++) {
     const start = text[next] === ' ' ? next + 1 : next
     const length = separatorAt(text, start)
     if (!length) break
+    if (separators === 0) glued = start === next && text[start] === '-' && /^-+$/.test(text.slice(start, start + length))
     at = next = start + length
   }
   const is = text[at] === ' ' ? at + 1 : at
@@ -340,8 +352,8 @@ const said = (text: string, end: number, bare: boolean, prose = false): Said | n
     if (length) at += text[at + length] === ' ' ? length + 1 : length
     return { at, assigned: false }
   }
-  if (separators > 0) return { at: text[at] === ' ' ? at + 1 : at, assigned: false }
-  return bare && text[at] === ' ' ? { at: at + 1, assigned: false } : null
+  if (separators > 0) return { at: text[at] === ' ' ? at + 1 : at, assigned: false, loose: glued && separators === 1 }
+  return bare && text[at] === ' ' ? { at: at + 1, assigned: false, loose: true } : null
 }
 
 const CLAUSE = ' for '
@@ -435,14 +447,26 @@ const emptyUserPassword = (reader: Reader, from: number): Span | null => {
   return at > from && at < reader.wordEnd(from) ? [from, at] : null
 }
 
-// A table cell runs to the next `|`. More than one word, or one that looks secret, is a value, so a passphrase is caught.
+const DELIMITER_ROW = /\|[ \t]*:?-{3,}:?[ \t]*\|/g
+
+// Where the last Markdown table delimiter row starts: a row before one is a header.
+const lastDelimiter = (text: string): number => {
+  let last = -1
+  if (text.includes('---')) for (const row of text.matchAll(DELIMITER_ROW)) last = row.index
+  return last
+}
+
+// A table cell runs to the next `|`. One word that looks secret is a value, and so is more than one word
+// outside a header row, so a passphrase is caught and `| API key | Where to find it |` above `|---|` is not.
 const tableCell = (reader: Reader, end: number, key: string): Span | null => {
   const { text } = reader
   const bar = reader.next('|', end)
   let stop = bar < 0 ? text.length : bar
   while (stop > end && text[stop - 1] === ' ') stop--
   const cell = text.slice(end, stop)
-  return WORDY.test(cell) && (cell.includes(' ') || looksFor(key)(cell)) ? [end, stop] : null
+  if (!WORDY.test(cell)) return null
+  if (!cell.includes(' ')) return looksFor(key, true)(cell) ? [end, stop] : null
+  return reader.delimiter() > stop ? null : [end, stop]
 }
 
 const assigned = (reader: Reader, end: number, looks?: Looks): Span | null => {
@@ -494,7 +518,11 @@ const KEYED_RULES: readonly Rule[] = [
   ),
   keyed('token|secret|password|passwd|pwd|passphrase', 'i', (reader, end, key, start) => {
     const was = spoken(reader.text, end, isWordStart(reader.text, start))
-    return was && value(reader, was.at, was.assigned ? undefined : looksFor(key))
+    if (!was) return null
+    const looks = was.assigned ? undefined : looksFor(key, was.loose === true)
+    const span = value(reader, was.at, looks)
+    // A quoted value skips `looks`; after a loose weak key it must pass it too, so ``token `foo` `` stays.
+    return span && looks && was.loose && WEAK_KEY.test(key) && !looks(reader.text.slice(span[0], span[1])) ? null : span
   }),
   keyed(String.raw`\b(?:api|access|secret|private) key\b`, 'i', (reader, end) => {
     const was = spoken(reader.text, end, true)
