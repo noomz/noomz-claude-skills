@@ -42,80 +42,89 @@ describe('scrub masks the README examples as written', () => {
   ])
 })
 
-describe('scrub misses the curl -u forms the README lists', () => {
+describe('scrub masks the curl -u forms with an empty user or a quote inside', () => {
   rows([
-    ['curl -u "ad"min:hunter2 x', 'curl -u "ad"min:hunter2 x', 0],
-    ['curl -u :hunter2 x', 'curl -u :hunter2 x', 0],
-    ['curl -u "":hunter2 x', 'curl -u "":hunter2 x', 0],
-    ['curl -u "":"hunter2" x', 'curl -u "":"hunter2" x', 0],
-    ['curl -u "admin:hun"ter2 x', 'curl -u "admin:[masked]"ter2 x', 1],
-    ['curl -u "ad:min":"pw" x', 'curl -u "ad:[masked]":"pw" x', 1],
+    ['curl -u "ad"min:hunter2 x', 'curl -u "ad"min:[masked] x', 1],
+    ['curl -u :hunter2 x', 'curl -u :[masked] x', 1],
+    ['curl -u "":hunter2 x', 'curl -u "":[masked] x', 1],
+    ['curl -u "":"hunter2" x', 'curl -u "":[masked] x', 1],
+    ['curl -u "admin:hun"ter2 x', 'curl -u "admin:[masked] x', 1],
+    ['curl -u "ad:min":"pw" x', 'curl -u "ad:min":[masked] x', 1],
   ])
 })
 
-describe('scrub masks a value after a space for password, passwd and passphrase, and misses it after api key, pwd, token and secret', () => {
+describe('scrub masks a value after a space for password, passwd, passphrase, api key, pwd, token and secret', () => {
   rows([
     ['passwd abc123def456', 'passwd [masked]', 1],
     ['passphrase abc123def456', 'passphrase [masked]', 1],
-    ['api key abc123def456', 'api key abc123def456', 0],
-    ['pwd abc123def456', 'pwd abc123def456', 0],
-    ['token abc123def456', 'token abc123def456', 0],
-    ['secret abc123def456', 'secret abc123def456', 0],
+    ['api key abc123def456', 'api key [masked]', 1],
+    ['pwd abc123def456', 'pwd [masked]', 1],
+    ['token abc123def456', 'token [masked]', 1],
+    ['secret abc123def456', 'secret [masked]', 1],
   ])
 })
 
-describe('scrub misses a --pass= flag mid-line and a PowerShell variable with a braced name or +=', () => {
+describe('scrub masks a --pass= flag mid-line and a PowerShell variable with a braced name or +=', () => {
   rows([
-    ['mysqldump --pass=S3cretPass99 db', 'mysqldump --pass=S3cretPass99 db', 0],
-    ['run -pass=S3cretPass99 now', 'run -pass=S3cretPass99 now', 0],
-    ['${env:API_KEY}="abc123def456"', '${env:API_KEY}="abc123def456"', 0],
-    ["$env:PGPASSWORD+='hunter2x'", "$env:PGPASSWORD+='hunter2x'", 0],
+    ['mysqldump --pass=S3cretPass99 db', 'mysqldump --pass=[masked] db', 1],
+    ['run -pass=S3cretPass99 now', 'run -pass=[masked] now', 1],
+    ['${env:API_KEY}="abc123def456"', '${env:API_KEY}="[masked]"', 1],
+    ["$env:PGPASSWORD+='hunter2x'", "$env:PGPASSWORD+='[masked]'", 1],
   ])
 })
 
-describe('scrub leaves a bare glpat- or npm_ token, a PowerShell Set-Item and an unquoted scheme word before a value', () => {
+describe('scrub masks a bare glpat- or npm_ token, a PowerShell Set-Item and an unquoted scheme word before a value', () => {
   rows([
-    ['glpat-dummyDUMMYdummy1234', 'glpat-dummyDUMMYdummy1234', 0],
-    ['npm_dummyDUMMYdummyDUMMYdummy12345678', 'npm_dummyDUMMYdummyDUMMYdummy12345678', 0],
-    ['Set-Item -Path env:API_KEY -Value dummySecret123', 'Set-Item -Path env:API_KEY -Value dummySecret123', 0],
-    ['AUTH_HEADER=token abc123def456hunter2', 'AUTH_HEADER=token abc123def456hunter2', 0],
+    ['glpat-dummyDUMMYdummy1234', '[masked]', 1],
+    ['npm_dummyDUMMYdummyDUMMYdummy12345678', '[masked]', 1],
+    ['Set-Item -Path env:API_KEY -Value dummySecret123', 'Set-Item -Path env:API_KEY -Value [masked]', 1],
+    ['AUTH_HEADER=token abc123def456hunter2', 'AUTH_HEADER=token [masked]', 1],
   ])
-  test('a tool detail shows such a token when the command opens with it', () => {
+  test('a tool detail masks such a token when the command opens with it', () => {
     const shown = ['glpat-dummyDUMMYdummy1234 x', 'npm_dummyDUMMYdummyDUMMYdummy12345678 i'].map(command => toolDetail('Bash', { command }).text)
-    expect(shown).toEqual(['Bash → glpat-dummyDUMMYdummy1234', 'Bash → npm_dummyDUMMYdummyDUMMYdummy12345678'])
+    expect(shown).toEqual(['Bash → [masked]', 'Bash → [masked]'])
   })
 })
 
-describe('scrub leaves an Azure connection string, an ApiKey, Digest or Negotiate credential, a table row, a bold label and a JWT glued after an underscore or a hyphen', () => {
+describe('scrub masks an Azure connection string, an ApiKey, Digest or Negotiate credential, a table row and a JWT glued after an underscore or a hyphen, and leaves a bold label that is not a key word', () => {
   rows([
-    ['DefaultEndpointsProtocol=https;AccountName=acct;AccountKey=ZHVtbXlkdW1teQ==', 'DefaultEndpointsProtocol=https;AccountName=acct;AccountKey=ZHVtbXlkdW1teQ==', 0],
-    ['Authorization: ApiKey dummycred123456', 'Authorization: [masked] dummycred123456', 1],
-    ['Authorization: Digest dummycred123456', 'Authorization: [masked] dummycred123456', 1],
-    ['Authorization: Negotiate dummycred123456', 'Authorization: [masked] dummycred123456', 1],
-    ['| Password | hunter2xyz |', '| Password | hunter2xyz |', 0],
+    ['DefaultEndpointsProtocol=https;AccountName=acct;AccountKey=ZHVtbXlkdW1teQ==', 'DefaultEndpointsProtocol=https;AccountName=acct;AccountKey=[masked]', 1],
+    ['Authorization: ApiKey dummycred123456', 'Authorization: [masked] [masked]', 2],
+    ['Authorization: Digest dummycred123456', 'Authorization: [masked] [masked]', 2],
+    ['Authorization: Negotiate dummycred123456', 'Authorization: [masked] [masked]', 2],
+    ['| Password | hunter2xyz |', '| Password | [masked] |', 1],
     ['**Credentials**: admin:hunter2xyz', '**Credentials**: admin:hunter2xyz', 0],
-    ['_eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJkdW1teSJ9.c2lnZHVtbXlzaWdkdW1teQ_', '_eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJkdW1teSJ9.c2lnZHVtbXlzaWdkdW1teQ_', 0],
-    ['-eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJkdW1teSJ9.c2lnZHVtbXlzaWdkdW1teQ-', '-eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJkdW1teSJ9.c2lnZHVtbXlzaWdkdW1teQ-', 0],
+    ['_eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJkdW1teSJ9.c2lnZHVtbXlzaWdkdW1teQ_', '_[masked]', 1],
+    ['-eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJkdW1teSJ9.c2lnZHVtbXlzaWdkdW1teQ-', '-[masked]', 1],
   ])
 })
 
-describe('scrub shows the rest of a value after a quoted part, and the words after the first of a $(…) value', () => {
+describe('scrub masks the rest of a value glued after a quoted part and a whole $(…) value, and shows the words after a doubled quote', () => {
   rows([
-    ["DB_PASS='hun'ter2", "DB_PASS='[masked]'ter2", 1],
+    ["DB_PASS='hun'ter2", "DB_PASS='[masked]", 1],
     ["passphrase='correct'' horse9'", "passphrase='[masked]'' horse9'", 1],
-    ['PGPASSWORD=$(printf %s hunter2)', 'PGPASSWORD=[masked] %s hunter2)', 1],
+    ['PGPASSWORD=$(printf %s hunter2)', 'PGPASSWORD=[masked]', 1],
   ])
 })
 
-test('a tool named after a key shows the value passed as its command', () => {
-  expect(toolDetail('mcp__secrets__set_password', { command: 'abc123def456' }).text).toBe('mcp__secrets__set_password → abc123def456')
+test('a tool named after a key shows its name alone, not the value passed as its command', () => {
+  expect(toolDetail('mcp__secrets__set_password', { command: 'abc123def456' }).text).toBe('mcp__secrets__set_password')
+  expect(toolDetail('mcp__tokens__list', { command: 'all' }).text).toBe('mcp__tokens__list → all')
+  expect(toolDetail('mcp__vault__setPassword', { command: 'hunter2xyz' }).text).toBe('mcp__vault__setPassword')
+  expect(toolDetail('mcp__vault__XMLPassword', { command: 'hunter2xyz' }).text).toBe('mcp__vault__XMLPassword')
+  expect(toolDetail('mcp__vault__set\uff30assword', { command: 'hunter2xyz' }).text).toBe('mcp__vault__setPassword')
+  expect(toolDetail('mcp__vault__setPassword', { command: 'ls' }).text).toBe('mcp__vault__setPassword → ls')
+  expect(toolDetail('mcp__files__listAll', { command: 'hunter2xyz' }).text).toBe('mcp__files__listAll → hunter2xyz')
+  expect(subjectLine('mcp__vault__set_password', { command: 'hunter2xyz' }, 'ab12')).toEqual({ text: 'mcp__vault__set_password ab12', masked: 0 })
+  expect(subjectLine('mcp__vault__setPassword', { value_text: 'hunter2xyz' }, 'ab12').text).toBe('mcp__vault__setPassword ab12')
+  expect(subjectLine('mcp__tokens__list', { command: 'all' }, 'ab12').text).toBe('mcp__tokens__list ab12 → all')
 })
 
-describe('scrub leaves a PASS or PAT value that starts with a PEM armor word', () => {
+describe('scrub masks a PASS or PAT value that starts with a PEM armor word', () => {
   rows([
-    ['DB_PASS=-----BEGINhunter2!', 'DB_PASS=-----BEGINhunter2!', 0],
-    ['DB_PASS=-----ENDhunter2!', 'DB_PASS=-----ENDhunter2!', 0],
-    ['GH_PAT: -----BEGINabc', 'GH_PAT: -----BEGINabc', 0],
+    ['DB_PASS=-----BEGINhunter2!', 'DB_PASS=[masked]', 1],
+    ['DB_PASS=-----ENDhunter2!', 'DB_PASS=[masked]', 1],
+    ['GH_PAT: -----BEGINabc', 'GH_PAT: [masked]', 1],
   ])
 })
 
@@ -140,10 +149,10 @@ describe('scrub keeps an input [masked], and an input bullet only as a URL passw
   ])
 })
 
-describe('scrub keeps a private-use character inside a key name, which splits the key', () => {
+describe('scrub reads a private-use character inside a key name as nothing, and drops it', () => {
   rows([
-    ['pass\ue000word=hunter2', 'pass\ue000word=hunter2', 0],
-    ['pass\ue000\udf89word=hunter2', 'pass\ue000word=hunter2', 0],
+    ['pass\ue000word=hunter2', 'password=[masked]', 1],
+    ['pass\ue000\udf89word=hunter2', 'password=[masked]', 1],
   ])
 })
 
@@ -257,9 +266,25 @@ describe("an architect's advice", () => {
     expect(adviceLine('-----BEGIN PRIVATE KEY-----MIIEvQIBADANBgkqhkiG9w0BAQEFAASC-----END PRIVATE KEY-----').text).toBe('BEGIN PRIVATE KEY-----[masked]-----END PRIVATE KEY-----')
   })
 
-  test('keeps a value whose key sits on a skipped or earlier line, since each line is masked on its own', () => {
-    expect(adviceLine('[x] password:\nhunter2 rotate it').text).toBe('hunter2 rotate it')
-    expect(adviceLine("[architect] PGPASSWORD='Vckb\nf2lyk'").text).toBe("f2lyk'")
+  test('masks the head of a line that a value the line before, skipped or not, left open runs into', () => {
+    expect(adviceLine('[x] password:\nhunter2 rotate it')).toEqual({ text: '[masked] rotate it', masked: 1 })
+    expect(adviceLine("[architect] PGPASSWORD='Vckb\nf2lyk'")).toEqual({ text: '[masked]', masked: 1 })
+    expect(adviceLine('[x] password:\n- hunter2xyz')).toEqual({ text: '[masked]', masked: 1 })
+    expect(adviceLine('[x] password: "\ncorrect horse battery staple"')).toEqual({ text: '[masked]', masked: 1 })
+    expect(adviceLine('<b>password:</b>\n> hunter2xyz')).toEqual({ text: '[masked]', masked: 1 })
+    expect(adviceLine('[x] password:\nhunter2xyz and more words')).toEqual({ text: '[masked] and more words', masked: 1 })
+    expect(adviceLine('## Plan\nShip it').text).toBe('Plan')
+    expect(adviceLine('[x] done\nShip it')).toEqual({ text: 'Ship it', masked: 0 })
+    expect(adviceLine('<b>password</b>\n<br>\nhunter2xyz is it')).toEqual({ text: '[masked] is it', masked: 1 })
+    expect(adviceLine('[password]:\n[1]\nhunter2xyz is it')).toEqual({ text: '[masked] is it', masked: 1 })
+    expect(adviceLine('<summary>\n\u2026then ship it')).toEqual({ text: '\u2026then ship it', masked: 0 })
+    expect(adviceLine('[1]\n\u2026and done')).toEqual({ text: '\u2026and done', masked: 0 })
+  })
+
+  test('keeps a line after a key that opens with one advice verb and more words, a password such a verb spells included', () => {
+    expect(adviceLine('[note] password:\nRun the full suite')).toEqual({ text: 'Run the full suite', masked: 0 })
+    expect(adviceLine('[note] password:\nship it now')).toEqual({ text: 'ship it now', masked: 0 })
+    expect(adviceLine('[note] password:\nRun.')).toEqual({ text: '[masked]', masked: 1 })
   })
 
   test('skips a line that is only marks', async ($, on) => {
@@ -283,11 +308,11 @@ describe("an architect's advice", () => {
     expect(adviceLine('>-eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJkdW1teSJ9.c2lnZHVtbXlzaWdkdW1teQ is the session cookie').text).toBe('[masked] is the session cookie')
   })
 
-  test('keeps a bold label that is not a key word, a key in single-underscore emphasis, a bold flag and a JWT after an underscore', () => {
+  test('keeps a bold label that is not a key word, and masks a key in single-underscore emphasis, a bold flag and a JWT after an underscore', () => {
     expect(adviceLine('**Credentials**: admin:hunter2xyz').text).toBe('Credentials: admin:hunter2xyz')
-    expect(adviceLine('_Password_: hunter2xyz').text).toBe('_Password_: hunter2xyz')
-    expect(adviceLine('**--token** abc123def456').text).toBe('token abc123def456')
-    expect(adviceLine('_eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJkdW1teSJ9.c2lnZHVtbXlzaWdkdW1teQ_ is the session cookie').text).toBe('_eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJkdW1teSJ9.c2lnZHVtbXlzaWdkdW1teQ_ is the session cookie')
+    expect(adviceLine('_Password_: hunter2xyz').text).toBe('_Password_: [masked]')
+    expect(adviceLine('**--token** abc123def456').text).toBe('token [masked]')
+    expect(adviceLine('_eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJkdW1teSJ9.c2lnZHVtbXlzaWdkdW1teQ_ is the session cookie').text).toBe('_[masked] is the session cookie')
     expect(adviceLine('-eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJkdW1teSJ9.c2lnZHVtbXlzaWdkdW1teQ- is the session cookie').text).toBe('[masked] is the session cookie')
   })
 
