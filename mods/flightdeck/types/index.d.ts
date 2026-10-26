@@ -34,7 +34,7 @@ export type Usage = {
 
 export type Consult = { id: string; at: number; endAt: number | null; moment: Moment; via: SafeText }
 
-export type Architect = { consults: Consult[]; ids: string[]; seen: string[]; lastAdvice: SafeText }
+export type Architect = { consults: Consult[]; ids: string[]; lastAdvice: SafeText }
 
 export type CheckBase = {
   /** The call's tool_use_id; a refusal's id is its call's. */

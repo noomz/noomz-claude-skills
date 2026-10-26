@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, TurnStepServerToolUse } from 'claude-code'
 
 import type { AgentCard, Architect, Bucket, Check, Gate, Layout, LogLine, Loop, Main, Refuser, Roster, Turn, Usage, View } from '../types'
 import { scrub } from './hygiene'
@@ -101,8 +101,6 @@ const view = atom({ plugin: 'flightdeck', key: 'view' } as const, DEFAULT_VIEW)
 const roster = atom({ plugin: 'flightdeck', key: 'roster' } as const, DEFAULT_ROSTER)
 const hygiene = atom({ plugin: 'flightdeck', key: 'hygiene' } as const, DEFAULT_HYGIENE)
 
-type ServerBlock = { type: string; id?: string; name?: string; tool_use_id?: string }
-
 // Every read goes through these, so a value saved under an older shape still reads.
 async function getMain($: EngineInterface): Promise<Main> {
   return normalize(DEFAULT_MAIN, await read($, main))
@@ -112,7 +110,7 @@ async function getUsage($: EngineInterface): Promise<Usage> {
 }
 async function getArchitect($: EngineInterface): Promise<Architect> {
   const a = normalize(DEFAULT_ARCHITECT, await read($, architect))
-  return { ...a, consults: listOf(a.consults), ids: listOf(a.ids), seen: listOf(a.seen) }
+  return { ...a, consults: listOf(a.consults), ids: listOf(a.ids) }
 }
 async function getGate($: EngineInterface): Promise<Gate> {
   return normalizeGate(await read($, gate))
@@ -195,20 +193,20 @@ async function whoIs($: EngineInterface, agentId: string | undefined) {
   return card ? shorten(cardTitle(card), 14) : 'agent'
 }
 
-async function consultStarted($: EngineInterface, cfg: Config, id: string, found: Scrubbed) {
+async function consultStarted($: EngineInterface, cfg: Config, id: string, found: Scrubbed, startedAt?: number) {
   await tally($, found)
   const via = found.text
   const t = await getTurn($)
   const moment = momentOf(t)
-  const at = await $.clock.now()
+  const at = startedAt ?? (await $.clock.now())
   await update($, architect, a => startConsult(normalize(DEFAULT_ARCHITECT, a), { id, at, moment, via }))
   if (moment === 'before done') await update($, turn, x => ({ ...normalize(DEFAULT_TURN, x), isReviewing: true }))
   await say($, cfg.architectLabel.toLowerCase(), cfg.moments ? `${moment} · ${via}` : `consulted · ${via}`, 'consult')
   await refreshStatus($, cfg)
 }
 
-async function consultEnded($: EngineInterface, cfg: Config, advice: string | null, id?: string) {
-  const at = await $.clock.now()
+async function consultEnded($: EngineInterface, cfg: Config, advice: string | null, id?: string, endedAt?: number) {
+  const at = endedAt ?? (await $.clock.now())
   const line = advice ? adviceLine(advice) : null
   if (line) await tally($, line)
   const text = line?.text || null
@@ -216,6 +214,14 @@ async function consultEnded($: EngineInterface, cfg: Config, advice: string | nu
   await update($, turn, t => ({ ...normalize(DEFAULT_TURN, t), isReviewing: false }))
   await say($, cfg.architectLabel.toLowerCase(), text ? `advice: ${shorten(text, 60)}` : 'advice returned', 'consult')
   await refreshStatus($, cfg)
+}
+
+async function noteServerConsults($: EngineInterface, cfg: Config, uses: readonly TurnStepServerToolUse[]) {
+  for (const use of uses) {
+    if (!cfg.architect.test(use.name)) continue
+    await consultStarted($, cfg, use.id, kept(`${use.name} tool`, CAP.name), use.startedAt)
+    if (use.endedAt !== undefined) await consultEnded($, cfg, null, use.id, use.endedAt)
+  }
 }
 
 async function noteAdvice($: EngineInterface, cfg: Config, report: string) {
@@ -267,6 +273,13 @@ async function costNow($: EngineInterface): Promise<number | null> {
 async function noteMode($: EngineInterface, mode: string | undefined) {
   if (mode) await update($, main, m => (normalize(DEFAULT_MAIN, m).mode === mode ? normalize(DEFAULT_MAIN, m) : { ...normalize(DEFAULT_MAIN, m), mode }))
 }
+
+// The exit row does not name the mode that follows, so it reads as unknown until the next spawn reports one.
+async function leavePlan($: EngineInterface) {
+  await update($, main, m => (normalize(DEFAULT_MAIN, m).mode === 'plan' ? { ...normalize(DEFAULT_MAIN, m), mode: '' } : normalize(DEFAULT_MAIN, m)))
+}
+
+const PLAN_ROWS = new Set(['plan_mode', 'plan_mode_reentry'])
 
 async function forgetSession($: EngineInterface, memory: GrantMemory) {
   memory.reset()
@@ -437,9 +450,16 @@ export const register: Register = (on, options) => {
   })
 
   const sources = promptSources()
-  on('classic.UserPromptSubmit', async ($, e, next) => {
-    await noteMode($, e.permission_mode)
-    sources.submit(e.prompt, e.source)
+  // Not classic.UserPromptSubmit: a seated cc-plugin-sec-default skips user plugins on every classic event.
+  on('prompt.submit', async ($, e, next) => {
+    sources.submit(e.text, e.origin?.kind)
+    return next(e)
+  })
+
+  // Plan mode adds a row to every main-loop request while it is on, and one exit row when it ends.
+  on('prompt.attachment', async ($, e, next) => {
+    if (!e.agentId && PLAN_ROWS.has(e.type)) await noteMode($, 'plan')
+    else if (!e.agentId && e.type === 'plan_mode_exit') await leavePlan($)
     return next(e)
   })
 
@@ -496,6 +516,9 @@ export const register: Register = (on, options) => {
         yield c
       }
       const result = await s.result
+      // A server-side review tool never reaches tool.call: the step's result lists it, with its own times.
+      // Like the speed below, a consult is a pane reading and must not fail the request.
+      await noteServerConsults($, cfg, result.serverToolUses ?? []).catch(() => undefined)
       const speed = result.usage && stopAt !== null ? stepSpeed(sentAt, firstAt, stopAt, result.usage.output_tokens) : null
       // The speed is a pane reading: failing to keep it must not fail the request.
       if (speed) await update($, main, m => ({ ...normalize(DEFAULT_MAIN, m), speed })).catch(() => undefined)
@@ -611,32 +634,6 @@ export const register: Register = (on, options) => {
     else if (isEdit) await say($, await whoIs($, e.agentId), text, 'info', e.agentId ?? null)
     if (isSettled || !didRun) await refreshStatus($, cfg)
     return ran
-  })
-
-  // A server-side review tool never reaches tool.call: it shows only in the assistant's rows.
-  on('session.append', async ($, e, next) => {
-    if (!e.agentId && e.message.type === 'assistant') {
-      const a = await getArchitect($)
-      // Consults this row opened: their result may be in the same row, after the stale read above.
-      const opened = new Set<string>()
-      for (const block of e.message.content as unknown as readonly ServerBlock[]) {
-        if (block.type === 'server_tool_use' && block.name && block.id && cfg.architect.test(block.name)) {
-          if (a.seen.includes(block.id)) continue
-          const id = block.id
-          await update($, architect, x => {
-            const y = normalize(DEFAULT_ARCHITECT, x)
-            return { ...y, seen: [...listOf<string>(y.seen), id].slice(-60) }
-          })
-          opened.add(id)
-          await consultStarted($, cfg, id, kept(`${block.name} tool`, CAP.name))
-        } else if (block.type.endsWith('_tool_result') && block.tool_use_id) {
-          const id = block.tool_use_id
-          const isOpen = opened.has(id) || (await getArchitect($)).consults.some(c => c.id === id && c.endAt === null)
-          if (isOpen) await consultEnded($, cfg, null, id)
-        }
-      }
-    }
-    return next(e)
   })
 
   on('agent.spawn', async ($, e, next) => {
@@ -808,7 +805,7 @@ export const register: Register = (on, options) => {
           <Text color={C.main} bold>
             {m.effort || '—'}
           </Text>
-          {m.mode ? <Text dimColor>{`   mode ${m.mode}`}</Text> : null}
+          {m.mode ? <Text dimColor>{`   mode ${m.mode} (last seen)`}</Text> : null}
           <Text dimColor>{`   ${m.steps} req`}</Text>
         </Text>
         {ctxGauge ? (

@@ -298,13 +298,15 @@ test('layout math: lanes share one axis, the log gets 4-8 rows, the legend never
   expect(prettyModel('claude-3-opus-20240229')).toBe('Opus 3')
   expect(prettyModel('z-ai/glm-5.3-flash-with-a-long-name')).toBe('z-ai/glm-5.3-flash-wi…')
   expect(prettyModel('')).toBe('—')
-  expect(promptLine('fix the parser', 'user')).toEqual({ who: 'you', text: 'new turn · 14 chars' })
+  expect(promptLine('fix the parser', 'composer')).toEqual({ who: 'you', text: 'new turn · 14 chars' })
   expect(promptLine('fix the parser', undefined)).toEqual({ who: 'you', text: 'new turn · 14 chars' })
-  expect(promptLine('<instructions> rotate the creds </instructions>', 'user')).toEqual({ who: 'you', text: 'new turn · 47 chars' })
+  expect(promptLine('<instructions> rotate the creds </instructions>', 'bridge')).toEqual({ who: 'you', text: 'new turn · 47 chars' })
   expect(promptLine('<note> db creds from="hunter2pw" ok', 'sdk')).toEqual({ who: 'you', text: 'new turn · 35 chars' })
-  expect(promptLine('<task-notification from="ab12">password=hunter2</task-notification>', 'system')).toEqual({ who: 'engine', text: 'message delivered' })
-  expect(promptLine('anything', 'loop_wakeup')).toEqual({ who: 'engine', text: 'loop wakeup' })
-  expect(promptLine('anything', 'schedule_wakeup')).toEqual({ who: 'engine', text: 'scheduled task' })
+  expect(promptLine('<task-notification from="ab12">password=hunter2</task-notification>', 'task-notification')).toEqual({ who: 'engine', text: 'message delivered' })
+  expect(promptLine('anything', 'peer-send-message')).toEqual({ who: 'engine', text: 'message delivered' })
+  expect(promptLine('anything', 'scheduled-trigger')).toEqual({ who: 'engine', text: 'scheduled task' })
+  expect(promptLine('anything', 'plugin')).toEqual({ who: 'you', text: 'new turn · 8 chars' })
+  expect(promptLine('anything', 'unclassified')).toEqual({ who: 'you', text: 'new turn · 8 chars' })
   expect(promptLine('anything', 'future_source')).toEqual({ who: 'you', text: 'new turn · 8 chars' })
   const hb = '<agent-message from="a1940a83d593229d5">\n[Subagent hand-back] The text below is the final report. The report follows:\n  Add gate tests: redaction edge cases.\n  - more\n</agent-message>'
   expect(handbackOf(hb)).toEqual({ from: 'a1940a83d593229d5', body: 'Add gate tests: redaction edge cases.' })
@@ -383,6 +385,33 @@ const spawn = (subagentType: string, description: string) => ({
   parentModel: 'claude-opus-5-5',
   background: true,
   fork: false,
+})
+
+test("the main box shows the mode a main-loop spawn reported, and says when it was read", async ($, on) => {
+  engine(on)
+  on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: 'm1' }))
+  await $.agent.spawn({ ...spawn('Explore', 'map it'), permissionMode: 'acceptEdits' })
+  await $.agent.spawn({ ...spawn('Explore', 'nested'), permissionMode: 'plan', parentAgentId: 'm1' })
+  const ui = await $.ui.mount({ ...pane(120), surface: 'terminal' })
+  expect(await ui.find({ text: /mode acceptEdits \(last seen\)/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a main-loop plan-mode row shows plan mode, its exit row clears it, and a subagent row changes nothing', async ($, on) => {
+  engine(on)
+  const values = stateStoreWithoutRedraw(on)
+  on('prompt.attachment', (_$, e) => ({ text: e.text }))
+  const mode = () => (flightdeck(values).main as { mode?: string } | undefined)?.mode
+  const row = (type: 'plan_mode' | 'plan_mode_exit', agentId?: string) =>
+    $.prompt.attachment({ type, text: 'x', origin: { kind: 'engine' }, agentId, detail: { reminder: 'full', planFilePath: '/p.md', hasPlan: false } } as never)
+  await row('plan_mode', 'sub1')
+  expect(mode() ?? '').toBe('')
+  await row('plan_mode')
+  expect(mode()).toBe('plan')
+  await row('plan_mode_exit', 'sub1')
+  expect(mode()).toBe('plan')
+  await row('plan_mode_exit')
+  expect(mode()).toBe('')
 })
 
 test('a fresh session draws on every surface and width, empty panels hidden', async ($, on) => {
@@ -563,29 +592,34 @@ test('subagents become cards, then swimlanes past the card limit; a card expands
   }
 })
 
-test('the server-side advisor is read from assistant rows: consulting, then on call', async ($, on) => {
-  engine(on)
-  await $.turn.start({ text: 'plan it', turnId: 'T2' })
-  const row = (content: unknown[]) =>
-    $.session
-      .append({
-        message: { type: 'assistant', role: 'assistant', content: content as never },
-        door: 'response',
-        origin: { kind: 'model', model: 'claude-opus-5-5' } as never,
-        uuid: `u${++spawnN}`,
-      })
-      .catch(() => undefined) // the test has no transcript to store rows in
-  await row([{ type: 'server_tool_use', id: 'srv1', name: 'advisor', input: {} }])
-  const mid = await $.ui.mount({ ...pane(64), surface: 'terminal' })
-  expect(await mid.find({ text: /ARCHITECT · advising/ })).toBeDefined()
-  expect(await mid.find({ text: /◆ before a plan/ })).toBeDefined()
-  await mid.unmount()
+// The model beneath answers each main-loop step with these server-side tool calls in its result.
+const serverUses = (on: On, uses: unknown[]) =>
+  on('turn.step', async function* (_$, e) {
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], serverToolUses: uses, stopReason: 'end_turn', usage: null } as never
+  })
+const mainStep = async ($: Engine, turnId: string) => {
+  for await (const _ of $.turn.step({ turnId, index: 0, model: 'claude-opus-5-5', messageCount: 1 })) void _
+}
 
-  await row([{ type: 'advisor_tool_result', tool_use_id: 'srv1', content: { type: 'advisor_redacted_result' } }])
-  const after = await $.ui.mount({ ...pane(64), surface: 'terminal' })
-  expect(await after.find({ text: /ARCHITECT · on call/ })).toBeDefined()
-  expect(await after.find({ text: /^1$/ })).toBeDefined()
-  await after.unmount()
+test('a server-side advisor whose result never arrived is read from the step result as still advising', async ($, on) => {
+  engine(on)
+  serverUses(on, [{ id: 'srv1', name: 'advisor', input: {}, startedAt: 0 }])
+  await $.turn.start({ text: 'plan it', turnId: 'T2' })
+  await mainStep($, 'T2')
+  const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  expect(await ui.find({ text: /ARCHITECT · advising/ })).toBeDefined()
+  expect(await ui.find({ text: /◆ before a plan/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a server tool the architect pattern does not match is no consult', async ($, on) => {
+  engine(on)
+  serverUses(on, [{ id: 'srv5', name: 'web_search', input: {}, startedAt: 0, endedAt: 0 }])
+  await $.turn.start({ text: 'look it up', turnId: 'T5' })
+  await mainStep($, 'T5')
+  const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  expect(await ui.find({ text: /ARCHITECT/ })).toBeUndefined()
+  await ui.unmount()
 })
 
 test('the gate strip fills from checks and a row opens its drill-down, which names the program alone', async ($, on) => {
@@ -615,27 +649,14 @@ test('config changes labels, hides panels and turns the moments off', { options:
   await ui.unmount()
 })
 
-test('a consult whose start and result share one row closes, and its review flag with it', async ($, on) => {
+test('a consult whose result came in the same step closes, and its review flag with it', async ($, on) => {
   engine(on)
   on('tool.call', () => ({ result: {}, text: 'ok' }))
+  serverUses(on, [{ id: 'srv9', name: 'advisor', input: {}, startedAt: 0, endedAt: 0 }])
   await $.turn.start({ text: 'go', turnId: 'T4' })
   // An edit first, so the consult is inferred as "before done" and sets the review flag.
   await $.tool.call({ tool: 'Edit', file_path: '/x.ts', old_string: 'a', new_string: 'b' } as never)
-  await $.session
-    .append({
-      message: {
-        type: 'assistant',
-        role: 'assistant',
-        content: [
-          { type: 'server_tool_use', id: 'srv9', name: 'advisor', input: {} },
-          { type: 'advisor_tool_result', tool_use_id: 'srv9', content: { type: 'advisor_redacted_result' } },
-        ] as never,
-      },
-      door: 'response',
-      origin: { kind: 'model', model: 'claude-opus-5-5' } as never,
-      uuid: 'one-row',
-    })
-    .catch(() => undefined)
+  await mainStep($, 'T4')
   const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
   expect(await ui.find({ text: /ARCHITECT · on call/ })).toBeDefined()
   expect(await ui.find({ text: /◆ before done/ })).toBeDefined()
@@ -690,12 +711,12 @@ const handback = '<agent-message from="fab1">\n[Subagent hand-back] The report f
 
 test("a background architect's advice is read from its hand-back", async ($, on) => {
   engine(on)
-  on('classic.UserPromptSubmit', () => ({}))
+  on('prompt.submit', (_$, e) => ({ text: e.text }))
   on('agent.spawn', () => ({ model: 'claude-fable-5-1', agentId: 'fab1' }))
   await $.turn.start({ text: 'review it', turnId: 'H1' })
   await $.agent.spawn(spawn('fable-advisor:fable-advisor', 'final review'))
   await $.turn.complete({ answer: '', durationMs: 10, isAborted: false, turnId: 'H1', agentId: 'fab1', reason: 'answer' })
-  await $.classic.UserPromptSubmit({ prompt: handback, source: 'system' })
+  await $.prompt.submit({ text: handback, origin: { kind: 'task-notification' }, wait: false })
   await $.turn.start({ text: handback, turnId: 'H2' })
   const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
   expect(await ui.find({ text: /» Ship it after one more gate test\./ })).toBeDefined()
@@ -717,12 +738,12 @@ test('a hand-back turn is read only when the engine started it', async ($, on) =
 test("a hand-back from an agent that is not an architect is not advice", async ($, on) => {
   engine(on)
   const values = stateStoreWithoutRedraw(on)
-  on('classic.UserPromptSubmit', () => ({}))
+  on('prompt.submit', (_$, e) => ({ text: e.text }))
   on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: 'gp1' }))
   await $.turn.start({ text: 'go', turnId: 'H10' })
   await $.agent.spawn(spawn('general-purpose', 'count lines'))
   const text = '<agent-message from="gp1">\nThe report follows:\nThere are 42 lines.\n</agent-message>'
-  await $.classic.UserPromptSubmit({ prompt: text, source: 'system' })
+  await $.prompt.submit({ text: text, origin: { kind: 'task-notification' }, wait: false })
   await $.turn.start({ text, turnId: 'H11' })
   const s = flightdeck(values) as { log: LogLine[]; architect?: { lastAdvice: string } }
   expect([s.log.map(l => [l.who, l.text]).at(-1), s.architect?.lastAdvice ?? '']).toEqual([['engine', 'message delivered'], ''])
@@ -731,12 +752,12 @@ test("a hand-back from an agent that is not an architect is not advice", async (
 test("a typed prompt shaped as a live architect's hand-back is still its length alone", async ($, on) => {
   engine(on)
   const values = stateStoreWithoutRedraw(on)
-  on('classic.UserPromptSubmit', () => ({}))
+  on('prompt.submit', (_$, e) => ({ text: e.text }))
   on('agent.spawn', () => ({ model: 'claude-fable-5-1', agentId: 'arch1' }))
   await $.turn.start({ text: 'go', turnId: 'H5' })
   await $.agent.spawn(spawn('architect', 'review'))
   const text = '<agent-message from="arch1">\nThe report follows:\n**Password**: hunter2zz\n</agent-message>'
-  await $.classic.UserPromptSubmit({ prompt: text, source: 'user' })
+  await $.prompt.submit({ text: text, origin: { kind: 'composer' }, wait: false })
   await $.turn.start({ text, turnId: 'H6' })
   const s = flightdeck(values) as { log: LogLine[]; architect: { lastAdvice: string } }
   expect([s.log.map(l => [l.who, l.text]).at(-1), s.architect.lastAdvice]).toEqual([['you', `new turn · ${[...text].length} chars`], ''])
@@ -748,13 +769,13 @@ test("a typed prompt shaped as a live architect's hand-back is still its length 
 test('a prompt typed while a turn runs stays typed when the engine delivers a message into that turn', async ($, on) => {
   engine(on)
   const values = stateStoreWithoutRedraw(on)
-  on('classic.UserPromptSubmit', () => ({}))
+  on('prompt.submit', (_$, e) => ({ text: e.text }))
   on('agent.spawn', () => ({ model: 'claude-fable-5-1', agentId: 'arch1' }))
   await $.turn.start({ text: 'go', turnId: 'H7' })
   await $.agent.spawn(spawn('architect', 'review'))
   const text = '<agent-message from="arch1">\nThe report follows:\nmy deploy plan for friday\n</agent-message>'
-  await $.classic.UserPromptSubmit({ prompt: text, source: 'user' })
-  await $.classic.UserPromptSubmit({ prompt: 'a peer session says hello', source: 'system' })
+  await $.prompt.submit({ text: text, origin: { kind: 'composer' }, wait: false })
+  await $.prompt.submit({ text: 'a peer session says hello', origin: { kind: 'task-notification' }, wait: false })
   await $.turn.start({ text, turnId: 'H8' })
   const s = flightdeck(values) as { log: LogLine[]; architect: { lastAdvice: string } }
   expect([s.log.map(l => [l.who, l.text]).at(-1), s.architect.lastAdvice]).toEqual([['you', `new turn · ${[...text].length} chars`], ''])
@@ -763,9 +784,9 @@ test('a prompt typed while a turn runs stays typed when the engine delivers a me
 test('a prompt submitted from two sources with the same text is typed', async ($, on) => {
   engine(on)
   const values = stateStoreWithoutRedraw(on)
-  on('classic.UserPromptSubmit', () => ({}))
-  await $.classic.UserPromptSubmit({ prompt: 'same words', source: 'user' })
-  await $.classic.UserPromptSubmit({ prompt: 'same words', source: 'system' })
+  on('prompt.submit', (_$, e) => ({ text: e.text }))
+  await $.prompt.submit({ text: 'same words', origin: { kind: 'composer' }, wait: false })
+  await $.prompt.submit({ text: 'same words', origin: { kind: 'task-notification' }, wait: false })
   await $.turn.start({ text: 'same words', turnId: 'H9' })
   expect((flightdeck(values).log as LogLine[]).map(l => [l.who, l.text])).toEqual([['you', 'new turn · 10 chars']])
 })
@@ -773,7 +794,7 @@ test('a prompt submitted from two sources with the same text is typed', async ($
 const architectAt = async ($: Engine, on: On) => {
   engine(on)
   const values = stateStoreWithoutRedraw(on)
-  on('classic.UserPromptSubmit', () => ({}))
+  on('prompt.submit', (_$, e) => ({ text: e.text }))
   on('agent.spawn', () => ({ model: 'claude-fable-5-1', agentId: 'arch1' }))
   await $.turn.start({ text: 'go', turnId: 'A0' })
   await $.agent.spawn(spawn('architect', 'review'))
@@ -784,9 +805,9 @@ const archReport = (body: string) => `<agent-message from="arch1">\nThe report f
 test('a prompt once typed stays typed after 32 other submits and an engine delivery of the same text', async ($, on) => {
   const now = await architectAt($, on)
   const text = archReport('my typed words for friday')
-  await $.classic.UserPromptSubmit({ prompt: text, source: 'user' })
-  for (let i = 0; i < 32; i++) await $.classic.UserPromptSubmit({ prompt: `peer ${i}`, source: 'system' })
-  await $.classic.UserPromptSubmit({ prompt: text, source: 'system' })
+  await $.prompt.submit({ text: text, origin: { kind: 'composer' }, wait: false })
+  for (let i = 0; i < 32; i++) await $.prompt.submit({ text: `peer ${i}`, origin: { kind: 'task-notification' }, wait: false })
+  await $.prompt.submit({ text: text, origin: { kind: 'task-notification' }, wait: false })
   await $.turn.start({ text, turnId: 'A1' })
   expect([now().log.map(l => [l.who, l.text]).at(-1), now().architect.lastAdvice]).toEqual([['you', `new turn · ${[...text].length} chars`], ''])
 })
@@ -794,7 +815,7 @@ test('a prompt once typed stays typed after 32 other submits and an engine deliv
 test("an engine delivery's source is read by the one turn it starts", async ($, on) => {
   const now = await architectAt($, on)
   const text = archReport('ship it')
-  await $.classic.UserPromptSubmit({ prompt: text, source: 'system' })
+  await $.prompt.submit({ text: text, origin: { kind: 'task-notification' }, wait: false })
   await $.turn.start({ text, turnId: 'A1' })
   await $.turn.start({ text, turnId: 'A2' })
   expect(now().log.slice(-2).map(l => l.who)).toEqual(['architect', 'you'])
@@ -804,20 +825,20 @@ test('the source map remembers the last 32 engine deliveries', async ($, on) => 
   const now = await architectAt($, on)
   const kept = archReport('kept advice')
   const dropped = archReport('dropped advice')
-  await $.classic.UserPromptSubmit({ prompt: kept, source: 'system' })
-  for (let i = 0; i < 31; i++) await $.classic.UserPromptSubmit({ prompt: `peer ${i}`, source: 'system' })
+  await $.prompt.submit({ text: kept, origin: { kind: 'task-notification' }, wait: false })
+  for (let i = 0; i < 31; i++) await $.prompt.submit({ text: `peer ${i}`, origin: { kind: 'task-notification' }, wait: false })
   await $.turn.start({ text: kept, turnId: 'A1' })
-  await $.classic.UserPromptSubmit({ prompt: dropped, source: 'system' })
-  for (let i = 0; i < 32; i++) await $.classic.UserPromptSubmit({ prompt: `more ${i}`, source: 'system' })
+  await $.prompt.submit({ text: dropped, origin: { kind: 'task-notification' }, wait: false })
+  for (let i = 0; i < 32; i++) await $.prompt.submit({ text: `more ${i}`, origin: { kind: 'task-notification' }, wait: false })
   await $.turn.start({ text: dropped, turnId: 'A2' })
   expect(now().log.slice(-2).map(l => l.who)).toEqual(['architect', 'you'])
 })
 
 test('once 4096 typed texts fill its memory, every later turn reads as typed', async ($, on) => {
   const now = await architectAt($, on)
-  for (let i = 0; i < 4097; i++) await $.classic.UserPromptSubmit({ prompt: `typed ${i}`, source: 'user' })
+  for (let i = 0; i < 4097; i++) await $.prompt.submit({ text: `typed ${i}`, origin: { kind: 'composer' }, wait: false })
   const text = archReport('late advice')
-  await $.classic.UserPromptSubmit({ prompt: text, source: 'system' })
+  await $.prompt.submit({ text: text, origin: { kind: 'task-notification' }, wait: false })
   await $.turn.start({ text, turnId: 'A1' })
   expect(now().log.at(-1)?.who).toBe('you')
 })
@@ -835,9 +856,9 @@ test('a typed prompt shows in the log as its length alone', async ($, on) => {
 test('a typed prompt that opens with a tag, or holds from="…", is still its length alone', async ($, on) => {
   engine(on)
   const values = stateStoreWithoutRedraw(on)
-  on('classic.UserPromptSubmit', () => ({}))
+  on('prompt.submit', (_$, e) => ({ text: e.text }))
   const text = '<instructions> db creds from="hunter2pw" ok </instructions>'
-  await $.classic.UserPromptSubmit({ prompt: text, source: 'user' })
+  await $.prompt.submit({ text: text, origin: { kind: 'composer' }, wait: false })
   await $.turn.start({ text, turnId: 'P2' })
   expect((flightdeck(values).log as LogLine[]).map(l => [l.who, l.text])).toEqual([['you', 'new turn · 59 chars']])
   const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
@@ -848,9 +869,9 @@ test('a typed prompt that opens with a tag, or holds from="…", is still its le
 test('a turn the engine started is logged as a fixed label for its source, never its text', async ($, on) => {
   engine(on)
   const values = stateStoreWithoutRedraw(on)
-  on('classic.UserPromptSubmit', () => ({}))
+  on('prompt.submit', (_$, e) => ({ text: e.text }))
   const text = '<task-notification from="ab12cd">password=hunter2 done</task-notification>'
-  await $.classic.UserPromptSubmit({ prompt: text, source: 'system' })
+  await $.prompt.submit({ text: text, origin: { kind: 'task-notification' }, wait: false })
   await $.turn.start({ text, turnId: 'P3' })
   await $.turn.start({ text: 'then this one is typed', turnId: 'P4' })
   expect((flightdeck(values).log as LogLine[]).map(l => [l.who, l.text])).toEqual([
@@ -902,7 +923,7 @@ for (const [path, fire] of [
     'its hand-back turn',
     async ($: Engine) => {
       const text = '<agent-message from="arc1">\nThe report follows:\nRotate ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA first\n</agent-message>'
-      await $.classic.UserPromptSubmit({ prompt: text, source: 'system' })
+      await $.prompt.submit({ text: text, origin: { kind: 'task-notification' }, wait: false })
       return $.turn.start({ text, turnId: 'A3' })
     },
   ],
@@ -912,7 +933,7 @@ for (const [path, fire] of [
     engine(on)
     on('agent.spawn', () => ({ model: 'claude-fable-5-1', agentId: 'arc1' }))
     on('tool.call', () => ({ result: {}, text: 'ok' }) as never)
-    on('classic.UserPromptSubmit', () => ({}))
+    on('prompt.submit', (_$, e) => ({ text: e.text }))
     await $.turn.start({ text: 'review it', turnId: 'A1' })
     await $.agent.spawn(spawn('architect', 'final review'))
     await fire($)
