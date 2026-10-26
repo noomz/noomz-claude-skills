@@ -360,6 +360,7 @@ describe('scrub misses what the README lists as not caught', () => {
     'The **password** is x',
     'the password for the very old shared staging admin account is hunter2',
     '**Credentials**: admin:hunter2xyz',
+    '| k | description | |---|---| | password | letmein please now |',
   ]) {
     test(input, () => expect(scrub(input, 200)).toEqual({ text: input.normalize('NFKC'), masked: 0 }))
   }
@@ -489,6 +490,45 @@ describe('scrub still leaves the ordinary text near the new rules alone', () => 
       expect(scrub(`password ${emoji} ok`, 200)).toEqual({ text: `password ${emoji.replace(/[\u200d\ufe0f]/gu, '')} ok`, masked: 0 })
     }
   })
+})
+
+describe('scrub reads a table cell against its own table', () => {
+  const cases: [input: string, text: string, masked: number][] = [
+    ['| Name | Value |\n|---|---|\n| password | correct horse battery staple |', '| Name | Value | |---|---| | password | [masked] |', 1],
+    ['| Name | Value |\n|---|---|\n| password | correct horse battery staple |\n\n| x | y |\n|---|---|', '| Name | Value | |---|---| | password | [masked] | | x | y | |---|---|', 1],
+    ['| field | description |\n|---|---|\n| password | The user login password |', '| field | description | |---|---| | password | The user login password |', 0],
+    ['| field | description |\n|---|---|\n| password | use hunter2! here |', '| field | description | |---|---| | password | [masked] |', 1],
+    ['| Key | Value | Notes |\n|---|---|---|\n| password | correct horse battery | rotate it monthly |', '| Key | Value | Notes | |---|---|---| | password | [masked] | rotate it monthly |', 1],
+    ['intro | password | correct horse battery staple | then |---|', 'intro | password | [masked] | then |---|', 1],
+    ['| field | notes | value |\n|---|---|---|\n| a | b |\n| x | password | correct horse battery staple |', '| field | notes | value | |---|---|---| | a | b | | x | password | [masked] |', 1],
+    ['| field | value | notes |\n|---|---|---|\n| a \\| b | c | d |\n| password | correct horse battery staple | n |', '| field | value | notes | |---|---|---| | a \\| b | c | d | | password | [masked] | n |', 1],
+    ['| field | value | notes |\n|---|---|---|\n| `a|b` | c | d |\n| password | correct horse battery staple | n |', '| field | value | notes | |---|---|---| | `a|b` | c | d | | password | [masked] | n |', 1],
+    ['| field | value | description |\n|---|---|---|\n| one | two | three | four |\n| x | y | z |\n| password | correct horse battery staple | n |', '| field | value | description | |---|---|---| | one | two | three | four | | x | y | z | | password | [masked] | n |', 1],
+    ['| field | notes | value |\n|---|---|---|\nx | password | correct horse battery staple |', '| field | notes | value | |---|---|---| x | password | [masked] |', 1],
+    ['| field | notes | value |\n|---|---|---|\nx | password | correct horse battery staple', '| field | notes | value | |---|---|---| x | password | [masked]', 1],
+    ['| field | description | value |\n|---|---|---|\nfoo | password | correct horse battery staple |\n| y | z | w |', '| field | description | value | |---|---|---| foo | password | [masked] | | y | z | w |', 1],
+    ['| API key | Where to find it |\n|---|---|\n| token | per request |', '| API key | Where to find it | |---|---| | token | [masked] |', 1],
+  ]
+  for (const [input, text, masked] of cases) test(JSON.stringify(input), () => expect(scrub(input, 400)).toEqual({ text, masked }))
+})
+
+describe('scrub reads a size or a version after a loose token, secret or pwd as written', () => {
+  for (const input of ['Raise the token 128k limit', 'token 8k', 'set secret v2 now', 'token 4KB', 'token 1.5M', 'token v2.1', 'token 4GiB', '| token | 8k |']) {
+    test(input, () => expect(scrub(input, 200)).toEqual({ text: input, masked: 0 }))
+  }
+  const cases: [input: string, text: string][] = [
+    ['token abc123def', 'token [masked]'],
+    ['token ghx_abc123def456', 'token [masked]'],
+    ['secret v2abc9', 'secret [masked]'],
+    ['token=8k', 'token=[masked]'],
+    ['secret 98712349871234987123b', 'secret [masked]'],
+    ['secret v20240101123456789', 'secret [masked]'],
+    ['token 12345678901234567890123456b', 'token [masked]'],
+    ['API token 12,345,678,901,234,567,890,123k', 'API token [masked]'],
+    ['token 482913k', 'token [masked]'],
+    ['| token | 482913k |', '| token | [masked] |'],
+  ]
+  for (const [input, text] of cases) test(input, () => expect(scrub(input, 200)).toEqual({ text, masked: 1 }))
 })
 
 describe('scrub tries a secret variable glued after another assignment', () => {

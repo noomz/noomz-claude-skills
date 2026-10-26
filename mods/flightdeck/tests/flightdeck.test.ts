@@ -333,6 +333,36 @@ test('layout math: lanes share one axis, the log gets 4-8 rows, the legend never
   expect(receiptOf({ ...DEFAULT_TURN, costAtStart: 1, edits: 2 }, { durationMs: 1000, agentsSince: 3, costNow: 1.5, reason: 'answer' }).costDelta).toBe(0.5)
 })
 
+test('an advice line keeps its words after a long skipped line, and after a key that leaves it a plain word', () => {
+  expect(adviceLine(`[log] ${'A'.repeat(5000)}\nRun the tests next`)).toEqual({ text: 'Run the tests next', masked: 0 })
+  expect(adviceLine(`[log] ${'a '.repeat(3000)}password:\nRun the tests next`)).toEqual({ text: 'Run the tests next', masked: 0 })
+  expect(adviceLine(`[log] ${'a '.repeat(3000)}password:\nhunter2xyz is it`)).toEqual({ text: '[masked] is it', masked: 1 })
+  expect(adviceLine('[note] password:\nRun the full suite')).toEqual({ text: 'Run the full suite', masked: 0 })
+  expect(adviceLine(`${'[x] done\n'.repeat(300)}Ship it`)).toEqual({ text: 'Ship it', masked: 0 })
+})
+
+test('a value the line before left open is masked when it is a lowercase or lone word, or a markup or long line sits between', () => {
+  expect(adviceLine('[setup] password:\nletmein')).toEqual({ text: '[masked]', masked: 1 })
+  expect(adviceLine('[setup] password:\nsunshine!')).toEqual({ text: '[masked]', masked: 1 })
+  expect(adviceLine('[note] password:\nRun.')).toEqual({ text: '[masked]', masked: 1 })
+  for (const [key, value] of [
+    ['password', 'Correct horse battery staple'],
+    ['password', 'Password now'],
+    ['password', 'Dragon x'],
+    ['password', 'Été soleil'],
+    ['token', 'Abc def'],
+    ['secret', 'Z x'],
+    ['password', 'Sunshine\ttab'],
+    ['password', 'Letmein now'],
+  ]) expect(adviceLine(`[s] ${key}:\n${value}`).text).toMatch(/^\[masked\]/)
+  expect(adviceLine('[setup] password:\nhunter two, then deploy').text).toMatch(/^\[masked\]/)
+  expect(adviceLine('[setup] password:\ncorrect horse battery staple').text).toMatch(/^\[masked\]/)
+  expect(adviceLine('[setup] password:\n<b>note</b>\nS3cr3tValue99')).toEqual({ text: '[masked]', masked: 1 })
+  expect(adviceLine('[s] password:\n<details>\n<summary>creds</summary>\nS3cr3tValue99 x')).toEqual({ text: '[masked] x', masked: 1 })
+  expect(adviceLine('[setup] password:\n<i>x</i>\nletmein')).toEqual({ text: '[masked]', masked: 1 })
+  expect(adviceLine(`[setup] password:\n[${'a'.repeat(600)}\nS3cr3tValue99 then run tests`)).toEqual({ text: '[masked] then run tests', masked: 1 })
+})
+
 test('a source named after an object property is a typed prompt', () => {
   for (const source of ['__proto__', 'constructor', 'toString', 'weird', undefined]) {
     expect(promptLine('password=hunter2 deploy', source), String(source)).toEqual({ who: 'you', text: 'new turn · 23 chars' })

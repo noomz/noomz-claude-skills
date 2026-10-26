@@ -41,6 +41,16 @@ describe('scrub masks the README examples as written', () => {
   ])
 })
 
+describe('scrub reads a size or version after token or secret, and a table cell under a description column, as written', () => {
+  rows([
+    ['token 128k', 'token 128k', 0],
+    ['secret v2', 'secret v2', 0],
+    ['| field | description |\n|---|---|\n| password | The user login password |', '| field | description | |---|---| | password | The user login password |', 0],
+    ['| API key | Where to find it |\n|---|---|', '| API key | Where to find it | |---|---|', 0],
+    ['| password | correct horse battery |', '| password | [masked] |', 1],
+  ])
+})
+
 describe('scrub masks the curl -u forms with an empty user or a quote inside', () => {
   rows([
     ['curl -u "ad"min:hunter2 x', 'curl -u "ad"min:[masked] x', 1],
@@ -163,7 +173,7 @@ describe('a link label for a host near 80 characters', () => {
 })
 
 describe('a link in command output', () => {
-  test('keeps a non-ASCII digit or mark, ends at a dash or an ASCII control, and pins nothing cut before a URL full stop', async ($, on) => {
+  test('keeps a non-ASCII digit or mark, ends at a dash or an ASCII control, and pins nothing cut at its host before a URL full stop', async ($, on) => {
     const { value } = stateStore(on)
     on('ui.open', () => ({ value: { isPlaced: true } }))
     const outputs = [
@@ -184,6 +194,7 @@ describe('a link in command output', () => {
       { href: 'https://github.com/o/r/pull/5', label: 'r PR #5' },
       { href: 'https://ex.com/wiki/Foo', label: 'ex.com/wiki/Foo' },
       { href: 'https://github.com/o/r/pull/14', label: 'r PR #14' },
+      { href: 'https://github.com/o/r/pull/13', label: 'r PR #13' },
       { href: 'https://github.com/o/r/pull/9%CC%81', label: 'github.com/o/r/pull/9%CC%81' },
       { href: 'https://github.com/o/r/pull/8%EF%BC%93', label: 'github.com/o/r/pull/8%EF%BC%93' },
     ])

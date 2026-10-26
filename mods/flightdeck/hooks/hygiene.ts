@@ -214,12 +214,12 @@ const escaped = (text: string, at: number): boolean => {
 class Reader {
   private readonly seen = new Map<string, { from: number; at: number }>()
 
-  private delimiterAt: number | undefined
+  private tablesIn: Table[] | undefined
 
   constructor(readonly text: string) {}
 
-  delimiter(): number {
-    return (this.delimiterAt ??= lastDelimiter(this.text))
+  tables(): Table[] {
+    return (this.tablesIn ??= tablesOf(this.text))
   }
 
   next(needle: string, from: number): number {
@@ -260,17 +260,19 @@ const looksSecret = (word: string) => word.length >= 20 || !LOOKS_PLAIN.test(wor
 type Looks = (word: string) => boolean
 
 // `token`, `secret` and `pwd` also name a count, a setting or a command. Right after one, with only a space,
-// a glued dash run or a table bar between, a value needs a digit and is not a plain number, so `token 4096`,
-// `token max_tokens` and `token--refresh_interval` stay, while `the OTP token is 482913` is masked.
+// a glued dash run or a table bar between, a value needs a digit and is not a plain number, size or version,
+// so `token 4096`, `token 128k`, `secret v2`, `token max_tokens` and `token--refresh_interval` stay, while
+// `the OTP token is 482913` is masked.
 const WEAK_KEY = /\b(?:token|secret|pwd)\b/i
 const NUMBER = /^\d+(?:[.,]\d+)*$/
+const MEASURE = /^(?:\d{1,4}(?:[.,]\d{1,3})?(?:[KMGT]i?B?|B)|v\d{1,3}(?:\.\d{1,4}){0,3})$/i
 const DIGIT = /\d/
 // A path after a key, as in `pwd /Users/me/project`, is not its value.
 const PATH = /^(?:~|\.{1,2})?\//
 
 const looksFor = (key: string, loose: boolean): Looks => {
   const weak = loose && WEAK_KEY.test(key)
-  return word => !PATH.test(word) && !(weak && (NUMBER.test(word) || !DIGIT.test(word))) && looksSecret(word)
+  return word => !PATH.test(word) && !(weak && (NUMBER.test(word) || MEASURE.test(word) || !DIGIT.test(word))) && looksSecret(word)
 }
 
 const value = (reader: Reader, at: number, looks?: Looks): Span | null => {
@@ -447,17 +449,54 @@ const emptyUserPassword = (reader: Reader, from: number): Span | null => {
   return at > from && at < reader.wordEnd(from) ? [from, at] : null
 }
 
-const DELIMITER_ROW = /\|[ \t]*:?-{3,}:?[ \t]*\|/g
+const DELIMITER_ROW = /\|(?:[ \t]*:?-{3,}:?[ \t]*\|)+/g
 
-// Where the last Markdown table delimiter row starts: a row before one is a header.
-const lastDelimiter = (text: string): number => {
-  let last = -1
-  if (text.includes('---')) for (const row of text.matchAll(DELIMITER_ROW)) last = row.index
-  return last
+// A Markdown table, read in the one-line text where rows run on: the header is the `width` cells right before
+// the delimiter row, from `header` up to `delimiter`, and the body rows of `width + 1` bars each start at `body`.
+type Table = { header: number; delimiter: number; body: number; width: number; columns: string[] }
+
+const tablesOf = (text: string): Table[] => {
+  const tables: Table[] = []
+  if (!text.includes('---')) return tables
+  for (const row of text.matchAll(DELIMITER_ROW)) {
+    const width = row[0].split('|').length - 2
+    let header = row.index
+    let before = row.index - 1
+    while (text[before] === ' ') before--
+    if (text[before] === '|') for (let bars = 0; bars <= width && header > 0; bars++) header = Math.max(0, text.lastIndexOf('|', header - 1))
+    const columns = text.slice(header + 1, row.index).split('|').slice(0, width).map(name => name.replace(/[*_`]/g, '').trim())
+    tables.push({ header, delimiter: row.index, body: row.index + row[0].length, width, columns })
+  }
+  return tables
 }
 
-// A table cell runs to the next `|`. One word that looks secret is a value, and so is more than one word
-// outside a header row, so a passphrase is caught and `| API key | Where to find it |` above `|---|` is not.
+// A column that says what a field is, so a cell under it is prose about the key rather than its value.
+const DESCRIBES = /^(?:desc|description|meaning|notes?|purpose|comments?|explanation|details?|usage|summary)$/i
+
+// The header name over the cell at `at`, or '' when the rows since the delimiter do not count out: every
+// `width + 1`-th bar must close a row, with the next row's bar right after, and no other bar may. A row with
+// fewer or more cells, a first row with no opening bar, an empty cell or a code span (whose bar may split a cell)
+// is a doubt, and '' keeps the mask.
+const columnAt = ({ body, width, columns }: Table, text: string, at: number): string => {
+  let first = body
+  while (text[first] === ' ') first++
+  if (text[first] !== '|') return ''
+  let bars = 0
+  for (let from = body; from < at; from++) {
+    if (text[from] === '`') return ''
+    if (text[from] !== '|' || escaped(text, from)) continue
+    let next = from + 1
+    while (text[next] === ' ') next++
+    if ((bars % (width + 1) === width) !== (text[next] === '|')) return ''
+    bars++
+  }
+  return columns[(bars - 1) % (width + 1)] ?? ''
+}
+
+// A table cell runs to the next `|`. One word that looks secret is a value, and so is more than one word,
+// except in the header row right above its own table's `|---|` row, and under a description column, where
+// only a word that looks secret masks it. So a passphrase is caught, and `| API key | Where to find it |`
+// above `|---|` or `| password | The user login password |` under `| field | description |` is not.
 const tableCell = (reader: Reader, end: number, key: string): Span | null => {
   const { text } = reader
   const bar = reader.next('|', end)
@@ -465,8 +504,12 @@ const tableCell = (reader: Reader, end: number, key: string): Span | null => {
   while (stop > end && text[stop - 1] === ' ') stop--
   const cell = text.slice(end, stop)
   if (!WORDY.test(cell)) return null
-  if (!cell.includes(' ')) return looksFor(key, true)(cell) ? [end, stop] : null
-  return reader.delimiter() > stop ? null : [end, stop]
+  const looks = looksFor(key, true)
+  if (!cell.includes(' ')) return looks(cell) ? [end, stop] : null
+  const table = reader.tables().findLast(({ header }) => header < end)
+  if (table && stop <= table.delimiter) return null
+  if (table && DESCRIBES.test(columnAt(table, text, end))) return cell.split(' ').some(looks) ? [end, stop] : null
+  return [end, stop]
 }
 
 const assigned = (reader: Reader, end: number, looks?: Looks): Span | null => {
@@ -792,14 +835,16 @@ type Reading = { text: string; from: number[] }
 
 const reading = (line: string, filler: string, split: string): Reading => {
   let text = ''
+  let last = ' '
   const from: number[] = []
   for (let at = 0; at < line.length; at++) {
     const c = line[at] === FILLER ? filler : line[at] === SPLIT ? split : line[at]!
-    if (c === '' || (c === ' ' && (text === '' || text.endsWith(' ')))) continue
+    if (c === '' || (c === ' ' && last === ' ')) continue
     text += c
+    last = c
     from.push(at)
   }
-  if (text.endsWith(' ')) {
+  if (last === ' ' && text !== '') {
     text = text.slice(0, -1)
     from.pop()
   }
@@ -816,7 +861,9 @@ const OTHER_READINGS: readonly [filler: string, split: string][] = [
 const maskReadings = (line: string, upstream: Span[]): Masked => {
   const shown = reading(line, ' ', '')
   const inReading = ({ from }: Reading, spans: Span[]): Span[] => spans.map(([start, end]) => [from[start]!, from[end - 1]! + 1])
-  const others = new Map(OTHER_READINGS.map(([filler, split]) => reading(line, filler, split)).map(other => [other.text, other]))
+  // A reading that changes only a kind of character the line does not hold repeats another, so it is not built.
+  const held = OTHER_READINGS.filter(([filler, split]) => (filler === ' ' || line.includes(FILLER)) && (split === '' || line.includes(SPLIT)))
+  const others = new Map(held.map(([filler, split]) => reading(line, filler, split)).map(other => [other.text, other]))
   others.delete(shown.text)
   const seeds = [...upstream, ...[...others.values()].flatMap(other => inReading(other, mask(other.text).spans))]
   const inShown = seeds.map(([start, end]): Span => [firstAtOrAfter(shown.from, start), firstAtOrAfter(shown.from, end)])

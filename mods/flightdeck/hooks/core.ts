@@ -732,43 +732,47 @@ const sharedTail = (a: string, b: string): number => {
   return length
 }
 
-// A line can leave a value for the next one: a key with nothing after it, or a quote it opened. The
-// line is read after the lines before it together, and after each of the last few alone, since a skipped
-// line between a key and its value reads as the value. The longest head of the line a reading changes
-// is one mask.
+// How much of what `line` reads alone a mask in `joined` runs over from before it: the mask that reaches
+// the tail the two share. The shared tail can start inside a mask: `[masked]` ends as the line might.
+const lentHead = (joined: string, line: string): number => {
+  const cut = joined.length - sharedTail(joined, line)
+  const last = joined.lastIndexOf(MASK, cut)
+  return last === -1 || last + MASK.length < cut ? 0 : line.length - (joined.length - last - MASK.length)
+}
+
+// A verb that opens advice, with more words after it, is no value: `password:` then `Run the full suite`.
+const ADVICE_VERBS = new Set(['run', 'rerun', 'ship', 'merge', 'fix', 'check', 'test', 'deploy', 'review', 'commit', 'push', 'pull', 'open', 'read', 'see', 'try', 'use', 'add', 'update', 'remove', 'install', 'build', 'restart', 'retry', 'approve', 'wait', 'continue', 'start', 'stop'])
+
+// A line can leave a value for the next one: a key with nothing after it, or a quote it opened. The line
+// is read after the lines before it together, and after each of the last few alone, since a skipped line
+// between a key and its value reads as the value. The longest head a reading masks is one mask.
 const afterLines = (befores: string[], line: string): Scrubbed => {
   const alone = scrub(line, UNCUT)
-  if (befores.length === 0) return alone
-  // Read after a space, as the joined readings read it: a leading `…` is then no cut mark.
-  const reference = scrub(` ${line}`, UNCUT).text
-  let tail = reference.length
-  let widest: { before: string; joined: Scrubbed } | null = null
-  for (const before of befores) {
-    const joined = scrub(`${before} ${line}`, UNCUT)
-    const shared = sharedTail(joined.text, reference)
-    if (shared >= tail) continue
-    tail = shared
-    widest = { before, joined }
-  }
-  if (!widest) return alone
-  const masked = Math.max(1, widest.joined.masked - scrub(widest.before, UNCUT).masked)
-  return { text: (MASK + reference.slice(reference.length - tail)) as SafeText, masked }
+  const head = Math.max(0, ...befores.map(before => lentHead(scrub(`${before} ${line}`, UNCUT).text, alone.text)))
+  const rest = alone.text.slice(head)
+  if (head === 0 || (ADVICE_VERBS.has(alone.text.slice(0, head).toLowerCase()) && /^ \p{L}/u.test(rest))) return alone
+  const masked = alone.masked - alone.text.slice(0, head).split(MASK).length + 2
+  return { text: (MASK + rest) as SafeText, masked }
 }
 
 const BEFORE_CAP = 512
 const BEFORE_LINES = 4
 
-// The lines before, cut at a space to their last 512 characters.
-const lastWords = (text: string) => (text.length <= BEFORE_CAP ? text : text.slice(text.indexOf(' ', text.length - BEFORE_CAP) + 1))
+// Text before, cut to its last 512 characters: at a space when one is there.
+const lastChars = (text: string) => {
+  if (text.length <= BEFORE_CAP) return text
+  const space = text.indexOf(' ', text.length - BEFORE_CAP)
+  return space === -1 ? text.slice(-BEFORE_CAP) : text.slice(space + 1)
+}
 
 export const adviceLine = (report: string): Scrubbed => {
   const before: string[] = []
   for (const line of report.split('\n')) {
     const raw = line.trim()
     if (raw && !raw.startsWith('[') && !raw.startsWith('<')) {
-      const recent = before.slice(-BEFORE_LINES).map(lastWords)
-      const befores = before.length > 1 ? [lastWords(before.join(' ')), ...recent] : recent
-      const found = fitted(afterLines(befores, raw), CAP.advice, masked => masked.replace(/\*\*|__/g, '').replace(/^[#>*\s-]+/, ''))
+      const recent = before.slice(-BEFORE_LINES)
+      const befores = new Set(recent.length > 1 ? [lastChars(recent.join(' ')), ...recent.map(lastChars)] : recent.map(lastChars))
+      const found = fitted(afterLines([...befores], raw), CAP.advice, masked => masked.replace(/\*\*|__/g, '').replace(/^[#>*\s-]+/, ''))
       if (found.text) return found
     }
     if (raw) before.push(raw)

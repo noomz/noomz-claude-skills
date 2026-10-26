@@ -281,6 +281,12 @@ describe("an architect's advice", () => {
     expect(adviceLine('[1]\n\u2026and done')).toEqual({ text: '\u2026and done', masked: 0 })
   })
 
+  test('keeps a line after a key that opens with one advice verb and more words, a password such a verb spells included', () => {
+    expect(adviceLine('[note] password:\nRun the full suite')).toEqual({ text: 'Run the full suite', masked: 0 })
+    expect(adviceLine('[note] password:\nship it now')).toEqual({ text: 'ship it now', masked: 0 })
+    expect(adviceLine('[note] password:\nRun.')).toEqual({ text: '[masked]', masked: 1 })
+  })
+
   test('skips a line that is only marks', async ($, on) => {
     expect(await advise($, on, '---\n**\nShip it')).toBe('Ship it')
   })
