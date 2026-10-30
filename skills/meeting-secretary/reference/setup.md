@@ -1,7 +1,9 @@
 # Setup — first run and permission errors
 
-macOS and Claude Code only: recording uses ffmpeg's `avfoundation` input, window capture uses
-`screencapture` and CoreGraphics. Apple Silicon is assumed for speed.
+macOS and Claude Code only: the mic is captured by a small native helper (`scripts/capture/meeting-capture.swift`,
+built on first live start with `swiftc` from the Xcode command line tools; ffmpeg's `avfoundation` input drops ~12%
+of audio), window capture uses `screencapture` and CoreGraphics. Apple Silicon is assumed for speed.
+Speech windows come from Silero VAD: `curl -L -o ~/.local/share/transcribe.cpp/models/silero-vad-v6.2-F32.gguf https://huggingface.co/handy-computer/silero-vad-v6.2-gguf/resolve/main/silero-vad-v6.2-F32.gguf`.
 
 ## Install
 
@@ -38,8 +40,8 @@ and print these steps when either is missing.
 The terminal app that runs Claude Code (Terminal, iTerm2, Ghostty, ...) needs, in
 System Settings → Privacy & Security:
 
-- **Microphone** — without it ffmpeg exits at once and `recorder.log` says
-  `ERROR ffmpeg exited by itself`.
+- **Microphone** — without it the recorder exits at once and `recorder.log` says
+  `ERROR recorder exited by itself`.
 - **Screen Recording** — only for screen video. Without it `snap` returns
   `blank: true` and `windows` shows no titles. Restart the terminal after granting.
 
@@ -47,8 +49,8 @@ System Settings → Privacy & Security:
 
 The mic alone picks up remote speakers faintly from the speakers, and not at all on
 headphones. Install a system-audio loopback device (BlackHole, eqMac or Loopback),
-route the call's output through it, and pass it as a second `--device`; the script
-mixes the inputs.
+route the call's output through it (or into an aggregate device with the mic), and record that
+one device: two live mics mixed give steady noise, so `--device` twice is refused.
 
 ## Test without a meeting
 

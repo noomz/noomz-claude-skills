@@ -17,10 +17,10 @@
    - **Audio input**:
      - In-room meeting → the system's default input (`default`, or
        `$MEETING_DEVICE`).
-     - Online call (Teams/Zoom/Meet) → mic **plus** a system-audio loopback device
-       (BlackHole, eqMac, Loopback), so remote speakers are recorded clearly: pass
-       `--device` twice.
-     - List devices if unsure: `ffmpeg -hide_banner -f avfoundation -list_devices true -i ""`.
+     - Online call (Teams/Zoom/Meet) → ONE input that carries both sides (a headset mic, or an
+       aggregate device of mic + a loopback such as BlackHole). Never pass `--device` twice: two
+       live mics mixed give steady noise, and `start` refuses it.
+     - List input devices if unsure: `meeting-capture --device x` (unknown name lists them).
    - **Language**: `--lang th` is the default and handles Thai with English terms
      mixed in. Pass another code (`en`, `ja`, ...) for a meeting in that language.
    - **Screen video** (optional, default off): 1 fps video (~35 MB/hour) so
@@ -59,7 +59,7 @@ size) as `W:H:X:Y` (width, height, left, top) and re-snap. Confirm with the user
 before starting.
 
 ```bash
-MEETING start <name> [--device default --device "BlackHole 2ch"] [--lang th] \
+MEETING start <name> [--device default|"<input name>"] [--lang th] \
                      [--app "<app>" [--window <title|id>] | --screen <N> [--screen-crop W:H:X:Y]]
 ```
 
@@ -85,7 +85,7 @@ them. A line that shows up in both is answered once.
 Tell the user in one line: recording, which inputs, how to stop (`/end-meeting`).
 
 If the first chunk line has not arrived ~40 s after start, check `<log>`: an
-`ERROR ffmpeg exited by itself` almost always means the terminal app lacks microphone
+`ERROR recorder exited by itself` almost always means the terminal app lacks microphone
 permission. An `ERROR screen ffmpeg exited` / `ERROR window ffmpeg exited` line means
 the video stopped but audio continues; tell the user once. A `window not found` line
 during the call means the picked window went away — tell the user once and suggest
@@ -96,7 +96,8 @@ note the stamp in `live-notes.md` and /end-meeting pulls them.
 
 ## 3. During the meeting — one reply per chunk
 
-Each event is one line `[HH:MM:SS] text` (wall clock), roughly every 20 s. The user
+Each event is one line `[HH:MM:SS] text` (wall clock of a speech window, found by VAD, up to 15 s; a silent
+chunk is one `(silence)` line), arriving after each 20 s chunk. The user
 sees something for every chunk, so always reply — but make the reply as small as its
 value. Pick the first row that applies:
 

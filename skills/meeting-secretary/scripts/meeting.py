@@ -26,16 +26,16 @@ Vocab prompt, merged in order, duplicates dropped:
 Layout under the data root:
   ACTIVE.json                  the running session (absent = nothing running)
   <NAME>/chunks/00000.wav      20 s mic chunks, 16 kHz mono
-  <NAME>/transcript-live.md    one line per chunk: [HH:MM:SS] text   (wall clock of chunk start)
+  <NAME>/transcript-live.md    one line per speech window: [HH:MM:SS] text   (wall clock of window start)
   <NAME>/recorder.log          recorder status + errors
   <NAME>/screen.mp4            optional video, 1 fps, ~35 MB/hour (fragmented: crash-safe):
                                --screen = one display (<=1920 wide); --app = one app window only, even when
                                covered, letterboxed to 1920x1080
   <NAME>/frames/HHMMSS.png     frames pulled with `frame`
   <NAME>/full.wav              all chunks joined            (final)
-  <NAME>/transcript-final.md   30 s re-pass: [mm:ss | HH:MM:SS] text  (final)
+  <NAME>/transcript-final.md   VAD-window re-pass: [mm:ss | HH:MM:SS] text  (final)
 """
-import argparse, datetime as dt, json, os, pathlib, re, signal, subprocess, sys, threading, time
+import argparse, datetime as dt, json, os, pathlib, re, signal, subprocess, sys, threading, time, wave
 
 def project_dir():
     try:
@@ -62,9 +62,15 @@ DEFAULT_DEVICE = os.environ.get("MEETING_DEVICE", "default")  # avfoundation: th
 TCPP = pathlib.Path(os.environ.get("TCPP_HOME", pathlib.Path.home() / ".local/share/transcribe.cpp")).expanduser()
 CLI = TCPP / "build/bin/transcribe-cli"
 MODEL = TCPP / "models/Qwen3-ASR-1.7B-Q8_0.gguf"
+VAD_MODEL = TCPP / "models/silero-vad-v6.2-F32.gguf"
+CAPTURE_SRC = pathlib.Path(__file__).resolve().parent / "capture/meeting-capture.swift"
+CAPTURE_BIN = pathlib.Path.home() / ".local/share/meeting-secretary/bin/meeting-capture"
 LIVE_SECONDS = 20
-FINAL_SECONDS = 30
-MIN_CHUNK_BYTES = 64_000  # < 2 s of 16 kHz mono s16
+MAX_WINDOW = 15  # s per ASR window
+WINDOW_GAP = 0.6  # s: pauses shorter than this stay inside one window
+WINDOW_PAD = 0.2
+RATE = 16000
+BPS = 2 * RATE  # bytes per second of 16 kHz mono s16
 
 
 def ensure_root():
@@ -116,14 +122,69 @@ def transcribe_one(wav, prompt, lang):
     return clean(out.read_text(errors="replace")) if out.exists() else ""
 
 
-def preflight():
-    missing = [p for p in (CLI, MODEL) if not p.exists()]
+def vad_segments(wav):
+    out = wav.with_suffix(".vad.txt")
+    out.unlink(missing_ok=True)
+    r = subprocess.run([str(CLI), "-q", "-m", str(VAD_MODEL), "-o", str(out), str(wav)],
+                       capture_output=True, text=True, errors="replace")
+    if r.returncode:
+        raise RuntimeError(r.stderr.strip()[-300:])
+    txt = out.read_text(errors="replace") if out.exists() else ""
+    return [(float(a), float(b)) for a, b in re.findall(r"t0=([\d.]+)\s+t1=([\d.]+)", txt)]
+
+
+def speech_windows(segs, dur, maxlen=MAX_WINDOW, gap=WINDOW_GAP, pad=WINDOW_PAD):
+    # pad each speech segment, merge pauses < gap while the window stays <= maxlen, hard-split longer runs
+    wins = []
+    for s, e in segs:
+        s, e = max(0, s - pad), min(dur, e + pad)
+        if wins and s - wins[-1][1] < gap and e - wins[-1][0] <= maxlen:
+            wins[-1][1] = e
+        else:
+            while e - s > maxlen:
+                wins.append([s, s + maxlen])
+                s += maxlen
+            wins.append([s, e])
+    return [tuple(w) for w in wins]
+
+
+def write_wav(path, pcm):
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(RATE)
+        w.writeframes(pcm)
+
+
+def cut_pcm(pcm, t0, t1):
+    a, b = int(t0 * RATE) * 2, int(t1 * RATE) * 2
+    return pcm[a:b]
+
+
+def build_capture():
+    if CAPTURE_BIN.exists() and CAPTURE_BIN.stat().st_mtime >= CAPTURE_SRC.stat().st_mtime:
+        return
+    CAPTURE_BIN.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        r = subprocess.run(["swiftc", "-O", str(CAPTURE_SRC), "-o", str(CAPTURE_BIN)], capture_output=True, text=True)
+    except OSError:
+        sys.exit("swiftc not found — install the Xcode command line tools: xcode-select --install")
+    if r.returncode:
+        sys.exit("meeting-capture build failed:\n" + r.stderr[-1500:])
+
+
+def preflight(live=False):
+    missing = [p for p in (CLI, MODEL, VAD_MODEL) if not p.exists()]
     if missing:
         sys.exit("missing: " + ", ".join(map(str, missing)) +
                  f"\nbuild: cd {TCPP} && cmake -B build && cmake --build build -j"
                  f"\nmodel: curl -L -o {MODEL} "
                  "https://huggingface.co/handy-computer/Qwen3-ASR-1.7B-gguf/resolve/main/Qwen3-ASR-1.7B-Q8_0.gguf"
+                 f"\nvad:   curl -L -o {VAD_MODEL} "
+                 "https://huggingface.co/handy-computer/silero-vad-v6.2-gguf/resolve/main/silero-vad-v6.2-F32.gguf"
                  "\n(set TCPP_HOME if transcribe.cpp lives elsewhere)")
+    if live:
+        build_capture()
 
 
 # 1 fps h264; -g 5 so the fragmented mp4 flushes every ~5 s and survives a crash
@@ -209,6 +270,60 @@ def capture_app(mdir, app, title, log, stop, meta):
 
 # --- recorder daemon ------------------------------------------------------------------
 
+class LiveWindows:
+    """Chunk PCM in, one transcript line per VAD speech window out. A window that may still be growing
+    at the end of the buffer is held back and carried into the next chunk."""
+
+    def __init__(self, tmp, started, out, log, prompt, lang):
+        self.tmp, self.started, self.out, self.log, self.prompt, self.lang = tmp, started, out, log, prompt, lang
+        self.carry, self.pos = b"", 0.0  # pos = absolute seconds at the start of carry
+
+    def stamp(self, t):
+        return (self.started + dt.timedelta(seconds=t)).strftime("%H:%M:%S")
+
+    def feed(self, pcm, final=False):
+        pcm = pcm[:len(pcm) // 2 * 2]
+        had_carry = bool(self.carry)
+        buf, base = self.carry + pcm, self.pos
+        dur = len(buf) / BPS
+        self.carry, self.pos = b"", base + dur
+        if not buf:
+            return
+        wav = self.tmp / "vad-buffer.wav"
+        write_wav(wav, buf)
+        try:
+            wins = speech_windows(vad_segments(wav), dur)
+        except Exception as e:
+            self.log.write(f"{self.stamp(base)} ERROR vad: {e}\n")
+            return
+        if not wins:
+            if not had_carry:
+                self.out.write(f"[{self.stamp(base)}] (silence)\n")
+            return
+        held = None
+        for i, (t0, t1) in enumerate(wins):
+            if not final and t1 >= dur - WINDOW_GAP and dur - t0 <= MAX_WINDOW:
+                held = t0
+                break
+            self.emit(buf, base, t0, t1)
+        if held is not None:
+            self.carry, self.pos = buf[int(held * RATE) * 2:], base + int(held * RATE) / RATE
+
+    def emit(self, buf, base, t0, t1):
+        wav = self.tmp / "vad-window.wav"
+        write_wav(wav, cut_pcm(buf, t0, t1))
+        stamp = self.stamp(base + t0)
+        try:
+            text = transcribe_one(wav, self.prompt, self.lang)
+        except Exception as e:
+            self.log.write(f"{stamp} ERROR window: {e}\n")
+            return
+        self.out.write(f"[{stamp}] {text or '(silence)'}\n")
+
+    def flush(self):
+        self.feed(b"", final=True)
+
+
 def run_daemon(mdir, devices, replay, rate, screen=None, crop=None, app=None, window=None):
     chunks = mdir / "chunks"
     chunks.mkdir(parents=True, exist_ok=True)
@@ -218,18 +333,19 @@ def run_daemon(mdir, devices, replay, rate, screen=None, crop=None, app=None, wi
     started = dt.datetime.fromisoformat(meta["started"])
     prompt, lang = vocab_prompt(mdir), meta.get("lang", "th")
 
-    seg =["-ac", "1", "-ar", "16000", "-f", "segment", "-segment_time", str(LIVE_SECONDS),
+    seg = ["-ac", "1", "-ar", "16000", "-f", "segment", "-segment_time", str(LIVE_SECONDS),
            "-reset_timestamps", "1", str(chunks / "%05d.wav")]
+    cap = None
     if replay:
         cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-readrate", str(rate), "-i", replay] + seg
+        rec = subprocess.Popen(cmd, stderr=log)
     else:
-        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
-        for d in devices:
-            cmd += ["-f", "avfoundation", "-i", f":{d}"]
-        if len(devices) > 1:
-            cmd += ["-filter_complex", f"amix=inputs={len(devices)}:normalize=0"]
-        cmd += seg
-    rec = subprocess.Popen(cmd, stderr=log)
+        # native capture: ffmpeg's avfoundation input drops ~12% of audio packets
+        cap = subprocess.Popen([str(CAPTURE_BIN), "--device", devices[0]], stdout=subprocess.PIPE, stderr=log)
+        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "s16le", "-ar", "16000", "-ac", "1",
+               "-i", "pipe:0"] + seg
+        rec = subprocess.Popen(cmd, stdin=cap.stdout, stderr=log)
+        cap.stdout.close()
     log.write(f"{dt.datetime.now():%H:%M:%S} recording pid={rec.pid} devices={devices or replay}\n")
 
     vid = None
@@ -240,17 +356,17 @@ def run_daemon(mdir, devices, replay, rate, screen=None, crop=None, app=None, wi
         (mdir / "meta.json").write_text(json.dumps(meta))
         log.write(f"{dt.datetime.now():%H:%M:%S} screen pid={vid.pid} screen={screen} crop={crop}\n")
 
-    stop_app, cap = threading.Event(), None
+    stop_app, capt = threading.Event(), None
     if app and not replay:
-        cap = threading.Thread(target=capture_app, args=(mdir, app, window, log, stop_app, meta), daemon=True)
-        cap.start()
+        capt = threading.Thread(target=capture_app, args=(mdir, app, window, log, stop_app, meta), daemon=True)
+        capt.start()
         log.write(f"{dt.datetime.now():%H:%M:%S} window capture app={app!r} title={window!r}\n")
 
     stopping = False
     def on_term(*_):
         nonlocal stopping
         stopping = True
-        rec.terminate()
+        (cap or rec).terminate()  # live: capture ends, ffmpeg sees EOF and closes the last chunk
         stop_app.set()
         if vid:
             vid.terminate()
@@ -258,21 +374,22 @@ def run_daemon(mdir, devices, replay, rate, screen=None, crop=None, app=None, wi
     signal.signal(signal.SIGINT, on_term)
 
     done = set()
+    live = LiveWindows(mdir, started, out, log, prompt, lang)
     def drain(final=False):
         files = sorted(chunks.glob("*.wav"))
         for f in (files if final else files[:-1]):  # newest chunk is still being written
             if f.name in done:
                 continue
             done.add(f.name)
-            if f.stat().st_size < MIN_CHUNK_BYTES:
-                continue
-            stamp = (started + dt.timedelta(seconds=int(f.stem) * LIVE_SECONDS)).strftime("%H:%M:%S")
             try:
-                text = transcribe_one(f, prompt, lang)
-            except Exception as e:
-                log.write(f"{stamp} ERROR chunk {f.name}: {e}\n")
+                with wave.open(str(f)) as w:
+                    pcm = w.readframes(w.getnframes())
+            except (wave.Error, EOFError) as e:
+                log.write(f"ERROR chunk {f.name}: {e}\n")
                 continue
-            out.write(f"[{stamp}] {text or '(silence)'}\n")
+            live.feed(pcm)
+        if final:
+            live.flush()
 
     vid_dead = False
     while rec.poll() is None:
@@ -286,11 +403,16 @@ def run_daemon(mdir, devices, replay, rate, screen=None, crop=None, app=None, wi
         vid.terminate()
         vid.wait(timeout=15)
     if cap:
+        try:
+            cap.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            cap.kill()
+    if capt:
         stop_app.set()
-        cap.join(timeout=40)
+        capt.join(timeout=40)
     drain(final=True)
     if not stopping and not replay:
-        log.write("ERROR ffmpeg exited by itself — check microphone permission for the terminal app\n")
+        log.write("ERROR recorder exited by itself — check microphone permission for the terminal app\n")
     log.write(f"{dt.datetime.now():%H:%M:%S} stopped\n")
     out.write("[END]\n" if stopping or replay else "")
 
@@ -298,7 +420,10 @@ def run_daemon(mdir, devices, replay, rate, screen=None, crop=None, app=None, wi
 # --- commands -------------------------------------------------------------------------
 
 def cmd_start(a):
-    preflight()
+    if len(a.device) > 1 and not a.replay:
+        sys.exit("refuse: record one --device. Two live mics mixed give steady noise; for a call, pick the "
+                 "device that carries both sides (an aggregate or loopback input), or the headset mic.")
+    preflight(live=not a.replay)
     if a.screen is not None and a.app:
         sys.exit("pick one: --screen N or --app NAME")
     if ACTIVE.exists():
@@ -470,7 +595,7 @@ def cmd_final(a):
         sys.exit(f"refuse: {out} exists")
     meta = json.loads((mdir / "meta.json").read_text())
     started = dt.datetime.fromisoformat(meta["started"])
-    chunks = sorted(c for c in (mdir / "chunks").glob("*.wav") if c.stat().st_size >= MIN_CHUNK_BYTES)
+    chunks = sorted(c for c in (mdir / "chunks").glob("*.wav") if c.stat().st_size >= 1000)
     full = mdir / "full.wav"
     if not full.exists():
         lst = mdir / "chunks.txt"
@@ -480,27 +605,39 @@ def cmd_final(a):
                         "-i", str(lst), "-c", "copy", str(full)], check=True)
     fdir = mdir / "final-chunks"
     fdir.mkdir(exist_ok=True)
-    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(full), "-f", "segment",
-                    "-segment_time", str(FINAL_SECONDS), "-reset_timestamps", "1", str(fdir / "%04d.wav")], check=True)
-    files = sorted(fdir.glob("*.wav"))
-    batch = fdir / "batch.list"
-    batch.write_text("\n".join(map(str, files)) + "\n")
+    for old in fdir.glob("*.wav"):
+        old.unlink()
+    with wave.open(str(full)) as w:
+        dur, nframes = w.getnframes() / w.getframerate(), w.getnframes()
+    try:
+        wins = speech_windows(vad_segments(full), dur)
+    except RuntimeError as e:
+        sys.exit(f"vad failed: {e}")
+    files = []
+    with wave.open(str(full)) as w:
+        for i, (t0, t1) in enumerate(wins):
+            w.setpos(min(int(t0 * RATE), nframes))
+            f = fdir / f"{i:04d}.wav"
+            write_wav(f, w.readframes(int((t1 - t0) * RATE)))
+            files.append(f)
     t0 = time.time()
-    r = subprocess.run([str(CLI), "-q", "-m", str(MODEL), "-l", meta.get("lang", "th"), "--prompt", vocab_prompt(mdir),
-                        "--batch", str(batch), "--batch-jsonl"], capture_output=True, text=True, errors="replace")
-    if r.returncode:
-        sys.exit(r.stderr[-1000:])
     texts = {}
-    for line in r.stdout.splitlines():
-        if line.startswith("{"):
-            j = json.loads(line)
-            if "file" in j:
-                texts[j["file"]] = clean(j.get("text", ""))
-    # offsets are exact only when chunks have no gaps (one continuous recording)
-    rows = [f"# Final transcript — {meta['name']} — Qwen3-ASR-1.7B + vocab, {FINAL_SECONDS} s windows, "
-            f"{time.time() - t0:.0f} s; [audio offset | wall clock]"]
-    for i, f in enumerate(files):
-        off = i * FINAL_SECONDS
+    if files:
+        batch = fdir / "batch.list"
+        batch.write_text("\n".join(map(str, files)) + "\n")
+        r = subprocess.run([str(CLI), "-q", "-m", str(MODEL), "-l", meta.get("lang", "th"), "--prompt", vocab_prompt(mdir),
+                            "--batch", str(batch), "--batch-jsonl"], capture_output=True, text=True, errors="replace")
+        if r.returncode:
+            sys.exit(r.stderr[-1000:])
+        for line in r.stdout.splitlines():
+            if line.startswith("{"):
+                j = json.loads(line)
+                if "file" in j:
+                    texts[j["file"]] = clean(j.get("text", ""))
+    rows = [f"# Final transcript — {meta['name']} — Qwen3-ASR-1.7B + vocab, VAD windows <= {MAX_WINDOW} s, "
+            f"{time.time() - t0:.0f} s; [audio offset | wall clock of window start]"]
+    for (t0w, _), f in zip(wins, files):
+        off = int(t0w)
         wall = (started + dt.timedelta(seconds=off)).strftime("%H:%M:%S")
         rows.append(f"[{off // 60:02d}:{off % 60:02d} | {wall}] {texts.get(str(f), '(missing)') or '(silence)'}")
     out.write_text("\n".join(rows) + "\n")
