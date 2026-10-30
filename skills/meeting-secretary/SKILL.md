@@ -38,11 +38,11 @@ under the project it finds there.
 | Command | Does |
 |---|---|
 | `MEETING status` | Is a meeting recording; chunk and line counts; last 3 lines |
-| `MEETING start NAME [--device D]... [--lang th] [--app APP [--window T] \| --screen N [--screen-crop W:H:X:Y]]` | Start the detached recorder; prints JSON with `transcript` and `log` paths |
+| `MEETING start NAME [--device D]... [--tap-app APP [--tap-clock UID]] [--lang th] [--app APP [--window T] \| --screen N [--screen-crop W:H:X:Y]]` | Start the detached recorder (one `--device` only; native mic capture); prints JSON with `transcript` and `log` paths |
 | `MEETING windows` | List app windows (id, app, title, size) for `--app` / `--window` |
 | `MEETING snap (N \| --app APP [--window T])` | One preview frame; JSON with `png` and `blank` |
 | `MEETING stop` | Stop the recorder; waits up to 120 s for the last chunk's transcript. `"stopped": false` (exit 1) = still running: run `stop` again |
-| `MEETING final [NAME]` | Join chunks and re-transcribe in 30 s windows → `transcript-final.md` |
+| `MEETING final [NAME]` | Join chunks and re-transcribe in VAD speech windows (≤15 s) → `transcript-final.md` |
 | `MEETING frame NAME HH:MM:SS... [--span S --step S]` | PNGs from `screen.mp4` at wall-clock times |
 | `MEETING vocab [NAME]` | Vocab files in play, term counts, prompt size |
 | `MEETING start NAME --replay WAV [--rate 4] [--started HH:MM]` | Feed a recording through the live pipeline (testing, or a meeting recorded elsewhere) |
@@ -61,8 +61,8 @@ script writes a `.gitignore` of `*` into the root on first use, so audio and
 transcripts never get committed. Each meeting is `<root>/<NAME>/`:
 
 - `chunks/*.wav` (20 s, 16 kHz mono), `full.wav` — raw audio
-- `transcript-live.md` — `[HH:MM:SS] text`, one line per chunk, wall clock
-- `transcript-final.md` — `[mm:ss | HH:MM:SS] text`, the accurate 30 s re-pass
+- `transcript-live.md` — `[HH:MM:SS] text`, one line per VAD speech window (≤15 s), wall clock
+- `transcript-final.md` — `[mm:ss | HH:MM:SS] text`, the accurate VAD-window re-pass
 - `live-notes.md` — your running log of flags during the meeting
 - `recorder.log`, `meta.json`, optional `screen.mp4` and `frames/`
 - `vocab-extra.txt` — this meeting's extra terms; `summary.md` — the note

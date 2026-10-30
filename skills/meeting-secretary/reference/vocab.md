@@ -41,7 +41,7 @@ Keep words the recognizer is likely to get wrong:
 - acronyms and ids people say aloud (`SSO`, `B2B`, `v2`)
 - English terms said inside Thai speech that are not in the base list
 - a name in the script people use when they say it, and both scripts when both
-  happen (`Ton`, `พี่ต้น`)
+  happen (`Somchai`, `พี่สมชาย`)
 
 Skip common words the recognizer already handles, anything in the base list, file
 paths, code identifiers nobody says aloud, and secrets of any kind.

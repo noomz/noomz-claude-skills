@@ -15,13 +15,14 @@ it, and where.
    run `final` while the recorder is alive.
 2. Stop re-arming the transcript Monitor (and stop it with TaskStop if still running).
 3. `MEETING final <name>` with `run_in_background: true`. It joins the chunks into
-   `full.wav` and re-transcribes in 30 s windows (about 4 s per minute of audio on
+   `full.wav` and re-transcribes the speech windows VAD finds (up to 15 s each, silence removed; about 4 s per minute of audio on
    Apple Silicon — ~4 min for an hour). Output: `transcript-final.md`, lines
    `[mm:ss | HH:MM:SS] text`. While it runs, read `live-notes.md` and start on the
    🔎 queued checks (step 3).
 
-Check the artifact, not the exit code: `transcript-final.md` exists, its line count is
-about duration / 30 s, and few lines are `(missing)` or `(silence)`.
+Check the artifact, not the exit code: `transcript-final.md` exists, it has window lines,
+`[mm:ss]` offsets only increase, the last offset is within the recording length, and few lines are
+`(missing)`. Silence is cut out, so the line count tracks how much people spoke, not the duration.
 
 ## 2. Read and reconcile
 
@@ -31,7 +32,7 @@ source). Use `transcript-live.md` as a second witness:
 - Where the two disagree on a **number, name, date, id or issue number**, the figure is
   uncertain — mark it (?) and quote both.
 - ASR does not identify speakers. Attribute a statement only when the speaker is named
-  or obvious from context ("พี่ต้น ช่วยเช็ค…" → the owner is Ton); otherwise write
+  or obvious from context ("พี่สมชาย ช่วยเช็ค…" → the owner is Somchai); otherwise write
   "someone asked".
 - Thai ASR spells English loanwords in Thai script ("ดีพลอย" = deploy, "สเตจจิ้ง" =
   staging, "พีอาร์" = PR). Normalize these in the note, never in quotes you use as
