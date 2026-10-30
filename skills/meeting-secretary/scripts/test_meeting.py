@@ -164,6 +164,55 @@ class LiveWindowTests(unittest.TestCase):
         self.assertEqual(self.out.getvalue(), "[10:00:14] text1\n")
 
 
+class TapPlumbingTests(unittest.TestCase):
+    def test_capture_cmd_without_tap_is_unchanged(self):
+        self.assertEqual(meeting.capture_cmd("default")[1:], ["--device", "default"])
+
+    def test_capture_cmd_with_tap(self):
+        self.assertEqual(meeting.capture_cmd("Mic", "Microsoft Teams", "UID1")[1:],
+                         ["--device", "Mic", "--tap-app", "Microsoft Teams", "--tap-clock", "UID1"])
+        self.assertNotIn("--tap-clock", meeting.capture_cmd("Mic", "Zoom"))
+
+    def test_start_passes_tap_to_daemon_and_meta(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d)
+            ns = argparse.Namespace(name="m1", device=["default"], replay=None, rate=1.0, started=None, lang="th",
+                                    screen=None, screen_crop=None, app=None, window=None,
+                                    tap_app="Microsoft Teams", tap_clock="UID1")
+            with mock.patch.object(meeting, "ROOT", root), mock.patch.object(meeting, "ACTIVE", root / "ACTIVE.json"), \
+                    mock.patch.object(meeting, "preflight"), mock.patch.object(meeting, "ensure_root"), \
+                    mock.patch.object(meeting.subprocess, "Popen") as popen, mock.patch("builtins.print"):
+                popen.return_value.pid = 1
+                meeting.cmd_start(ns)
+            argv = popen.call_args[0][0]
+            self.assertEqual(argv[argv.index("--tap-app") + 1], "Microsoft Teams")
+            self.assertEqual(argv[argv.index("--tap-clock") + 1], "UID1")
+            meta = json.loads((root / "m1" / "meta.json").read_text())
+            self.assertEqual((meta["tap_app"], meta["tap_clock"]), ("Microsoft Teams", "UID1"))
+
+    def test_daemon_runs_capture_with_tap(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as d:
+            mdir = pathlib.Path(d)
+            (mdir / "meta.json").write_text(json.dumps({"started": dt.datetime.now().isoformat()}))
+            seen = []
+
+            class Stop(Exception):
+                pass
+
+            def fake_popen(cmd, **kw):
+                seen.append(cmd)
+                raise Stop
+
+            with mock.patch.object(meeting.subprocess, "Popen", fake_popen), \
+                    mock.patch.object(meeting, "vocab_prompt", return_value=""):
+                with self.assertRaises(Stop):
+                    meeting.run_daemon(mdir, ["default"], None, 1.0, tap_app="Microsoft Teams")
+            self.assertIn("--tap-app", seen[0])
+            self.assertEqual(seen[0][seen[0].index("--tap-app") + 1], "Microsoft Teams")
+
+
 class CliTests(unittest.TestCase):
     def run_cli(self, *args, home):
         env = dict(os.environ, MEETING_HOME=home)

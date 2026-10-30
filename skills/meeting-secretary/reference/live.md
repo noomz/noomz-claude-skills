@@ -17,7 +17,9 @@
    - **Audio input**:
      - In-room meeting → the system's default input (`default`, or
        `$MEETING_DEVICE`).
-     - Online call (Teams/Zoom/Meet) → ONE input that carries both sides (a headset mic, or an
+     - Online call (Teams/Zoom/Meet) → preferred: one mic plus `--tap-app "Microsoft Teams"`, which
+       captures the call's far end digitally (needs the System Audio Recording permission for the
+       terminal app; see `setup.md`). Otherwise ONE input that carries both sides (a headset mic, or an
        aggregate device of mic + a loopback such as BlackHole). Never pass `--device` twice: two
        live mics mixed give steady noise, and `start` refuses it.
      - List input devices if unsure: `meeting-capture --device x` (unknown name lists them).
@@ -59,7 +61,7 @@ size) as `W:H:X:Y` (width, height, left, top) and re-snap. Confirm with the user
 before starting.
 
 ```bash
-MEETING start <name> [--device default|"<input name>"] [--lang th] \
+MEETING start <name> [--device default|"<input name>"] [--tap-app "<call app>" [--tap-clock <UID>]] [--lang th] \
                      [--app "<app>" [--window <title|id>] | --screen <N> [--screen-crop W:H:X:Y]]
 ```
 

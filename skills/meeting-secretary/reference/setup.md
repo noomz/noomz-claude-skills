@@ -52,6 +52,13 @@ headphones. Install a system-audio loopback device (BlackHole, eqMac or Loopback
 route the call's output through it (or into an aggregate device with the mic), and record that
 one device: two live mics mixed give steady noise, so `--device` twice is refused.
 
+Simpler, with no loopback driver: `--tap-app "Microsoft Teams"` taps the app's audio output
+digitally through a Core Audio process tap and mixes it with the one `--device` mic (the call
+stays audible). It needs the **System Audio Recording** permission for the terminal app
+(Privacy & Security > Screen & System Audio Recording); the first run may prompt. The tap is
+clocked by `BuiltInSpeakerDevice` (override with `--tap-clock <device UID>`); a virtual output
+such as eqMac as the clock delivers no audio. `recorder.log` shows per-source levels every 30 s.
+
 ## Test without a meeting
 
 Replay any recording through the live pipeline (`--rate 4` plays it 4× faster):

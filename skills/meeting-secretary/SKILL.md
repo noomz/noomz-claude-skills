@@ -38,7 +38,7 @@ under the project it finds there.
 | Command | Does |
 |---|---|
 | `MEETING status` | Is a meeting recording; chunk and line counts; last 3 lines |
-| `MEETING start NAME [--device D]... [--lang th] [--app APP [--window T] \| --screen N [--screen-crop W:H:X:Y]]` | Start the detached recorder (one `--device` only; native mic capture); prints JSON with `transcript` and `log` paths |
+| `MEETING start NAME [--device D]... [--tap-app APP [--tap-clock UID]] [--lang th] [--app APP [--window T] \| --screen N [--screen-crop W:H:X:Y]]` | Start the detached recorder (one `--device` only; native mic capture); prints JSON with `transcript` and `log` paths |
 | `MEETING windows` | List app windows (id, app, title, size) for `--app` / `--window` |
 | `MEETING snap (N \| --app APP [--window T])` | One preview frame; JSON with `png` and `blank` |
 | `MEETING stop` | Stop the recorder; waits up to 120 s for the last chunk's transcript. `"stopped": false` (exit 1) = still running: run `stop` again |

@@ -337,7 +337,15 @@ class LiveWindows:
         self.feed(b"", final=True)
 
 
-def run_daemon(mdir, devices, replay, rate, screen=None, crop=None, app=None, window=None):
+def capture_cmd(device, tap_app=None, tap_clock=None):
+    cmd = [str(CAPTURE_BIN), "--device", device]
+    if tap_app:
+        cmd += ["--tap-app", tap_app] + (["--tap-clock", tap_clock] if tap_clock else [])
+    return cmd
+
+
+def run_daemon(mdir, devices, replay, rate, screen=None, crop=None, app=None, window=None,
+               tap_app=None, tap_clock=None):
     chunks = mdir / "chunks"
     chunks.mkdir(parents=True, exist_ok=True)
     log = (mdir / "recorder.log").open("a", buffering=1)
@@ -354,7 +362,7 @@ def run_daemon(mdir, devices, replay, rate, screen=None, crop=None, app=None, wi
         rec = subprocess.Popen(cmd, stderr=log)
     else:
         # native capture: ffmpeg's avfoundation input drops ~12% of audio packets
-        cap = subprocess.Popen([str(CAPTURE_BIN), "--device", devices[0]], stdout=subprocess.PIPE, stderr=log)
+        cap = subprocess.Popen(capture_cmd(devices[0], tap_app, tap_clock), stdout=subprocess.PIPE, stderr=log)
         cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "s16le", "-ar", "16000", "-ac", "1",
                "-i", "pipe:0"] + seg
         rec = subprocess.Popen(cmd, stdin=cap.stdout, stderr=log)
@@ -467,7 +475,8 @@ def cmd_start(a):
     (mdir / "meta.json").write_text(json.dumps({"name": a.name, "started": started.isoformat(),
                                                 "devices": a.device, "replay": a.replay, "lang": a.lang,
                                                 "screen": a.screen, "screen_crop": a.screen_crop,
-                                                "app": a.app, "window": a.window}))
+                                                "app": a.app, "window": a.window,
+                                                "tap_app": a.tap_app, "tap_clock": a.tap_clock}))
     args = [sys.executable, __file__, "_daemon", a.name, "--rate", str(a.rate)]
     for d in a.device:
         args += ["--device", d]
@@ -475,6 +484,8 @@ def cmd_start(a):
         args += ["--screen", str(a.screen)] + (["--screen-crop", a.screen_crop] if a.screen_crop else [])
     if a.app:
         args += ["--app", a.app] + (["--window", a.window] if a.window else [])
+    if a.tap_app:
+        args += ["--tap-app", a.tap_app] + (["--tap-clock", a.tap_clock] if a.tap_clock else [])
     if a.replay:
         args += ["--replay", str(pathlib.Path(a.replay).resolve())]
     p = subprocess.Popen(args, start_new_session=True, stdout=subprocess.DEVNULL, stderr=(mdir / "recorder.log").open("a"))
@@ -695,6 +706,8 @@ def main():
     p.add_argument("--screen-crop", help="W:H:X:Y in full-resolution screen pixels (see snap)")
     p.add_argument("--app", help="record only this app's largest window (substring of the app name)")
     p.add_argument("--window", help="with --app: window title substring, or a window id from `windows`")
+    p.add_argument("--tap-app", help="also capture this app's audio output (e.g. 'Microsoft Teams') digitally, mixed with the mic")
+    p.add_argument("--tap-clock", help="with --tap-app: UID of the output device that clocks the tap (default BuiltInSpeakerDevice)")
     p = sub.add_parser("snap"); p.add_argument("screen", type=int, nargs="?"); p.add_argument("--out")
     p.add_argument("--screen-crop"); p.add_argument("--app"); p.add_argument("--window")
     sub.add_parser("windows"); sub.add_parser("status"); sub.add_parser("stop")
@@ -707,11 +720,13 @@ def main():
     p.add_argument("--replay"); p.add_argument("--rate", type=float, default=1.0)
     p.add_argument("--screen", type=int); p.add_argument("--screen-crop")
     p.add_argument("--app"); p.add_argument("--window")
+    p.add_argument("--tap-app"); p.add_argument("--tap-clock")
     a = ap.parse_args()
     if a.cmd == "start" and not a.device and not a.replay:
         a.device = [DEFAULT_DEVICE]
     if a.cmd == "_daemon":
-        run_daemon(ROOT / a.name, a.device, a.replay, a.rate, a.screen, a.screen_crop, a.app, a.window)
+        run_daemon(ROOT / a.name, a.device, a.replay, a.rate, a.screen, a.screen_crop, a.app, a.window,
+                   a.tap_app, a.tap_clock)
     else:
         {"start": cmd_start, "status": cmd_status, "stop": cmd_stop, "snap": cmd_snap, "windows": cmd_windows,
          "frame": cmd_frame, "final": cmd_final, "vocab": cmd_vocab}[a.cmd](a)
