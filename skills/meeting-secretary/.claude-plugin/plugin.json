@@ -1,7 +1,7 @@
 {
   "name": "meeting-secretary",
   "description": "Live meeting secretary for Claude Code on macOS: audio is recorded and transcribed on the Mac (Thai and English), the transcript goes to Claude, which answers questions from project sources, flags contradictions and logs decisions, then writes a fact-checked meeting note. /start-meeting, /end-meeting, /meeting-vocab.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": {
     "name": "noomz",
     "email": "lazym0m3nt@gmail.com"
