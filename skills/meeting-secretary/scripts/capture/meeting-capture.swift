@@ -52,6 +52,7 @@ if device != "default" {
 let inFmt = input.outputFormat(forBus: 0)
 let outFmt = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16000, channels: 1, interleaved: true)!
 guard let conv = AVAudioConverter(from: inFmt, to: outFmt) else { log("meeting-capture: no converter from \(inFmt)"); exit(1) }
+conv.downmix = true  // default keeps channel 1 only; an aggregate mic+loopback has the far end on channel 2
 let out = FileHandle.standardOutput
 var nextTime: AVAudioFramePosition = -1
 var gaps = 0
@@ -92,6 +93,11 @@ for s in [SIGTERM, SIGINT] {
     src.setEventHandler { finish() }
     src.resume()
     sources.append(src)
+}
+
+NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { _ in
+    log("meeting-capture: audio configuration changed (input device switched?) — exiting")
+    exit(3)
 }
 
 do { try engine.start() } catch { log("meeting-capture: engine start failed: \(error)"); exit(1) }

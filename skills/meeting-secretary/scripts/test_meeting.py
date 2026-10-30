@@ -71,6 +71,10 @@ class SpeechWindowTests(unittest.TestCase):
         wins = meeting.speech_windows([(0, 10), (10.3, 20)], 20, pad=0)
         self.assertEqual(wins, [(0, 10), (10.3, 20)])
 
+    def test_refused_merge_does_not_overlap_previous_window(self):
+        wins = meeting.speech_windows([(0, 10), (10.3, 20)], 20, pad=0.2)
+        self.assertEqual(wins, [(0, 10.2), (10.2, 20)])
+
     def test_pad_clamps_to_audio(self):
         self.assertEqual(meeting.speech_windows([(0.1, 9.9)], 10, pad=0.5), [(0, 10)])
 
@@ -118,6 +122,38 @@ class LiveWindowTests(unittest.TestCase):
         self.live.feed(self.pcm(17.9))
         self.live.feed(self.pcm(17.9))
         self.assertEqual(self.out.getvalue(), "[10:00:00] text1\n[10:00:18] text2\n")
+
+    def test_vad_error_keeps_carry_and_retries(self):
+        meeting.vad_segments = lambda wav: [(15, 20)] if wave.open(str(wav)).getnframes() == 20 * meeting.RATE \
+            else [(0, 5)]
+        self.live.feed(self.pcm(20))
+        def boom(wav):
+            raise RuntimeError("x")
+        meeting.vad_segments = boom
+        self.live.feed(self.pcm(20))
+        self.assertEqual(self.calls, [])
+        meeting.vad_segments = lambda wav: [(0.2, 4)]
+        self.live.feed(self.pcm(20))
+        self.assertEqual(self.out.getvalue(), "[10:00:14] text1\n")
+
+    def test_carry_with_no_speech_is_flushed(self):
+        meeting.vad_segments = lambda wav: [(15, 20)] if wave.open(str(wav)).getnframes() == 20 * meeting.RATE \
+            else []
+        self.live.feed(self.pcm(20))
+        self.live.feed(self.pcm(20))
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.out.getvalue(), "[10:00:14] text1\n")
+
+    def test_unreadable_chunk_advances_clock(self):
+        meeting.vad_segments = lambda wav: [(1, 2)]
+        self.live.skip(20)
+        self.live.feed(self.pcm(10))
+        self.assertEqual(self.out.getvalue(), "[10:00:20] text1\n")
+
+    def test_no_temp_files_left(self):
+        meeting.vad_segments = lambda wav: [(1, 2)]
+        self.live.feed(self.pcm(10))
+        self.assertEqual(list(pathlib.Path(self.tmp.name).iterdir()), [])
 
     def test_flush_emits_held_window(self):
         meeting.vad_segments = lambda wav: [(15, 20)] if wave.open(str(wav)).getnframes() == 20 * meeting.RATE \

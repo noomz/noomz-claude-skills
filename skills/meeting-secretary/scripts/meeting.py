@@ -35,7 +35,7 @@ Layout under the data root:
   <NAME>/full.wav              all chunks joined            (final)
   <NAME>/transcript-final.md   VAD-window re-pass: [mm:ss | HH:MM:SS] text  (final)
 """
-import argparse, datetime as dt, json, os, pathlib, re, signal, subprocess, sys, threading, time, wave
+import argparse, datetime as dt, json, os, pathlib, re, signal, subprocess, sys, tempfile, threading, time, wave
 
 def project_dir():
     try:
@@ -141,6 +141,8 @@ def speech_windows(segs, dur, maxlen=MAX_WINDOW, gap=WINDOW_GAP, pad=WINDOW_PAD)
         if wins and s - wins[-1][1] < gap and e - wins[-1][0] <= maxlen:
             wins[-1][1] = e
         else:
+            if wins:
+                s = max(s, wins[-1][1])  # padding must not re-cover audio the last window already holds
             while e - s > maxlen:
                 wins.append([s, s + maxlen])
                 s += maxlen
@@ -283,25 +285,30 @@ class LiveWindows:
 
     def feed(self, pcm, final=False):
         pcm = pcm[:len(pcm) // 2 * 2]
-        had_carry = bool(self.carry)
         buf, base = self.carry + pcm, self.pos
         dur = len(buf) / BPS
+        had_carry = bool(self.carry)
         self.carry, self.pos = b"", base + dur
         if not buf:
             return
-        wav = self.tmp / "vad-buffer.wav"
-        write_wav(wav, buf)
-        try:
-            wins = speech_windows(vad_segments(wav), dur)
-        except Exception as e:
-            self.log.write(f"{self.stamp(base)} ERROR vad: {e}\n")
-            return
+        with tempfile.TemporaryDirectory(dir=self.tmp) as d:
+            wav = pathlib.Path(d) / "buffer.wav"
+            write_wav(wav, buf)
+            try:
+                wins = speech_windows(vad_segments(wav), dur)
+            except Exception as e:
+                self.log.write(f"{self.stamp(base)} ERROR vad: {e}\n")
+                if not final:  # keep the audio, retry with the next chunk
+                    self.carry, self.pos = buf, base
+                return
         if not wins:
-            if not had_carry:
+            if had_carry:  # carried speech VAD no longer sees: transcribe it rather than lose it
+                self.emit(buf, base, 0, dur)
+            else:
                 self.out.write(f"[{self.stamp(base)}] (silence)\n")
             return
         held = None
-        for i, (t0, t1) in enumerate(wins):
+        for t0, t1 in wins:
             if not final and t1 >= dur - WINDOW_GAP and dur - t0 <= MAX_WINDOW:
                 held = t0
                 break
@@ -309,15 +316,21 @@ class LiveWindows:
         if held is not None:
             self.carry, self.pos = buf[int(held * RATE) * 2:], base + int(held * RATE) / RATE
 
+    def skip(self, seconds):
+        # an unreadable chunk still occupies time: settle the carry, then move the clock
+        self.feed(b"", final=True)
+        self.pos += seconds
+
     def emit(self, buf, base, t0, t1):
-        wav = self.tmp / "vad-window.wav"
-        write_wav(wav, cut_pcm(buf, t0, t1))
         stamp = self.stamp(base + t0)
-        try:
-            text = transcribe_one(wav, self.prompt, self.lang)
-        except Exception as e:
-            self.log.write(f"{stamp} ERROR window: {e}\n")
-            return
+        with tempfile.TemporaryDirectory(dir=self.tmp) as d:
+            wav = pathlib.Path(d) / "window.wav"
+            write_wav(wav, cut_pcm(buf, t0, t1))
+            try:
+                text = transcribe_one(wav, self.prompt, self.lang)
+            except Exception as e:
+                self.log.write(f"{stamp} ERROR window: {e}\n")
+                return
         self.out.write(f"[{stamp}] {text or '(silence)'}\n")
 
     def flush(self):
@@ -386,14 +399,24 @@ def run_daemon(mdir, devices, replay, rate, screen=None, crop=None, app=None, wi
                     pcm = w.readframes(w.getnframes())
             except (wave.Error, EOFError) as e:
                 log.write(f"ERROR chunk {f.name}: {e}\n")
+                live.skip(LIVE_SECONDS)
                 continue
             live.feed(pcm)
         if final:
             live.flush()
 
-    vid_dead = False
+    vid_dead, stalled, nfiles, last_new = False, False, 0, time.time()
     while rec.poll() is None:
         drain()
+        n = len(list(chunks.glob("*.wav")))
+        if n != nfiles:
+            nfiles, last_new = n, time.time()
+            if stalled:
+                stalled = False
+                log.write(f"{dt.datetime.now():%H:%M:%S} audio resumed\n")
+        elif not stopping and not stalled and time.time() - last_new > 2 * LIVE_SECONDS:
+            stalled = True
+            log.write(f"{dt.datetime.now():%H:%M:%S} ERROR no audio for {time.time() - last_new:.0f} s — capture stalled\n")
         if vid and not vid_dead and vid.poll() is not None and not stopping:
             vid_dead = True
             log.write(f"{dt.datetime.now():%H:%M:%S} ERROR screen ffmpeg exited — audio continues; "
@@ -407,6 +430,7 @@ def run_daemon(mdir, devices, replay, rate, screen=None, crop=None, app=None, wi
             cap.wait(timeout=10)
         except subprocess.TimeoutExpired:
             cap.kill()
+            cap.wait()
     if capt:
         stop_app.set()
         capt.join(timeout=40)
