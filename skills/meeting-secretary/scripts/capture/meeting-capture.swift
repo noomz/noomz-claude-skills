@@ -108,39 +108,71 @@ func convertAndPush(_ src: Int, _ conv: AVAudioConverter, _ buf: AVAudioPCMBuffe
     if o.frameLength > 0 { push(src, o.floatChannelData![0], Int(o.frameLength)) }
 }
 
-func tick() {
-    lock.lock()
+let driftStride = 32  // drift correction removes one sample per this many: ~3% pitch-free nudge, no audible gap
+var drifted = [0, 0]      // samples dropped to correct drift, per source
+var finishing = false
+let writeLock = NSLock()
+
+// Call with `lock` held. final: emit everything left, padding the shorter FIFO with silence.
+func takeMixed(final: Bool) -> [Float] {
     var out: [Float] = []
     if !tapAttached {
         out = fifo[0]; fifo[0] = []; fifo[1] = []
         emitted[0] += out.count
-    } else {
-        let n = min(fifo[0].count, fifo[1].count)
-        out.reserveCapacity(n)
-        for k in 0..<n { out.append(fifo[0][k] + fifo[1][k]) }
-        fifo[0].removeFirst(n); fifo[1].removeFirst(n)
-        emitted[0] += n; emitted[1] += n;
-        if fifo[0].count > maxLag {  // tap late: let the mic through alone
-            let extra = fifo[0].count - maxLag
-            out += fifo[0][0..<extra]; fifo[0].removeFirst(extra)
-            emitted[0] += extra; lagEvents[0] += 1
-        }
-        if fifo[1].count > maxLag {  // mic late: drop the oldest tap audio
-            fifo[1].removeFirst(fifo[1].count - maxLag); lagEvents[1] += 1
-        }
+        return out
     }
-    lock.unlock()
-    if out.isEmpty { return }
+    let n = final ? max(fifo[0].count, fifo[1].count) : min(fifo[0].count, fifo[1].count)
+    out.reserveCapacity(n)
+    for k in 0..<n {
+        let a = k < fifo[0].count ? fifo[0][k] : 0, b = k < fifo[1].count ? fifo[1][k] : 0
+        out.append(a + b)
+    }
+    fifo[0].removeFirst(min(n, fifo[0].count)); fifo[1].removeFirst(min(n, fifo[1].count))
+    emitted[0] += n; emitted[1] += n
+    if final { return out }
+    if fifo[0].count > maxLag {  // tap late: let the mic through alone
+        let extra = fifo[0].count - maxLag
+        out += fifo[0][0..<extra]; fifo[0].removeFirst(extra)
+        emitted[0] += extra; lagEvents[0] += 1
+    }
+    if fifo[1].count > maxLag {  // mic late: drop single samples, spread out, down to half the bound
+        let excess = fifo[1].count - maxLag / 2
+        var kept: [Float] = []
+        kept.reserveCapacity(fifo[1].count)
+        var dropped = 0
+        for (k, v) in fifo[1].enumerated() {
+            if dropped < excess && k % driftStride == driftStride - 1 { dropped += 1 } else { kept.append(v) }
+        }
+        fifo[1] = kept; drifted[1] += dropped; lagEvents[1] += 1
+    }
+    return out
+}
+
+// Returns false when stdout is closed.
+func writeOut(_ out: [Float]) -> Bool {
+    if out.isEmpty { return true }
     var pcm = [Int16](repeating: 0, count: out.count)
     for k in 0..<out.count { pcm[k] = Int16(max(-32768, min(32767, (out[k] * 32768).rounded()))) }
-    pcm.withUnsafeBytes { raw in
+    return pcm.withUnsafeBytes { raw in
         var off = 0
         while off < raw.count {  // raw write: a closed stdout must end us, not throw
             let w = write(1, raw.baseAddress! + off, raw.count - off)
-            if w <= 0 { finish() }
+            if w <= 0 { return false }
             off += w
         }
+        return true
     }
+}
+
+func tick() {
+    writeLock.lock()  // taking samples and writing them is one step, so finish() cannot reorder them
+    lock.lock()
+    if finishing { lock.unlock(); writeLock.unlock(); return }
+    let out = takeMixed(final: false)
+    lock.unlock()
+    let ok = writeOut(out)
+    writeLock.unlock()
+    if !ok { finish() }
 }
 
 func dbfs(_ s: Double, _ n: Int) -> String {
@@ -151,7 +183,7 @@ func logLevels() {
     lock.lock()
     var parts: [String] = []
     for s in 0..<(tapApp != nil ? 2 : 1) {
-        parts.append("\(names[s]) \(dbfs(sumSq[s], cnt[s])) dBFS (peak \(String(format: "%.2f", peak[s])), \(cnt[s]) samples, \(gaps[s]) gaps, \(lagEvents[s]) lag events)")
+        parts.append("\(names[s]) \(dbfs(sumSq[s], cnt[s])) dBFS (peak \(String(format: "%.2f", peak[s])), \(cnt[s]) samples, \(gaps[s]) gaps, \(lagEvents[s]) lag events, \(drifted[s]) drift-dropped samples)")
         sumSq[s] = 0; cnt[s] = 0; peak[s] = 0
     }
     lock.unlock()
@@ -214,19 +246,19 @@ final class TapSession {
 var tapSession: TapSession? = nil  // touched on the main queue only, plus finish()
 var lastTapState = ""
 
-// An exact app name or bundle id wins; a substring match ("Line" also hits "Outline") is the
-// fallback only. Returns the matched apps too, so the log shows exactly what is recorded.
+// Only an exact (case-insensitive) app name or an exact bundle id counts: a substring match ("Line" also
+// hits "Outline") would record the wrong app. A helper process belongs to an app when its bundle id is the
+// app's id or starts with that id plus "." ; the plain prefix would also take com.apple.SafariTechnologyPreview.
 func tapProcesses(_ name: String) -> (procs: [AudioObjectID], apps: [String]) {
-    let running = NSWorkspace.shared.runningApplications.filter { $0.bundleIdentifier != nil }
-    let exact = running.filter {
-        ($0.localizedName ?? "").caseInsensitiveCompare(name) == .orderedSame || $0.bundleIdentifier == name
+    let matched = NSWorkspace.shared.runningApplications.filter {
+        $0.bundleIdentifier != nil &&
+        (($0.localizedName ?? "").caseInsensitiveCompare(name) == .orderedSame || $0.bundleIdentifier == name)
     }
-    let matched = exact.isEmpty ? running.filter { ($0.localizedName ?? "").localizedCaseInsensitiveContains(name) } : exact
     let bundles = Set(matched.compactMap { $0.bundleIdentifier })
     if bundles.isEmpty { return ([], []) }
     let procs = caArray(AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyProcessObjectList).filter { o in
         guard let b = caString(o, kAudioProcessPropertyBundleID) else { return false }
-        return bundles.contains { b.hasPrefix($0) }
+        return bundles.contains { b == $0 || b.hasPrefix($0 + ".") }
     }.sorted()
     return (procs, matched.map { "\($0.localizedName ?? "?") (\($0.bundleIdentifier!))" }.sorted())
 }
@@ -252,7 +284,7 @@ func scanTap() {
         t.stop(); tapSession = nil
     }
     if procs.isEmpty {
-        setTapState("WARNING: no running audio process matches --tap-app '\(name)'; mic only, rescanning every 10 s")
+        setTapState("WARNING: no running app named (or with bundle id) --tap-app '\(name)'; mic only, rescanning every 10 s")
         return
     }
     guard let uid = clockUID() else { setTapState("WARNING: no output device for the tap clock; mic only"); return }
@@ -283,11 +315,16 @@ input.installTap(onBus: 0, bufferSize: 4096, format: micFmt) { buf, when in
 let finishLock = NSLock()
 func finish() -> Never {
     finishLock.lock()  // never unlocked: the first caller exits the process
-    tapSession?.stop(); tapSession = nil
+    tapSession?.stop(); tapSession = nil  // stop the producers first
     engine.stop()
+    writeLock.lock()  // waits out a tick() that is mid-write; never unlocked
     lock.lock()
-    let msg = "meeting-capture: stopped, \(String(format: "%.1f", Double(micFrames) / micFmt.sampleRate)) s mic input, mic \(gaps[0]) gaps \(emitted[0]) samples out, tap \(gaps[1]) gaps \(emitted[1]) samples out"
+    finishing = true
+    let rest = takeMixed(final: true)  // everything still queued, shorter side padded with silence
+    let msg = "meeting-capture: stopped, \(String(format: "%.1f", Double(micFrames) / micFmt.sampleRate)) s mic input, mic \(gaps[0]) gaps \(emitted[0]) samples out, tap \(gaps[1]) gaps \(emitted[1]) samples out, drift-dropped \(drifted[0])/\(drifted[1])"
     lock.unlock()
+    _ = writeOut(rest)
+    close(1)
     log(msg)
     exit(0)
 }

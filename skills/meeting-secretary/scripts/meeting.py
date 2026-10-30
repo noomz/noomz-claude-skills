@@ -69,6 +69,7 @@ LIVE_SECONDS = 20
 MAX_WINDOW = 15  # s per ASR window
 WINDOW_GAP = 0.6  # s: pauses shorter than this stay inside one window
 WINDOW_PAD = 0.2
+CONTEXT_SECONDS = 1.0  # audio kept after each chunk when no window is open
 RATE = 16000
 BPS = 2 * RATE  # bytes per second of 16 kHz mono s16
 
@@ -279,6 +280,8 @@ class LiveWindows:
     def __init__(self, tmp, started, out, log, prompt, lang):
         self.tmp, self.started, self.out, self.log, self.prompt, self.lang = tmp, started, out, log, prompt, lang
         self.carry, self.pos = b"", 0.0  # pos = absolute seconds at the start of carry
+        self.confirmed = 0.0  # seconds of carry (from its start) that belong to a held speech window
+        self.committed = 0.0  # absolute seconds already transcribed: nothing before it is emitted again
 
     def stamp(self, t):
         return (self.started + dt.timedelta(seconds=t)).strftime("%H:%M:%S")
@@ -286,35 +289,43 @@ class LiveWindows:
     def feed(self, pcm, final=False):
         pcm = pcm[:len(pcm) // 2 * 2]
         buf, base = self.carry + pcm, self.pos
-        dur = len(buf) / BPS
-        had_carry = bool(self.carry)
-        self.carry, self.pos = b"", base + dur
+        dur, chunk_at = len(buf) / BPS, base + len(self.carry) / BPS
+        confirmed = self.confirmed  # seconds at the start of buf already known to be speech (a held window)
+        self.carry, self.pos, self.confirmed = b"", base + dur, 0.0
         if not buf:
             return
         with tempfile.TemporaryDirectory(dir=self.tmp) as d:
             wav = pathlib.Path(d) / "buffer.wav"
             write_wav(wav, buf)
             try:
-                wins = speech_windows(vad_segments(wav), dur)
+                segs = vad_segments(wav)
             except Exception as e:
                 self.log.write(f"{self.stamp(base)} ERROR vad: {e}\n")
                 if not final:  # keep the audio, retry with the next chunk
-                    self.carry, self.pos = buf, base
+                    self.carry, self.pos, self.confirmed = buf, base, confirmed
                 return
-        if not wins:
-            if had_carry:  # carried speech VAD no longer sees: transcribe it rather than lose it
-                self.emit(buf, base, 0, dur)
-            else:
-                self.out.write(f"[{self.stamp(base)}] (silence)\n")
-            return
-        held = None
+        if confirmed:  # speech held from the last pass stays speech even if VAD now reports only newer audio
+            segs = sorted(list(segs) + [(0.0, min(confirmed, dur))])
+        wins = speech_windows(segs, dur)
+        if not wins and not confirmed and pcm:
+            self.out.write(f"[{self.stamp(chunk_at)}] (silence)\n")
+        held, held_end, last_end = None, 0.0, max(0.0, self.committed - base)
         for t0, t1 in wins:
             if not final and t1 >= dur - WINDOW_GAP and dur - t0 <= MAX_WINDOW:
-                held = t0
+                held, held_end = t0, t1
                 break
-            self.emit(buf, base, t0, t1)
+            self.emit(buf, base, max(t0, last_end), t1)
+            last_end = t1
+        self.committed = base + last_end
+        if final:
+            return
+        # keep a trailing second even when no window is open: speech that starts in the last
+        # fraction of a chunk is too short for VAD now and is re-scored with the next chunk
+        start = held if held is not None else max(last_end, dur - CONTEXT_SECONDS)
+        k = int(start * RATE)
+        self.carry, self.pos = buf[k * 2:], base + k / RATE
         if held is not None:
-            self.carry, self.pos = buf[int(held * RATE) * 2:], base + int(held * RATE) / RATE
+            self.confirmed = held_end - held
 
     def skip(self, seconds):
         # an unreadable chunk still occupies time: settle the carry, then move the clock

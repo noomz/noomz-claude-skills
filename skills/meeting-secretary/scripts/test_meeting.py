@@ -121,7 +121,7 @@ class LiveWindowTests(unittest.TestCase):
         meeting.vad_segments = lambda wav: [(1, 2)]
         self.live.feed(self.pcm(17.9))
         self.live.feed(self.pcm(17.9))
-        self.assertEqual(self.out.getvalue(), "[10:00:00] text1\n[10:00:18] text2\n")
+        self.assertEqual(self.out.getvalue(), "[10:00:00] text1\n[10:00:17] text2\n")
 
     def test_vad_error_keeps_carry_and_retries(self):
         meeting.vad_segments = lambda wav: [(15, 20)] if wave.open(str(wav)).getnframes() == 20 * meeting.RATE \
@@ -154,6 +154,36 @@ class LiveWindowTests(unittest.TestCase):
         meeting.vad_segments = lambda wav: [(1, 2)]
         self.live.feed(self.pcm(10))
         self.assertEqual(list(pathlib.Path(self.tmp.name).iterdir()), [])
+
+    def frames(self, wav):
+        return wave.open(str(wav)).getnframes() / meeting.RATE
+
+    def test_speech_at_chunk_end_is_rescored_with_next_chunk(self):
+        # speech from 19.8 s is too short for VAD in chunk 1; the kept 1 s of context lets chunk 2 catch it
+        meeting.vad_segments = lambda wav: [] if self.frames(wav) == 20 else [(0.8, 3.0)]
+        self.live.feed(self.pcm(20))
+        self.assertEqual(self.out.getvalue(), "[10:00:00] (silence)\n")
+        self.live.feed(self.pcm(20))
+        self.assertEqual(self.out.getvalue(), "[10:00:00] (silence)\n[10:00:19] text1\n")
+        self.assertAlmostEqual(self.calls[0], 2.6, places=1)
+
+    def test_held_speech_survives_when_vad_reports_only_new_audio(self):
+        meeting.vad_segments = lambda wav: {20: [(18, 20)], 12.2: [(9.6, 12)]}.get(round(self.frames(wav), 1), [])
+        self.live.feed(self.pcm(20))  # window 17.8-20 held, carry 2.2 s
+        self.live.feed(self.pcm(10))  # buffer 12.2 s; VAD sees only 9.6-12
+        self.assertEqual(self.out.getvalue(), "[10:00:17] text1\n")
+        self.assertAlmostEqual(self.calls[0], 2.4, places=1)
+        self.live.flush()
+        self.assertEqual(len(self.calls), 2)
+        self.assertEqual(self.out.getvalue().splitlines()[1], "[10:00:27] text2")
+
+    def test_nothing_is_emitted_twice(self):
+        meeting.vad_segments = lambda wav: [(2, 5)]
+        self.live.feed(self.pcm(20))
+        self.live.feed(self.pcm(20))  # context carry holds no speech at 2-5 s of its own buffer
+        self.live.flush()
+        stamps = [l.split("]")[0] for l in self.out.getvalue().splitlines()]
+        self.assertEqual(len(stamps), len(set(stamps)))
 
     def test_flush_emits_held_window(self):
         meeting.vad_segments = lambda wav: [(15, 20)] if wave.open(str(wav)).getnframes() == 20 * meeting.RATE \
