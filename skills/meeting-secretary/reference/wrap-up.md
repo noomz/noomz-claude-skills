@@ -31,7 +31,7 @@ source). Use `transcript-live.md` as a second witness:
 - Where the two disagree on a **number, name, date, id or issue number**, the figure is
   uncertain — mark it (?) and quote both.
 - ASR does not identify speakers. Attribute a statement only when the speaker is named
-  or obvious from context ("พี่ต้น ช่วยเช็ค…" → the owner is Ton); otherwise write
+  or obvious from context ("พี่สมชาย ช่วยเช็ค…" → the owner is Somchai); otherwise write
   "someone asked".
 - Thai ASR spells English loanwords in Thai script ("ดีพลอย" = deploy, "สเตจจิ้ง" =
   staging, "พีอาร์" = PR). Normalize these in the note, never in quotes you use as

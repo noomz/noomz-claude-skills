@@ -214,15 +214,21 @@ final class TapSession {
 var tapSession: TapSession? = nil  // touched on the main queue only, plus finish()
 var lastTapState = ""
 
-func tapProcesses(_ name: String) -> [AudioObjectID] {
-    let bundles = Set(NSWorkspace.shared.runningApplications
-        .filter { ($0.localizedName ?? "").localizedCaseInsensitiveContains(name) }
-        .compactMap { $0.bundleIdentifier })
-    if bundles.isEmpty { return [] }
-    return caArray(AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyProcessObjectList).filter { o in
+// An exact app name or bundle id wins; a substring match ("Line" also hits "Outline") is the
+// fallback only. Returns the matched apps too, so the log shows exactly what is recorded.
+func tapProcesses(_ name: String) -> (procs: [AudioObjectID], apps: [String]) {
+    let running = NSWorkspace.shared.runningApplications.filter { $0.bundleIdentifier != nil }
+    let exact = running.filter {
+        ($0.localizedName ?? "").caseInsensitiveCompare(name) == .orderedSame || $0.bundleIdentifier == name
+    }
+    let matched = exact.isEmpty ? running.filter { ($0.localizedName ?? "").localizedCaseInsensitiveContains(name) } : exact
+    let bundles = Set(matched.compactMap { $0.bundleIdentifier })
+    if bundles.isEmpty { return ([], []) }
+    let procs = caArray(AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyProcessObjectList).filter { o in
         guard let b = caString(o, kAudioProcessPropertyBundleID) else { return false }
         return bundles.contains { b.hasPrefix($0) }
     }.sorted()
+    return (procs, matched.map { "\($0.localizedName ?? "?") (\($0.bundleIdentifier!))" }.sorted())
 }
 
 func clockUID() -> String? {
@@ -239,7 +245,7 @@ func setTapState(_ s: String) { if s != lastTapState { lastTapState = s; log("me
 
 func scanTap() {
     guard let name = tapApp else { return }
-    let procs = tapProcesses(name)
+    let (procs, apps) = tapProcesses(name)
     if let t = tapSession, t.procs == procs { return }
     if let t = tapSession {  // process set changed (or gone): drop the old tap
         lock.lock(); tapAttached = false; fifo[1] = []; lock.unlock()
@@ -254,7 +260,7 @@ func scanTap() {
         tapSession = t
         lock.lock(); tapAttached = true; lock.unlock()
         lastTapState = ""
-        log("meeting-capture: tapping '\(name)': \(procs.count) process object(s), clock '\(uid)', unmuted")
+        log("meeting-capture: tapping '\(name)': \(apps.joined(separator: ", ")); \(procs.count) process object(s), clock '\(uid)', unmuted")
     } else {
         setTapState("WARNING: tap for '\(name)' could not start; mic only, retrying every 10 s")
     }
