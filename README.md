@@ -87,6 +87,21 @@ Each skill requires `SKILL.md`; the optional `agents/openai.yaml` files provide 
 
 Bundled hooks (for example `domain-gloss`'s standing-mode reminder) load only through plugin install; a symlinked or copied skill directory gets the skill without its hook.
 
+### Pi
+
+Pi reads the skill directory. It does not read `.claude-plugin/plugin.json`, and it does not run Claude hooks. From a checkout of this repository:
+
+```bash
+cd /path/to/claude-skills
+test -f skills/obsidian/SKILL.md
+mkdir -p ~/.agents/skills
+test ! -e ~/.agents/skills/obsidian && ln -s "$(pwd)/skills/obsidian" ~/.agents/skills/obsidian
+```
+
+Run the last two lines once per skill, with that skill's directory name in place of `obsidian`. `mkdir -p` creates the parent without touching anything already there. `$(pwd)` has to be this repository's root, because the link target is `skills/<skill>` underneath it. `test ! -e` refuses an existing file, directory, or link, so a second run will not replace a destination you already have. Remove or rename that destination yourself before linking a different path.
+
+`pi --skill ~/.agents/skills/obsidian` loads one skill without the user directory. Which skills work, and which Claude grants do not carry over, is in [docs/harness-coverage.md](docs/harness-coverage.md).
+
 ### Claude Code — `/plugin` (recommended)
 
 This repo is also a Claude Code plugin marketplace. Install from inside Claude Code:
@@ -165,7 +180,7 @@ That covers skill-scoped usage. If you want the same commands allowed **globally
 }
 ```
 
-Note: at the time of writing, Claude Code plugins cannot pre-declare `permissions` in a plugin-shipped `settings.json` (only `agent` and `subagentStatusLine` are supported). Skill-level `allowed-tools` is the supported mechanism.
+Note: at the time of writing, Claude Code plugins cannot pre-declare `permissions` in a plugin-shipped `settings.json` (only `agent` and `subagentStatusLine` are supported). Skill-level `allowed-tools` is the supported mechanism in Claude Code. It is not a permission grant on Codex, and Pi does not treat it as permission enforcement or run Claude hooks automatically. Pi uses its own tool permissions. See [docs/harness-coverage.md](docs/harness-coverage.md).
 
 ## Repo layout
 

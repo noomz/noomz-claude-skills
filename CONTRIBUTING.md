@@ -9,7 +9,8 @@ Thanks for contributing a skill. This repo follows Anthropic's [Agent Skills aut
 3. **Write `SKILL.md`** with valid YAML frontmatter (see template below)
 4. **Add `reference/` and `examples/`** if the skill benefits from progressive disclosure
 5. **Update the root `README.md`** skill table
-6. **Open a PR** with a short description of what the skill enables
+6. **State harness coverage** in [`docs/harness-coverage.md`](docs/harness-coverage.md): one row with Claude Code, Codex, and Pi status. Separate dependencies, manual steps, and missing functionality. `allowed-tools` and Claude hooks are Claude Code behavior, not coverage on Codex or Pi. Do not leave the row implied.
+7. **Open a PR** with a short description of what the skill enables
 
 ## `SKILL.md` template
 
@@ -74,6 +75,7 @@ Before opening a PR, verify:
 - [ ] All internal links resolve
 - [ ] No reference file links to another reference file (keep it one level deep)
 - [ ] Skill directory contains no secrets, personal config, or large binaries
+- [ ] [`docs/harness-coverage.md`](docs/harness-coverage.md) has a row for this skill, and the row does not claim Codex or Pi support for `allowed-tools` or Claude hooks
 - [ ] Tested with a real task in Claude Code or Claude.ai
 
 ## License
