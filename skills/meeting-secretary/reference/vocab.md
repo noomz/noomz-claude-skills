@@ -57,7 +57,7 @@ important terms first.
 - New file: a one-line `#` header saying what it is, then the terms.
 - Existing file: keep every line already there, comments included. Append new terms
   under `# added YYYY-MM-DD`. Do not delete lines yourself; list terms that look stale
-  and ask (AskUserQuestion) before removing any.
+  and ask the user (AskUserQuestion in Claude Code; a plain question elsewhere) before removing any.
 
 ## 4. Report
 

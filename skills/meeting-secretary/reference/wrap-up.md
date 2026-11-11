@@ -13,8 +13,10 @@ it, and where.
    prints `"stopped": false`, the recorder is still finishing a chunk: run `stop` once
    more, and if that fails too, tell the user the pid and ask before `kill`. Do not
    run `final` while the recorder is alive.
-2. Stop re-arming the transcript Monitor (and stop it with TaskStop if still running).
-3. `MEETING final <name>` with `run_in_background: true`. It joins the chunks into
+2. If a live transcript Monitor was armed (Claude Code), stop re-arming it and stop it
+   with TaskStop if still running. Otherwise skip this step.
+3. `MEETING final <name>`, run in the background (`run_in_background: true` in Claude
+   Code), or wait for it to finish elsewhere. It joins the chunks into
    `full.wav` and re-transcribes the speech windows VAD finds (up to 15 s each, silence removed; about 4 s per minute of audio on
    Apple Silicon — ~4 min for an hour). Output: `transcript-final.md`, lines
    `[mm:ss | HH:MM:SS] text`. While it runs, read `live-notes.md` and start on the
@@ -96,7 +98,7 @@ A short readout:
 - note path, meeting length, number of decisions / action items / open questions
 - fact-check counts: confirmed / contradicts / meeting-only / uncertain (?)
 - every `[doc: contradicts]` item, one line each — these need the user's attention
-- the proposed follow-ups, and ask (AskUserQuestion) which to apply
+- the proposed follow-ups, and ask the user (AskUserQuestion in Claude Code; a plain question elsewhere) which to apply
 - one line: raw audio (and `screen.mp4`, if recorded) location and size (private
   material; the user decides when to delete)
 
