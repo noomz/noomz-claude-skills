@@ -37,6 +37,10 @@ def write(path, lines):
     return path
 
 
+def tokens(i, o, r=0, w=0):
+    return {"input": i, "output": o, "cacheRead": r, "cacheWrite": w}
+
+
 def linear(count, tool=None, prefix="e", tools_per_turn=1):
     """user, then `count` assistant turns, each (optionally) with a tool call; ids prefix0, prefix1, ..."""
     out = [message(prefix + "0", None, "user", "do the work", 1)]
@@ -60,11 +64,11 @@ class PiCase(unittest.TestCase):
         self.cwd = os.getcwd()
         self.addCleanup(os.chdir, self.cwd)
 
-    def run_cli(self, *argv, json_name="out.json"):
+    def run_cli(self, *argv, json_name="out.json", min_turns="1"):
         out_path = self.root / json_name
         buffer = io.StringIO()
         with contextlib.redirect_stdout(buffer):
-            session_audit.main(list(argv) + ["--min-turns", "1", "--json", str(out_path)])
+            session_audit.main(list(argv) + ["--min-turns", min_turns, "--json", str(out_path)])
         return buffer.getvalue(), json.loads(out_path.read_text())
 
     def pi(self, *argv, **kw):
@@ -422,6 +426,186 @@ class CliTests(PiCase):
         self.assertIn("path (entries on the selected leaf-to-root path)", out)
         self.assertIn("file (every entry in this file)", out)
         self.assertIn("aggregate path usage (excluding 0 forked sessions)", out)
+
+
+class GapTests(PiCase):
+    """Cross-harness gaps left after T5: project isolation, lineage shapes, usage scope, filters."""
+
+    def audit(self, path):
+        sessions, counts = session_audit.scan_pi([path], None, False, [], [])
+        return sessions[0], counts
+
+    def in_store(self, *argv, **kw):
+        return self.pi("--store", str(self.store), "--project", str(self.project), *argv, **kw)
+
+    def kinds(self, data):
+        return {(p["kind"], os.path.basename(p["path"])) for p in data["problems"]}
+
+    def test_three_projects_in_one_store_are_isolated(self):
+        dirs = {name: self.root / name for name in ("A", "B", "C")}
+        for d in dirs.values():
+            d.mkdir()
+        write(self.store / "a1.jsonl", [header("a1", str(dirs["A"]))] + linear(2))
+        write(self.store / "a2.jsonl", [header("a2", str(dirs["A"]) + "/")] + linear(2))
+        write(self.store / "b1.jsonl", [header("b1", str(dirs["B"]))] + linear(2))
+        write(self.store / "c1.jsonl", [header("c1", str(dirs["C"]))] + linear(2))
+        for name, ids in (("A", ["a1", "a2"]), ("B", ["b1"]), ("C", ["c1"])):
+            with self.subTest(project=name):
+                _, data = self.pi("--store", str(self.store), "--project", str(dirs[name]))
+                self.assertEqual(sorted(s["session_id"] for s in data["sessions"]), ids)
+                self.assertEqual((data["files"]["found"], data["files"]["excluded_other_project"]), (4, 4 - len(ids)))
+
+    def test_cwd_missing_excluded_in_dir_mode_but_audited_as_file(self):
+        head = header("nocwd")
+        del head["cwd"]
+        path = write(self.store / "n.jsonl", [head] + linear(2))
+        write(self.store / "ok.jsonl", [header("ok", str(self.project))] + linear(2))
+        out, data = self.in_store()
+        self.assertEqual([s["session_id"] for s in data["sessions"]], ["ok"])
+        self.assertEqual(data["files"]["excluded_other_project"], 1)
+        self.assertIn(("cwd_missing", "n.jsonl"), self.kinds(data))
+        self.assertIn("cwd_missing", out)
+        _, data = self.pi("--session-file", str(path))
+        self.assertEqual([s["session_id"] for s in data["sessions"]], ["nocwd"])
+        self.assertIsNone(data["sessions"][0]["lineage"]["cwd"])
+        self.assertNotIn("cwd_missing", {p["kind"] for p in data["problems"]})
+
+    def test_duplicate_session_id_both_audited_with_suffix(self):
+        write(self.store / "a.jsonl", [header("dup", str(self.project))] + linear(2))
+        write(self.store / "b.jsonl", [header("dup", str(self.project))] + linear(2, prefix="f"))
+        out, data = self.in_store()
+        self.assertEqual([s["session_id"] for s in data["sessions"]], ["dup", "dup~2"])
+        self.assertIn(("duplicate_session_id", "b.jsonl"), self.kinds(data))
+        self.assertIn("duplicate_session_id", out)
+
+    def test_compaction_keeps_earlier_history_on_the_path(self):
+        lines = [header("cmp", str(self.project)), message("u1", None, "user", "go", 1),
+                 message("a1", "u1", "assistant", [call("write", path=".planning/STATE.md", content="x")], 2, model="m", usage=tokens(1, 2)),
+                 message("k1", "a1", "user", "kept from here", 3),
+                 {"type": "compaction", "id": "c1", "parentId": "k1", "timestamp": stamp(4), "summary": "s", "firstKeptEntryId": "k1", "tokensBefore": 999, "usage": tokens(10, 20)},
+                 message("u2", "c1", "user", "continue", 5)]
+        parent = "u2"
+        for i in range(15):
+            lines.append(message("b%d" % i, parent, "assistant", [call("bash", command="echo %d" % i)], 6 + i, model="m", **({"usage": tokens(3, 4)} if i == 0 else {})))
+            parent = "b%d" % i
+        path = write(self.store / "c.jsonl", lines)
+        session, _ = self.audit(path)
+        self.assertEqual(len(session.tools), 16)
+        self.assertEqual(session.tools[0]["name"], "write")
+        self.assertEqual(session.lineage["abandoned_entries"], 0)
+        _, data = self.in_store()
+        self.assertEqual(self.detectors(data)["D1"]["status"], "PASS")
+        scope = data["sessions"][0]["usage"]["path"]
+        self.assertEqual(scope["buckets"]["assistant"]["total"]["input_tokens"], 1 + 3)
+        self.assertEqual(scope["buckets"]["compaction"]["total"]["output_tokens"], 20)
+        self.assertEqual(scope["total"]["input_tokens"], 1 + 3 + 10)
+
+    def test_context_edit_is_not_applied(self):
+        lines = [header("ce", str(self.project)), message("u1", None, "user", "go", 1),
+                 message("a1", "u1", "assistant", [call("read", path="x.txt")], 2, model="m", usage=tokens(5, 6)),
+                 {"type": "context_edit", "id": "x1", "parentId": "a1", "timestamp": stamp(3), "targetId": "a1", "replacement": None},
+                 message("u2", "x1", "user", "next", 4), message("a2", "u2", "assistant", "an answer of some length", 5, model="m")]
+        path = write(self.store / "e.jsonl", lines)
+        session, _ = self.audit(path)
+        self.assertEqual([t["name"] for t in session.tools], ["read"])
+        _, data = self.in_store()
+        scope = data["sessions"][0]["usage"]["path"]
+        self.assertEqual((scope["total"]["input_tokens"], scope["total"]["output_tokens"]), (5, 6))
+        self.assertEqual(data["prompts"][0]["tokens"], 6)
+
+    def test_mid_session_usage_entry_stays_on_the_path(self):
+        lines = [header("ue", str(self.project)), message("u1", None, "user", "go", 1),
+                 message("a1", "u1", "assistant", "first answer of some length", 2, model="m", usage=tokens(1, 1)),
+                 {"type": "usage", "id": "w1", "parentId": "a1", "timestamp": stamp(3), "kind": "cache_warm", "model": "m", "usage": tokens(0, 0, 50)},
+                 message("a2", "w1", "assistant", "second answer of some length", 4, model="m", usage=tokens(2, 2))]
+        write(self.store / "u.jsonl", lines)
+        _, data = self.in_store()
+        session = data["sessions"][0]
+        self.assertEqual((session["lineage"]["abandoned_entries"], session["lineage"]["path_entries"]), (0, 4))
+        bucket = session["usage"]["path"]["buckets"]["usage_entry"]
+        self.assertEqual(bucket["by_kind"]["cache_warm"]["cache_read_input_tokens"], 50)
+        self.assertEqual(session["usage"]["path"]["total"]["cache_read_input_tokens"], 50)
+
+    def test_branch_summary_on_path_and_abandoned_branch_file_scope_only(self):
+        lines = [header("bs", str(self.project)), message("u1", None, "user", "go", 1),
+                 message("a1", "u1", "assistant", [call("bash", command="old")], 2, model="m", usage=tokens(100, 100)),
+                 {"type": "branch_summary", "id": "s1", "parentId": "u1", "timestamp": stamp(3), "fromId": "a1", "summary": "s", "usage": tokens(5, 5, 5, 5)},
+                 message("a2", "s1", "assistant", [call("read", path="x")], 4, model="m", usage=tokens(1, 1))]
+        path = write(self.store / "b.jsonl", lines)
+        session, _ = self.audit(path)
+        self.assertEqual([t["name"] for t in session.tools], ["read"])
+        usage = session.usage
+        self.assertEqual(usage["path"]["total"], {"input_tokens": 6, "output_tokens": 6, "cache_read_input_tokens": 5, "cache_creation_input_tokens": 5})
+        self.assertEqual(usage["path"]["buckets"]["branch_summary"]["total"]["input_tokens"], 5)
+        self.assertEqual(usage["path"]["buckets"]["assistant"]["total"]["input_tokens"], 1)
+        self.assertEqual(usage["file"]["buckets"]["assistant"]["total"]["input_tokens"], 101)
+        self.assertEqual(session.lineage["abandoned_entries"], 1)
+
+    def test_second_root_appended_last_becomes_leaf(self):
+        first = [message("r1", None, "user", "go", 1), message("a1", "r1", "assistant", [call("bash", command="x")], 2)]
+        res = pi_sessions.load_file(write(self.store / "r.jsonl", [header()] + first + [message("r2", None, "user", "again", 3)]))
+        path, info = pi_sessions.select_path(res)
+        self.assertEqual(([e["id"] for e in path], info["leaf_id"], info["abandoned_entries"]), (["r2"], "r2", 2))
+        lines = [header()] + first + [message("r2", None, "user", "again", 3), message("a2", "r2", "assistant", [call("read", path="y")], 4)]
+        session, _ = self.audit(write(self.store / "r.jsonl", lines))
+        self.assertEqual((session.lineage["path_entries"], session.lineage["abandoned_entries"]), (2, 2))
+        self.assertEqual([t["name"] for t in session.tools], ["read"])
+
+    def test_version_2_tree_with_custom_and_hook_message(self):
+        lines = [header("v2", str(self.project), version=2), message("u1", None, "user", "go", 1),
+                 {"type": "custom", "id": "cu", "parentId": "u1", "timestamp": stamp(2), "customType": "ext", "data": {}},
+                 message("hm", "cu", "hookMessage", "hook text that must not become a prompt", 3),
+                 message("a1", "hm", "assistant", [call("bash", command="x")], 4, model="m")]
+        write(self.store / "v2.jsonl", lines)
+        out, data = self.in_store()
+        lineage = data["sessions"][0]["lineage"]
+        self.assertEqual((lineage["version"], lineage["leaf_source"], lineage["path_entries"], lineage["abandoned_entries"]), (2, "last-appended", 4, 0))
+        self.assertEqual([p["prompt"] for p in data["prompts"]], ["go"])
+        self.assertTrue(data["sessions"][0]["complete"])
+        self.assertIn("| v2 |", out)
+
+    def test_since_and_min_turns_filter_pi_sessions(self):
+        write(self.store / "recent.jsonl", [header("recent", str(self.project))] + linear(3))
+        old = [header("old", str(self.project))] + linear(3, prefix="o")
+        for entry in old:
+            entry["timestamp"] = "2020-01-01T00:00:00.000Z"
+        write(self.store / "old.jsonl", old)
+        write(self.store / "short.jsonl", [header("short", str(self.project))] + linear(1, prefix="s"))
+        for argv, min_turns, ids in ((["--since", "2026-01-01"], "1", ["recent", "short"]), ([], "2", ["old", "recent"]), (["--since", "2026-01-01"], "2", ["recent"])):
+            with self.subTest(argv=argv, min_turns=min_turns):
+                out, data = self.in_store(*argv, min_turns=min_turns)
+                self.assertEqual(sorted(s["session_id"] for s in data["sessions"]), ids)
+                self.assertEqual((data["files"]["found"], data["files"]["audited"]), (3, len(ids)))
+                self.assertIn("files audited: %d" % len(ids), out)
+                self.assertIn("sessions kept: %d main" % len(ids), out)
+
+    def test_fork_and_parent_in_one_dir_aggregate_parent_only(self):
+        base = [message("r", None, "user", "go", 1), message("a", "r", "assistant", "an answer of some length", 2, model="m", usage=tokens(10, 1))]
+        write(self.store / "parent.jsonl", [header("parent", str(self.project))] + base)
+        more = [message("u2", "a", "user", "more", 3), message("a2", "u2", "assistant", "the fork's own reply", 4, model="m", usage=tokens(7, 2))]
+        write(self.store / "fork.jsonl", [header("fork", str(self.project), parentSession=str(self.store / "parent.jsonl"))] + base + more)
+        out, data = self.in_store()
+        by_id = {s["session_id"]: s for s in data["sessions"]}
+        agg = data["aggregates"]["usage"]
+        self.assertEqual(agg["total"], by_id["parent"]["usage"]["path"]["total"])
+        self.assertNotEqual(agg["total"], by_id["fork"]["usage"]["path"]["total"])
+        self.assertEqual(by_id["fork"]["lineage"]["lineage_followed"], False)
+        note = "1 forked sessions include copied history; detector rates may double-count"
+        self.assertIn("note: " + note, out)
+        self.assertEqual(data["aggregates"]["notes"], [note])
+
+    def test_assistant_without_usage_is_not_zero(self):
+        lines = [header("mix", str(self.project)), message("u1", None, "user", "first ask", 1),
+                 message("a1", "u1", "assistant", "an answer without usage", 2, model="m"),
+                 message("a2", "a1", "assistant", "an answer with usage", 3, model="m", usage=tokens(2, 3, 4, 5)),
+                 message("u2", "a2", "user", "second ask", 4),
+                 message("a3", "u2", "assistant", "another answer without usage", 5, model="m")]
+        write(self.store / "m.jsonl", lines)
+        _, data = self.in_store()
+        scope = data["sessions"][0]["usage"]["path"]
+        self.assertEqual(scope["total"], {"input_tokens": 2, "output_tokens": 3, "cache_read_input_tokens": 4, "cache_creation_input_tokens": 5})
+        self.assertEqual(scope["buckets"]["assistant"]["entries"], 1)
+        self.assertEqual([(p["prompt"], p["tokens"]) for p in data["prompts"]], [("first ask", 8), ("second ask", None)])
 
 
 class ClaudeCompatTests(PiCase):

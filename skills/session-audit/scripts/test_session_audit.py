@@ -1,4 +1,7 @@
+import contextlib
+import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -141,5 +144,80 @@ class ClaudeProblemTests(unittest.TestCase):
             sessions = session_audit.scan(td, 1, None, MONEY, TRUTH, problems=problems)
             self.assertEqual(sessions[0].assistant, 1)
             self.assertEqual([(p["kind"], p["detail"]) for p in problems], [("malformed_lines", "1 line(s) skipped")])
+
+# Keys the Claude JSON report carried before Pi support (T5); Claude output must keep them.
+PRE_T5_TOP = {"store", "sessions", "prompts", "aggregates"}
+PRE_T5_SESSION = {"session_id", "kind", "assistant_turns", "money_hits", "prompt_hits", "topic_hits", "topic_terms", "truth_paths", "detectors"}
+PRE_T5_AGGREGATES = {"labels", "agent_calls", "agent_calls_with_model", "off_claude", "tokens_per_model", "token_fields_per_model", "subagent_tokens_per_model"}
+
+class ClaudeCliTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(os.path.realpath(tmp.name))
+        self.addCleanup(os.chdir, os.getcwd())
+
+    def run_main(self, *argv):
+        out_path = self.root / "out.json"
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            session_audit.main(list(argv) + ["--min-turns", "1", "--json", str(out_path)])
+        return buffer.getvalue(), json.loads(out_path.read_text())
+
+    def write_session(self, directory, sid):
+        directory.mkdir(parents=True, exist_ok=True)
+        records = [rec("user", sid, "2026-09-10T00:00:00Z", "work"),
+                   {"type": "assistant", "sessionId": sid, "timestamp": "2026-09-10T00:01:00Z",
+                    "message": {"id": "m-" + sid, "model": "x", "content": [{"type": "text", "text": "the work is done now"}], "usage": {"input_tokens": 1, "output_tokens": 5}}}]
+        path = directory / (sid + ".jsonl")
+        path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
+        return path
+
+    def test_default_store_is_current_project_under_claude_config_dir(self):
+        old = os.environ.get("CLAUDE_CONFIG_DIR")
+        self.addCleanup(lambda: os.environ.__setitem__("CLAUDE_CONFIG_DIR", old) if old is not None else os.environ.pop("CLAUDE_CONFIG_DIR", None))
+        config = self.root / "config"
+        os.environ["CLAUDE_CONFIG_DIR"] = str(config)
+        project_a, project_b = self.root / "projA", self.root / "projB"
+        project_a.mkdir()
+        project_b.mkdir()
+        os.chdir(project_a)
+        store_a = config / "projects" / os.getcwd().replace("/", "-")
+        self.write_session(store_a, "sa")
+        self.write_session(config / "projects" / str(project_b).replace("/", "-"), "sb")
+        out, data = self.run_main()
+        self.assertEqual([s["session_id"] for s in data["sessions"]], ["sa"])
+        self.assertEqual((data["harness"], data["store"]), ("claude", str(store_a)))
+        self.assertTrue(out.startswith("harness: claude\n"))
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root can read a chmod 000 file")
+    def test_unreadable_file_is_a_problem_and_rest_audits(self):
+        store = self.root / "store"
+        self.write_session(store, "good")
+        locked = self.write_session(store, "locked")
+        os.chmod(locked, 0)
+        self.addCleanup(os.chmod, locked, 0o600)
+        out, data = self.run_main("--store", str(store))
+        self.assertEqual([s["session_id"] for s in data["sessions"]], ["good"])
+        self.assertEqual(data["problems"], [{"kind": "unreadable", "path": str(locked), "detail": "file could not be read"}])
+        self.assertIn("unreadable", out)
+
+    def test_claude_json_keeps_pre_t5_shape(self):
+        store = self.root / "store"
+        self.write_session(store, "one")
+        self.write_session(store, "two")
+        _, data = self.run_main("--store", str(store))
+        self.assertTrue(PRE_T5_TOP <= set(data), set(data))
+        self.assertEqual(set(data["aggregates"]), PRE_T5_AGGREGATES)
+        for key in PRE_T5_AGGREGATES:
+            self.assertIsNotNone(data["aggregates"][key], key)
+        self.assertEqual(data["aggregates"]["tokens_per_model"], {"x": 10})
+        for session in data["sessions"]:
+            self.assertTrue(PRE_T5_SESSION <= set(session), set(session))
+            for key in PRE_T5_SESSION:
+                self.assertIsNotNone(session[key], key)
+            self.assertNotIn("lineage", session)
+        self.assertEqual(data["problems"], [])
+        self.assertNotIn("files", data)
 
 if __name__ == "__main__": unittest.main()
