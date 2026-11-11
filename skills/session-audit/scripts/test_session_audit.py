@@ -132,4 +132,14 @@ class AuditTests(unittest.TestCase):
             rows = {r["detector"]: r["status"] for r in session_audit.detector_rows(session, session_audit.DEFAULT_WINDOWS)}
             self.assertEqual(rows["D6"], "FAIL")
 
+class ClaudeProblemTests(unittest.TestCase):
+    def test_malformed_line_is_counted_and_rest_audits(self):
+        records = [rec("user", "bad", "2026-09-10T00:00:00Z", "work"), assistant("bad", "2026-09-10T00:01:00Z", [])]
+        with tempfile.TemporaryDirectory() as td:
+            Path(td, "x.jsonl").write_text(json.dumps(records[0]) + "\n{not json\n\n" + json.dumps(records[1]) + "\n")
+            problems = []
+            sessions = session_audit.scan(td, 1, None, MONEY, TRUTH, problems=problems)
+            self.assertEqual(sessions[0].assistant, 1)
+            self.assertEqual([(p["kind"], p["detail"]) for p in problems], [("malformed_lines", "1 line(s) skipped")])
+
 if __name__ == "__main__": unittest.main()

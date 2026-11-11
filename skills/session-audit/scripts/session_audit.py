@@ -4,6 +4,9 @@ import argparse, datetime as dt, hashlib, json, os, re, sys, time
 from collections import Counter, defaultdict
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import pi_sessions
+
 DETECTORS = ("D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9")
 # D4 is topic-specific: it only means something once you list the vocabulary of your own
 # high-stakes domain and the repos that hold the authoritative answers. Both ship empty, so
@@ -80,8 +83,17 @@ def command_of(tool):
     try: return str(json.loads(tool["raw"]).get("command") or "")
     except (ValueError, AttributeError): return ""
 
-def checklist_write(tool):
+PLANNING_FILE = re.compile(r"\.planning/(?:STATE[^/\\]*|(?:HANDOFF|PLAN|BRIEF)[^/\\]*)", re.I)
+PI_UNAVAILABLE = "no Pi delegation evidence model"
+PI_DELEGATION_DETECTORS = ("D3", "D5", "D6", "D7", "D8")
+
+def checklist_write(tool, harness="claude"):
     name, inp = tool["name"], json.loads(tool["raw"])
+    if harness == "pi":
+        if name in ("write", "edit"): return bool(PLANNING_FILE.search(str(inp.get("path") or "")))
+        if name == "bash":
+            command = str(inp.get("command") or ""); return ".planning/" in command and bool(re.search(r">|\btee\b|\bcat\s+<<", command))
+        return False
     if name in ("Write", "Edit"):
         return bool(re.search(r"\.planning/(?:STATE[^/\\]*|(?:HANDOFF|PLAN|BRIEF)[^/\\]*)", json.dumps(inp, ensure_ascii=False), re.I))
     if name == "Bash":
@@ -89,14 +101,14 @@ def checklist_write(tool):
     return False
 
 class Session:
-    def __init__(self, sid):
-        self.id=sid; self.topics_configured=False; self.events=[]; self.tools=[]; self.assistant=0; self.narrated=0; self.money_hits=0; self.prompt_hits=0; self.topic_hits=0; self.topic_terms=set(); self.truth=set(); self.models=Counter(); self.agents=0; self.agent_with_model=0; self.big_briefs=0; self.review_prompts=0; self.off_claude=0; self.tokens=Counter(); self.token_usage=defaultdict(Counter); self.subagent_token_usage=defaultdict(Counter); self.usage_seen=set(); self.first_prompt=""; self.kind="main"
+    def __init__(self, sid, harness="claude"):
+        self.harness=harness; self.complete=True; self.lineage=None; self.usage=None; self.id=sid; self.topics_configured=False; self.events=[]; self.tools=[]; self.assistant=0; self.narrated=0; self.money_hits=0; self.prompt_hits=0; self.topic_hits=0; self.topic_terms=set(); self.truth=set(); self.models=Counter(); self.agents=0; self.agent_with_model=0; self.big_briefs=0; self.review_prompts=0; self.off_claude=0; self.tokens=Counter(); self.token_usage=defaultdict(Counter); self.subagent_token_usage=defaultdict(Counter); self.usage_seen=set(); self.first_prompt=""; self.kind="main"
 
     def add(self, record, money_patterns, truth_res, subagent=False):
         typ, when, side = record.get("type"), parse_time(record.get("timestamp")), bool(record.get("isSidechain")); message=record.get("message") or {}; event={"type":typ,"time":when,"side":side}
         usage=message.get("usage") or {}
         usage_key=message.get("id") or record.get("requestId") or record.get("uuid")
-        usage_is_new=usage_key is not None and usage_key not in self.usage_seen
+        usage_is_new=self.harness != "pi" and usage_key is not None and usage_key not in self.usage_seen
         if usage_is_new:
             self.usage_seen.add(usage_key)
             model=str(message.get("model", ""))
@@ -113,7 +125,7 @@ class Session:
                     self.first_prompt=prompt
                     if prompt.startswith("<teammate-message") or "You are a subagent" in prompt: self.kind="worker"
         elif typ == "assistant":
-            self.assistant += 1; narrated=any(len(t.strip()) >= 20 for t in text_blocks(message)); self.narrated += int(narrated); model=str(message.get("model", "")); self.models[model] += 1; tokens=(int(usage.get("output_tokens",0) or 0)+int(usage.get("cache_creation_input_tokens",0) or 0)) if usage_is_new else 0; compact_tools=[]
+            self.assistant += 1; narrated=any(len(t.strip()) >= 20 for t in text_blocks(message)); self.narrated += int(narrated); model=str(message.get("model", "")); self.models[model] += 1; tokens=record.get("_tokens") if self.harness == "pi" else (int(usage.get("output_tokens",0) or 0)+int(usage.get("cache_creation_input_tokens",0) or 0)) if usage_is_new else 0; compact_tools=[]
             if not side:
                 for value in text_blocks(message):
                     found=matches(value, money_patterns); self.topic_hits+=len(found); self.topic_terms.update(x.lower() for x in found)
@@ -123,17 +135,22 @@ class Session:
                     found=matches(raw, money_patterns); self.topic_hits+=len(found); self.topic_terms.update(x.lower() for x in found)
                 for label, rx in truth_res:
                     if rx.search(raw): self.truth.add(label)
-                if name in ("Agent", "Task", "Workflow"):
+                if self.harness != "pi" and name in ("Agent", "Task", "Workflow"):
                     self.agents += 1; model_set=("model:" in str(inp.get("script", ""))) if name == "Workflow" else bool(inp.get("model")) or str(inp.get("subagent_type", "")) not in {"fork","general-purpose","Explore","Plan","claude"}; self.agent_with_model += int(model_set); prompt_value=inp.get("prompt", "")
                     if name in ("Agent", "Task") and len(json.dumps(prompt_value, ensure_ascii=False).encode()) > 7000: self.big_briefs += 1
                     if name in ("Agent", "Task") and REVIEW.search(str(prompt_value)): self.review_prompts += 1
-                if name == "Bash" and OFF_CLAUDE.search(str(inp.get("command", ""))): self.off_claude += 1
+                if self.harness != "pi" and name == "Bash" and OFF_CLAUDE.search(str(inp.get("command", ""))): self.off_claude += 1
                 self.tools.append({**compact,"time":when,"side":side,"narrated":narrated})
             event.update(tools=compact_tools,narrated=narrated,tokens=tokens)
         self.events.append(event)
 
     def date(self):
         times=[e["time"] for e in self.events if e["time"]]; return min(times) if times else None
+
+    def span_tokens(self, group):
+        """Output plus cache-creation tokens of a prompt span; None for Pi spans with no recorded usage."""
+        values=[e["tokens"] for e in group if e["type"] == "assistant" and e["tokens"] is not None]
+        return sum(values) if values or self.harness != "pi" else None
 
     def prompts(self):
         starts=[i for i,e in enumerate(self.events) if e["type"] == "user" and e.get("top_level")]; result=[]
@@ -143,11 +160,17 @@ class Session:
                 if e["type"] != "assistant": continue
                 if e["narrated"]: dark=0
                 dark+=len(e.get("tools", [])); max_dark=max(max_dark,dark)
-            gaps=[(b["time"]-a["time"]).total_seconds()/60 for a,b in zip(group,group[1:]) if a["time"] and b["time"] and not a["side"] and not b["side"]]; start_time,end_time=self.events[start]["time"],self.events[starts[pos+1]]["time"] if pos+1 < len(starts) else None; wall=((end_time-start_time).total_seconds()/60) if start_time and end_time else 0.0; agents=sum(t["name"] in ("Agent","Task","Workflow") for t in span_tools); label="LOOP" if uniq < .6 and len(assistant_events)>=15 else "GRIND" if len(assistant_events)>=40 and agents==0 and max_dark>=20 else "WAIT" if gaps and max(gaps)>=10 else "OK"
-            result.append({"session_id":self.id,"prompt":self.events[start]["prompt"],"date":self.events[start]["time"].isoformat() if self.events[start]["time"] else "","wall_min":round(wall,2),"turns":len(assistant_events),"uniq_ratio":round(uniq,4),"max_dark_run":max_dark,"max_gap_min":round(max(gaps) if gaps else 0.0,2),"tokens":sum(e["tokens"] for e in group if e["type"] == "assistant"),"agents":agents,"label":label})
+            gaps=[(b["time"]-a["time"]).total_seconds()/60 for a,b in zip(group,group[1:]) if a["time"] and b["time"] and not a["side"] and not b["side"]]; start_time,end_time=self.events[start]["time"],self.events[starts[pos+1]]["time"] if pos+1 < len(starts) else None; wall=((end_time-start_time).total_seconds()/60) if start_time and end_time else 0.0; pi=self.harness == "pi"; agents=None if pi else sum(t["name"] in ("Agent","Task","Workflow") for t in span_tools); grindish=len(assistant_events)>=40 and max_dark>=20; label="LOOP" if uniq < .6 and len(assistant_events)>=15 else ("UNKNOWN" if pi else "GRIND") if grindish and (pi or agents==0) else "WAIT" if gaps and max(gaps)>=10 else "OK"
+            result.append({"session_id":self.id,"prompt":self.events[start]["prompt"],"date":self.events[start]["time"].isoformat() if self.events[start]["time"] else "","wall_min":round(wall,2),"turns":len(assistant_events),"uniq_ratio":round(uniq,4),"max_dark_run":max_dark,"max_gap_min":round(max(gaps) if gaps else 0.0,2),"tokens":self.span_tokens(group),"agents":agents,"label":label})
         return result
 
-def scan(store,min_turns,since,money_terms,truth_paths,include_workers=False,include_subagents=True):
+def keep_sessions(sessions,min_turns,since,money_terms,truth_paths):
+    kept=[s for s in sessions if s.assistant>=min_turns and (not since or (s.date() and s.date().date()>=since))]
+    for s in kept: s.topics_configured=bool(money_terms and truth_paths)
+    return kept
+
+def scan(store,min_turns,since,money_terms,truth_paths,include_workers=False,include_subagents=True,problems=None):
+    """Audit Claude transcripts. A `problems` list, when given, receives malformed-line and unreadable-file records."""
     patterns=term_patterns(money_terms); truth_res=[(p,re.compile(re.escape(p),re.I)) for p in truth_paths]; sessions={}
     root=Path(store)
     paths=sorted(root.rglob("*.jsonl")) if include_subagents else sorted(root.glob("*.jsonl"))
@@ -156,20 +179,58 @@ def scan(store,min_turns,since,money_terms,truth_paths,include_workers=False,inc
         parts={part.lower() for part in relative.parts[:-1]}
         subagent=path.name.startswith("agent-") and "subagents" in parts
         if not include_workers and ("worker" in parts or "workers" in parts or "team" in parts or "teams" in parts): continue
+        bad=0
         try:
             with path.open("r",encoding="utf-8",errors="replace") as fh:
                 for line in fh:
+                    if not line.strip(): continue
                     try: rec=json.loads(line)
-                    except ValueError: continue
+                    except ValueError: rec=None
+                    if not isinstance(rec,dict): bad+=1; continue
                     sid=rec.get("sessionId")
                     if subagent and not sid:
                         before=list(relative.parts[:relative.parts.index("subagents")])
                         sid=before[-1] if before else None
                     if sid: sessions.setdefault(sid,Session(sid)).add(rec,patterns,truth_res,subagent=subagent)
-        except OSError: continue
-    kept=[s for s in sessions.values() if s.assistant>=min_turns and (not since or (s.date() and s.date().date()>=since))]
-    for s in kept: s.topics_configured=bool(money_terms and truth_paths)
+        except OSError:
+            if problems is not None: problems.append({"kind":"unreadable","path":str(path),"detail":"file could not be read"})
+        if bad and problems is not None: problems.append({"kind":"malformed_lines","path":str(path),"detail":"%d line(s) skipped"%bad})
+    kept=keep_sessions(sessions.values(),min_turns,since,money_terms,truth_paths)
     return [s for s in kept if include_workers or s.kind == "main"]
+
+def same_project(header_cwd,project):
+    if not header_cwd: return False
+    if os.path.normpath(header_cwd) == os.path.normpath(project): return True
+    return os.path.exists(header_cwd) and os.path.exists(project) and os.path.realpath(header_cwd) == os.path.realpath(project)
+
+def pi_candidates(selection,store,session_files):
+    """Files to read and any selection problems. Directory modes scan `*.jsonl` non-recursively."""
+    if selection == "explicit-files": return [Path(f) for f in session_files],[]
+    if not Path(store).is_dir(): return [],[{"path":str(store),"kind":"store_not_found","detail":"not a directory"}]
+    return sorted(p for p in Path(store).glob("*.jsonl") if p.is_file()),[]
+
+def scan_pi(files,project,check_cwd,money_terms,truth_paths,leaf=None):
+    """Read each Pi file along one selected path. Returns (sessions, counts); filters are applied by the caller."""
+    patterns=term_patterns(money_terms); truth_res=[(p,re.compile(re.escape(p),re.I)) for p in truth_paths]; sessions=[]; ids=Counter()
+    counts={"files_found":len(files),"excluded_other_project":0,"unavailable":[],"problems":[]}
+    for path in files:
+        res=pi_sessions.load_file(path); session=None
+        if res.usable and check_cwd and not same_project(res.cwd,project):
+            counts["excluded_other_project"]+=1
+            if not res.cwd: counts["problems"].append({"path":res.path,"kind":"cwd_missing","detail":"header has no cwd; excluded from project selection"})
+            continue
+        entries,info=pi_sessions.select_path(res,leaf)
+        if entries is not None:
+            records=pi_sessions.to_records(res,entries); sid=res.session_id; ids[sid]+=1
+            if ids[sid] > 1: res.problem("duplicate_session_id","session id repeated in another file"); sid="%s~%d"%(sid,ids[sid])
+            session=Session(sid,"pi")
+            for record in records: session.add(record,patterns,truth_res)
+            session.complete=res.complete; session.usage=pi_sessions.usage_totals(res,entries)
+            session.lineage={"file":res.path,"version":res.version,"cwd":res.cwd,"leaf_id":info["leaf_id"],"leaf_source":info["leaf_source"],"path_entries":info["path_entries"],"abandoned_entries":info["abandoned_entries"],"parent_session":res.parent_session,"lineage_followed":False if res.parent_session else None}
+            sessions.append(session)
+        else: counts["unavailable"].append({"path":res.path,"kind":res.unavailable})
+        counts["problems"].extend(dict(p,path=res.path) for p in res.problems)
+    return sessions,counts
 
 def applicable(session,detector,windows):
     if detector == "D4" and not session.topics_configured: return False
@@ -178,33 +239,91 @@ def applicable(session,detector,windows):
     d=session.date(); return bool(d and d.date() >= dt.date.fromisoformat(window))
 
 def detector_rows(session,windows):
-    positions=[i+1 for i,t in enumerate(session.tools) if checklist_write(t)]; state=bool(positions and positions[0] <= 6); narration=session.narrated/session.assistant if session.assistant else 1
-    rows={"D1":len(session.tools)>=15 and not state,"D2":narration<.30,"D3":sum(t["name"]=="Bash" for t in session.tools)>=100 and session.agents<=3,"D4":session.topic_hits>=10 and len(session.topic_terms)>=3 and not session.truth,"D5":any(FABLE.search(m) for m in session.models) and session.agent_with_model<session.agents,"D6":False,"D7":session.review_prompts>2,"D8":session.big_briefs>0,"D9":any(p["label"] in ("LOOP","GRIND") for p in session.prompts())}
-    delegation=[(i,t) for i,t in enumerate(session.tools) if t["name"] in ("Agent","Task","Workflow") or (t["name"]=="Bash" and OFF_CLAUDE.search(command_of(t)))]
+    pi=session.harness == "pi"; positions=[i+1 for i,t in enumerate(session.tools) if checklist_write(t,session.harness)]; state=bool(positions and positions[0] <= 6); narration=session.narrated/session.assistant if session.assistant else 1; labels=[p["label"] for p in session.prompts()]
+    rows={"D1":len(session.tools)>=15 and not state,"D2":narration<.30,"D3":sum(t["name"]=="Bash" for t in session.tools)>=100 and session.agents<=3,"D4":session.topic_hits>=10 and len(session.topic_terms)>=3 and not session.truth,"D5":any(FABLE.search(m) for m in session.models) and session.agent_with_model<session.agents,"D6":False,"D7":session.review_prompts>2,"D8":session.big_briefs>0,"D9":any(l in ("LOOP","GRIND") for l in labels)}
+    delegation=[] if pi else [(i,t) for i,t in enumerate(session.tools) if t["name"] in ("Agent","Task","Workflow") or (t["name"]=="Bash" and OFF_CLAUDE.search(command_of(t)))]
     for i,_ in delegation:
         if not any(t["name"]=="Bash" and re.search(r"git\s+(?:diff|status)\b",command_of(t),re.I) for t in session.tools[i+1:i+6]): rows["D6"]=True; break
-    return [{"detector":d,"status":"N/A" if not applicable(session,d,windows) else "FAIL" if fail else "PASS"} for d,fail in rows.items()]
+    result=[]
+    for d,fail in rows.items():
+        row={"detector":d,"status":"N/A" if not applicable(session,d,windows) else "FAIL" if fail else "PASS"}
+        if pi and d in PI_DELEGATION_DETECTORS: row={"detector":d,"status":"UNAVAILABLE","reason":PI_UNAVAILABLE}
+        elif pi and d == "D9" and row["status"] == "PASS" and "UNKNOWN" in labels: row={"detector":d,"status":"UNAVAILABLE","reason":"%d prompt(s) meet the GRIND conditions but Pi has no delegation evidence to confirm it"%labels.count("UNKNOWN")}
+        result.append(row)
+    return result
 
-def report(sessions,windows,store,min_turns,elapsed,json_out=None,flag=None,top=10,prompt_sid=None,scanned=None,excluded_workers=0):
+def usage_line(fields):
+    return "input %d | output %d | cache_read %d | cache_write %d"%(fields["input_tokens"],fields["output_tokens"],fields["cache_read_input_tokens"],fields["cache_creation_input_tokens"])
+
+def print_scope(name,scope):
+    print("  %s (%s):"%(name,scope["label"]))
+    for bucket,slot in scope["buckets"].items():
+        for model,fields in slot["by_model"].items(): print("    %-14s %-24s %s"%(bucket,model,usage_line(fields)))
+        for kind,fields in slot.get("by_kind",{}).items(): print("    %-14s kind %-19s %s"%(bucket,kind,usage_line(fields)))
+    if pi_sessions.TOOL_RESULT_BUCKET in scope: print("    %s: %s"%(pi_sessions.TOOL_RESULT_BUCKET,usage_line(scope[pi_sessions.TOOL_RESULT_BUCKET]["total"])))
+    print("    total: %s"%(usage_line(scope["total"]) if isinstance(scope["total"],dict) else "unavailable"))
+
+def pi_aggregate(sessions):
+    """Path-scope usage summed over non-fork sessions; forks repeat copied history, so they are listed, not added."""
+    forks=[s for s in sessions if s.lineage and s.lineage["parent_session"]]; total=Counter(); counted=False
+    for s in sessions:
+        if s in forks: continue
+        value=s.usage["path"]["total"]
+        if isinstance(value,dict): total.update(value); counted=True
+    label="aggregate path usage (excluding %d forked sessions)"%len(forks)
+    return {"label":label,"total":dict(total) if counted else "unavailable","excluded_forks":[{"session_id":s.id,"parent_session":s.lineage["parent_session"],"reason":"copied history would double-count"} for s in forks]}
+
+def fork_note(sessions):
+    n=sum(1 for s in sessions if s.lineage and s.lineage["parent_session"])
+    return "%d forked sessions include copied history; detector rates may double-count"%n if n else None
+
+def print_header_extras(harness,meta,sessions):
+    if harness == "pi":
+        print("selection: %s\nproject: %s"%(meta["selection"],meta["project"] or "not checked (explicit files)"))
+        print("files found: %d\nfiles audited: %d\nexcluded other project: %d\nunavailable: %d\nincomplete: %d"%(meta["files_found"],len(sessions),meta["excluded_other_project"],len(meta["unavailable"]),sum(not s.complete for s in sessions)))
+    if meta.get("problems"):
+        print("\nproblems")
+        for p in meta["problems"]: print("  %s | %s | %s"%(p.get("path","-"),p["kind"],p["detail"]))
+
+def print_pi_sections(sessions):
+    print("\nlineage")
+    for s in sessions:
+        l=s.lineage; print("%-8s | v%s | leaf %s (%s) | path %d | abandoned %d | parent_session %s | complete %s | cwd %s"%(s.id[:8],l["version"],l["leaf_id"] or "none",l["leaf_source"],l["path_entries"],l["abandoned_entries"],l["parent_session"] or "none","yes" if s.complete else "no",l["cwd"] or "unknown"))
+        if l["parent_session"]: print("         lineage_followed: false (parent not opened)")
+    print("\nusage (scopes are not Pi's own session statistics)")
+    for s in sessions:
+        print("%s"%s.id[:8]); print_scope("path",s.usage["path"]); print_scope("file",s.usage["file"])
+    agg=pi_aggregate(sessions); print("\n%s: %s"%(agg["label"],usage_line(agg["total"]) if isinstance(agg["total"],dict) else "unavailable"))
+    for ex in agg["excluded_forks"]: print("  excluded fork %s (parent_session %s): %s"%(ex["session_id"][:8],ex["parent_session"],ex["reason"]))
+    note=fork_note(sessions)
+    if note: print("note: %s"%note)
+
+def report(sessions,windows,store,min_turns,elapsed,json_out=None,flag=None,top=10,prompt_sid=None,scanned=None,excluded_workers=0,harness="claude",meta=None):
+    meta=meta or {}; pi=harness == "pi"; print("harness: %s"%harness)
     prompts=[p for s in sessions for p in s.prompts()]; rows={s.id:detector_rows(s,windows) for s in sessions}; labels=Counter(p["label"] for p in prompts); dates=[s.date() for s in sessions if s.date()]
     print("store: %s\nsessions scanned: %d\nsessions kept: %d main (+%d workers excluded)\ndate range: %s to %s\nelapsed: %.1fs"%(store,scanned if scanned is not None else len(sessions),len(sessions),excluded_workers,min((d.date().isoformat() for d in dates),default="N/A"),max((d.date().isoformat() for d in dates),default="N/A"),elapsed))
+    print_header_extras(harness,meta,sessions)
     print("\ndetector | rule                 | applicable | fail | fail %"); short={"D1":"checklist","D2":"narrate","D3":"subagents","D4":"truth repos","D5":"cheap models","D6":"artifact verify","D7":"review rounds","D8":"brief size","D9":"not stuck"}
     for d in DETECTORS:
-        statuses=[x["status"] for r in rows.values() for x in r if x["detector"]==d]; app=sum(x!="N/A" for x in statuses); fail=sum(x=="FAIL" for x in statuses); suffix=""
-        if d=="D1": suffix=" (late checklist: %d)"%sum(1 for s in sessions if applicable(s,"D1",windows) and len(s.tools)>=15 and not any(checklist_write(t) for t in s.tools[:6]) and any(checklist_write(t) for t in s.tools[6:]))
+        statuses=[x["status"] for r in rows.values() for x in r if x["detector"]==d]; app=sum(x not in ("N/A","UNAVAILABLE") for x in statuses); fail=sum(x=="FAIL" for x in statuses); suffix=""
+        if d=="D1": suffix=" (late checklist: %d)"%sum(1 for s in sessions if applicable(s,"D1",windows) and len(s.tools)>=15 and not any(checklist_write(t,s.harness) for t in s.tools[:6]) and any(checklist_write(t,s.harness) for t in s.tools[6:]))
+        if "UNAVAILABLE" in statuses: suffix+=" (unavailable: %d)"%statuses.count("UNAVAILABLE")
         print("%-9s | %-20s | %10d | %4d | %5s%s"%(d,short[d],app,fail,("%.1f%%"%(100*fail/app)) if app else "N/A",suffix))
     print("\nstall label | prompts | %")
-    for label in ("LOOP","GRIND","WAIT","OK"): print("%-11s | %7d | %5s"%(label,labels[label],("%.1f%%"%(100*labels[label]/len(prompts))) if prompts else "N/A"))
-    worst=sorted((p for p in prompts if p["label"] in ("LOOP","GRIND")),key=lambda p:(p["label"],-p["turns"],-p["tokens"]))[:5]; print("\nworst LOOP/GRIND\nsession  | date       | wall_min | turns | uniq | prompt")
+    for label in (("LOOP","UNKNOWN","WAIT","OK") if pi else ("LOOP","GRIND","WAIT","OK")): print("%-11s | %7d | %5s"%(label,labels[label],("%.1f%%"%(100*labels[label]/len(prompts))) if prompts else "N/A"))
+    worst=sorted((p for p in prompts if p["label"] in ("LOOP","GRIND")),key=lambda p:(p["label"],-p["turns"],-(p["tokens"] or 0)))[:5]; print("\nworst LOOP/GRIND\nsession  | date       | wall_min | turns | uniq | prompt")
     for p in worst: print("%-8s | %-10s | %8.2f | %5d | %.2f | %s"%(p["session_id"][:8],p["date"][:10],p["wall_min"],p["turns"],p["uniq_ratio"],p["prompt"][:80].replace("\n"," ")))
-    agent_total=sum(s.agents for s in sessions); with_model=sum(s.agent_with_model for s in sessions); print("\ndelegation\nAgent calls total: %d; with model: %d; without: %d"%(agent_total,with_model,agent_total-with_model)); print("off-Claude Bash delegations: %d"%sum(s.off_claude for s in sessions)); token_models=Counter()
+    agent_total=sum(s.agents for s in sessions); with_model=sum(s.agent_with_model for s in sessions); token_models=Counter()
+    if pi: print("\ndelegation\nunavailable (pi): %s"%PI_UNAVAILABLE)
+    else: print("\ndelegation\nAgent calls total: %d; with model: %d; without: %d"%(agent_total,with_model,agent_total-with_model)); print("off-Claude Bash delegations: %d"%sum(s.off_claude for s in sessions))
     for s in sessions: token_models.update(s.tokens)
     token_usage=defaultdict(Counter); subagent_usage=defaultdict(Counter)
     for s in sessions:
         for model, fields in s.token_usage.items(): token_usage[model].update(fields)
         for model, fields in s.subagent_token_usage.items(): subagent_usage[model].update(fields)
-    print("tokens per model (input | cache_read | output | cache_creation):")
-    for model in sorted(set(token_usage) | set(subagent_usage)):
+    if pi: print_pi_sections(sessions)
+    else: print("tokens per model (input | cache_read | output | cache_creation):")
+    for model in ([] if pi else sorted(set(token_usage) | set(subagent_usage))):
         fields=token_usage[model]; name=model or "<unknown>"
         print("  %-30s %d | %d | %d | %d"%(name,fields["input_tokens"],fields["cache_read_input_tokens"],fields["output_tokens"],fields["cache_creation_input_tokens"]))
         subfields=subagent_usage[model]
@@ -215,14 +334,25 @@ def report(sessions,windows,store,min_turns,elapsed,json_out=None,flag=None,top=
         for _,s in sorted(selected,key=lambda x:x[0])[:top]:
             extra=""
             if flag=="D1":
-                indexes=[i+1 for i,t in enumerate(s.tools) if checklist_write(t)]; extra=" | first checklist: %s"%(indexes[0] if indexes else "none")
+                indexes=[i+1 for i,t in enumerate(s.tools) if checklist_write(t,s.harness)]; extra=" | first checklist: %s"%(indexes[0] if indexes else "none")
             if flag=="D4": extra=" | prompt_hits %d | topic_hits %d | topic_terms %s"%(s.prompt_hits,s.topic_hits,sorted(s.topic_terms))
             print("%s | %s | kind %s | first prompt: %s%s | truth: %s"%(s.id,s.date().date().isoformat() if s.date() else "N/A",s.kind,s.first_prompt[:200].replace("\n"," "),extra,", ".join(sorted(s.truth))))
     if prompt_sid:
         print("\nprompts for %s"%prompt_sid)
         for p in next((s.prompts() for s in sessions if s.id.startswith(prompt_sid) or s.id==prompt_sid),[]): print(json.dumps(p,ensure_ascii=False,sort_keys=True))
     if json_out:
-        payload={"store":str(store),"sessions":[{"session_id":s.id,"kind":s.kind,"assistant_turns":s.assistant,"money_hits":s.money_hits,"prompt_hits":s.prompt_hits,"topic_hits":s.topic_hits,"topic_terms":sorted(s.topic_terms),"truth_paths":sorted(s.truth),"detectors":rows[s.id]} for s in sessions],"prompts":prompts,"aggregates":{"labels":dict(labels),"agent_calls":agent_total,"agent_calls_with_model":with_model,"off_claude":sum(s.off_claude for s in sessions),"tokens_per_model":{model:fields["output_tokens"]+fields["cache_creation_input_tokens"] for model,fields in token_usage.items()},"token_fields_per_model":{model:dict(fields) for model,fields in token_usage.items()},"subagent_tokens_per_model":{model:dict(fields) for model,fields in subagent_usage.items()}}}; Path(json_out).write_text(json.dumps(payload,indent=2,ensure_ascii=False),encoding="utf-8")
+        entries=[]
+        for s in sessions:
+            entry={"session_id":s.id,"harness":s.harness,"complete":s.complete,"kind":s.kind,"assistant_turns":s.assistant,"money_hits":s.money_hits,"prompt_hits":s.prompt_hits,"topic_hits":s.topic_hits,"topic_terms":sorted(s.topic_terms),"truth_paths":sorted(s.truth),"detectors":rows[s.id]}
+            if pi: entry.update(lineage=s.lineage,usage=s.usage)
+            entries.append(entry)
+        aggregates={"labels":dict(labels),"agent_calls":agent_total,"agent_calls_with_model":with_model,"off_claude":sum(s.off_claude for s in sessions),"tokens_per_model":{model:fields["output_tokens"]+fields["cache_creation_input_tokens"] for model,fields in token_usage.items()},"token_fields_per_model":{model:dict(fields) for model,fields in token_usage.items()},"subagent_tokens_per_model":{model:dict(fields) for model,fields in subagent_usage.items()}}
+        if pi:
+            for key in ("agent_calls","agent_calls_with_model","off_claude","tokens_per_model","token_fields_per_model","subagent_tokens_per_model"): aggregates[key]=None
+            aggregates.update(unavailable={key:PI_UNAVAILABLE if key in ("agent_calls","agent_calls_with_model","off_claude") else "Pi usage is reported in per-session `usage`, not Claude token fields" for key in ("agent_calls","agent_calls_with_model","off_claude","tokens_per_model","token_fields_per_model","subagent_tokens_per_model")},usage=pi_aggregate(sessions),notes=[n for n in [fork_note(sessions)] if n])
+        payload={"harness":harness,"selection":meta.get("selection"),"project":meta.get("project"),"store":str(store),"problems":meta.get("problems",[]),"sessions":entries,"prompts":prompts,"aggregates":aggregates}
+        if pi: payload["files"]={"found":meta["files_found"],"audited":len(sessions),"excluded_other_project":meta["excluded_other_project"],"unavailable":meta["unavailable"],"incomplete":sum(not s.complete for s in sessions)}
+        Path(json_out).write_text(json.dumps(payload,indent=2,ensure_ascii=False),encoding="utf-8")
 
 def selftest():
     usage={"input_tokens":11,"cache_read_input_tokens":7,"output_tokens":13,"cache_creation_input_tokens":17}
@@ -234,8 +364,32 @@ def selftest():
     print("selftest: PASS")
 
 def main(argv=None):
-    started=time.monotonic(); ap=argparse.ArgumentParser(); ap.add_argument("--store"); ap.add_argument("--since"); ap.add_argument("--config"); ap.add_argument("--include-workers",action="store_true"); ap.add_argument("--include-subagents",action=argparse.BooleanOptionalAction,default=True); ap.add_argument("--selftest",action="store_true"); ap.add_argument("--json",dest="json_out"); ap.add_argument("--flag",choices=DETECTORS); ap.add_argument("--top",type=int,default=10); ap.add_argument("--prompts"); ap.add_argument("--min-turns",type=int,default=5); args=ap.parse_args(argv)
+    started=time.monotonic(); ap=argparse.ArgumentParser(); ap.add_argument("--harness",choices=("claude","pi"),default="claude"); ap.add_argument("--project"); ap.add_argument("--session-file",action="append"); ap.add_argument("--leaf"); ap.add_argument("--store"); ap.add_argument("--since"); ap.add_argument("--config"); ap.add_argument("--include-workers",action="store_true"); ap.add_argument("--include-subagents",action=argparse.BooleanOptionalAction,default=True); ap.add_argument("--selftest",action="store_true"); ap.add_argument("--json",dest="json_out"); ap.add_argument("--flag",choices=DETECTORS); ap.add_argument("--top",type=int,default=10); ap.add_argument("--prompts"); ap.add_argument("--min-turns",type=int,default=5); args=ap.parse_args(argv)
     if args.selftest: selftest(); return
-    cwd=os.getcwd(); store=Path(args.store) if args.store else default_store(cwd); money,truth,windows=load_config(cwd,args.config); all_sessions=scan(store,args.min_turns,dt.date.fromisoformat(args.since) if args.since else None,money,truth,True,args.include_subagents); sessions=all_sessions if args.include_workers else [s for s in all_sessions if s.kind=="main"]; report(sessions,windows,str(store),args.min_turns,time.monotonic()-started,args.json_out,args.flag,args.top,args.prompts,len(all_sessions),sum(s.kind=="worker" for s in all_sessions if not args.include_workers))
+    if args.harness != "pi":
+        for flag,value in (("--project",args.project),("--session-file",args.session_file),("--leaf",args.leaf)):
+            if value: ap.error("%s needs --harness pi"%flag)
+    elif args.session_file and args.store: ap.error("--session-file and --store are mutually exclusive")
+    elif args.leaf and not (args.session_file and len(args.session_file) == 1): ap.error("--leaf needs exactly one --session-file")
+    cwd=os.getcwd(); money,truth,windows=load_config(cwd,args.config); since=dt.date.fromisoformat(args.since) if args.since else None
+    if args.harness == "pi": return main_pi(args,cwd,money,truth,windows,since,started)
+    store=Path(args.store) if args.store else default_store(cwd); problems=[]; all_sessions=scan(store,args.min_turns,since,money,truth,True,args.include_subagents,problems); sessions=all_sessions if args.include_workers else [s for s in all_sessions if s.kind=="main"]; report(sessions,windows,str(store),args.min_turns,time.monotonic()-started,args.json_out,args.flag,args.top,args.prompts,len(all_sessions),sum(s.kind=="worker" for s in all_sessions if not args.include_workers),meta={"problems":problems})
+
+def main_pi(args,cwd,money,truth,windows,since,started):
+    selection="explicit-files" if args.session_file else "explicit-dir" if args.store else "default-project-dir"; project=None if selection == "explicit-files" else (args.project or cwd)
+    store=None if selection == "explicit-files" else Path(args.store) if args.store else pi_sessions.default_store(project)
+    files,problems=pi_candidates(selection,store,args.session_file); found,counts=scan_pi(files,project,selection != "explicit-files",money,truth,args.leaf)
+    all_sessions=keep_sessions(found,args.min_turns,since,money,truth); sessions=all_sessions if args.include_workers else [s for s in all_sessions if s.kind=="main"]
+    meta=dict(counts,selection=selection,project=project,problems=problems+counts["problems"]); shown=str(store) if store else "(explicit files)"
+    if not found:
+        reasons=Counter(item["kind"] for item in counts["unavailable"]); reasons["excluded_other_project"]=counts["excluded_other_project"]; reasons.update(p["kind"] for p in problems)
+        reasons={k:v for k,v in reasons.items() if v}; print("harness: pi\nstore: %s\nselection: %s\nproject: %s\nno usable sessions\nfiles found: %d"%(shown,selection,project or "not checked (explicit files)",counts["files_found"]))
+        print("reasons: %s"%(", ".join("%s=%d"%kv for kv in sorted(reasons.items())) or "no matching files"))
+        if meta["problems"]:
+            print("\nproblems")
+            for p in meta["problems"]: print("  %s | %s | %s"%(p.get("path","-"),p["kind"],p["detail"]))
+        if args.json_out: Path(args.json_out).write_text(json.dumps({"harness":"pi","selection":selection,"project":project,"store":shown,"no_usable_sessions":True,"reasons":reasons,"files":{"found":counts["files_found"],"audited":0,"excluded_other_project":counts["excluded_other_project"],"unavailable":counts["unavailable"],"incomplete":0},"problems":meta["problems"],"sessions":[],"prompts":[],"aggregates":{}},indent=2,ensure_ascii=False),encoding="utf-8")
+        return
+    report(sessions,windows,shown,args.min_turns,time.monotonic()-started,args.json_out,args.flag,args.top,args.prompts,len(all_sessions),sum(s.kind=="worker" for s in all_sessions if not args.include_workers),harness="pi",meta=meta)
 
 if __name__ == "__main__": main()
