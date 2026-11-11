@@ -280,7 +280,7 @@ def fork_note(sessions):
 def print_header_extras(harness,meta,sessions):
     if harness == "pi":
         print("selection: %s\nproject: %s"%(meta["selection"],meta["project"] or "not checked (explicit files)"))
-        print("files found: %d\nfiles audited: %d\nexcluded other project: %d\nunavailable: %d\nincomplete: %d"%(meta["files_found"],len(sessions),meta["excluded_other_project"],len(meta["unavailable"]),sum(not s.complete for s in sessions)))
+        print("files found: %d\nfiles audited: %d\nexcluded other project: %d\nbelow min turns: %d (--min-turns %d)\nbefore since: %d\nworkers excluded: %d\nunavailable: %d\nincomplete: %d"%(meta["files_found"],len(sessions),meta["excluded_other_project"],meta["below_min_turns"],meta["min_turns"],meta["before_since"],meta["workers_excluded"],len(meta["unavailable"]),sum(not s.complete for s in sessions)))
     if meta.get("problems"):
         print("\nproblems")
         for p in meta["problems"]: print("  %s | %s | %s"%(p.get("path","-"),p["kind"],p["detail"]))
@@ -351,7 +351,7 @@ def report(sessions,windows,store,min_turns,elapsed,json_out=None,flag=None,top=
             for key in ("agent_calls","agent_calls_with_model","off_claude","tokens_per_model","token_fields_per_model","subagent_tokens_per_model"): aggregates[key]=None
             aggregates.update(unavailable={key:PI_UNAVAILABLE if key in ("agent_calls","agent_calls_with_model","off_claude") else "Pi usage is reported in per-session `usage`, not Claude token fields" for key in ("agent_calls","agent_calls_with_model","off_claude","tokens_per_model","token_fields_per_model","subagent_tokens_per_model")},usage=pi_aggregate(sessions),notes=[n for n in [fork_note(sessions)] if n])
         payload={"harness":harness,"selection":meta.get("selection"),"project":meta.get("project"),"store":str(store),"problems":meta.get("problems",[]),"sessions":entries,"prompts":prompts,"aggregates":aggregates}
-        if pi: payload["files"]={"found":meta["files_found"],"audited":len(sessions),"excluded_other_project":meta["excluded_other_project"],"unavailable":meta["unavailable"],"incomplete":sum(not s.complete for s in sessions)}
+        if pi: payload["files"]={"found":meta["files_found"],"audited":len(sessions),"excluded_other_project":meta["excluded_other_project"],"below_min_turns":meta["below_min_turns"],"before_since":meta["before_since"],"workers_excluded":meta["workers_excluded"],"unavailable":meta["unavailable"],"incomplete":sum(not s.complete for s in sessions)}
         Path(json_out).write_text(json.dumps(payload,indent=2,ensure_ascii=False),encoding="utf-8")
 
 def selftest():
@@ -380,15 +380,17 @@ def main_pi(args,cwd,money,truth,windows,since,started):
     store=None if selection == "explicit-files" else Path(args.store) if args.store else pi_sessions.default_store(project)
     files,problems=pi_candidates(selection,store,args.session_file); found,counts=scan_pi(files,project,selection != "explicit-files",money,truth,args.leaf)
     all_sessions=keep_sessions(found,args.min_turns,since,money,truth); sessions=all_sessions if args.include_workers else [s for s in all_sessions if s.kind=="main"]
-    meta=dict(counts,selection=selection,project=project,problems=problems+counts["problems"]); shown=str(store) if store else "(explicit files)"
-    if not found:
-        reasons=Counter(item["kind"] for item in counts["unavailable"]); reasons["excluded_other_project"]=counts["excluded_other_project"]; reasons.update(p["kind"] for p in problems)
+    below=sum(s.assistant<args.min_turns for s in found); stale=sum(s.assistant>=args.min_turns and bool(since) and not (s.date() and s.date().date()>=since) for s in found)
+    workers=len(all_sessions)-len(sessions)
+    meta=dict(counts,min_turns=args.min_turns,below_min_turns=below,before_since=stale,workers_excluded=workers,selection=selection,project=project,problems=problems+counts["problems"]); shown=str(store) if store else "(explicit files)"
+    if not sessions:
+        reasons=Counter(item["kind"] for item in counts["unavailable"]); reasons["excluded_other_project"]=counts["excluded_other_project"]; reasons["below_min_turns"]=below; reasons["before_since"]=stale; reasons["workers_excluded"]=workers; reasons.update(p["kind"] for p in problems)
         reasons={k:v for k,v in reasons.items() if v}; print("harness: pi\nstore: %s\nselection: %s\nproject: %s\nno usable sessions\nfiles found: %d"%(shown,selection,project or "not checked (explicit files)",counts["files_found"]))
         print("reasons: %s"%(", ".join("%s=%d"%kv for kv in sorted(reasons.items())) or "no matching files"))
         if meta["problems"]:
             print("\nproblems")
             for p in meta["problems"]: print("  %s | %s | %s"%(p.get("path","-"),p["kind"],p["detail"]))
-        if args.json_out: Path(args.json_out).write_text(json.dumps({"harness":"pi","selection":selection,"project":project,"store":shown,"no_usable_sessions":True,"reasons":reasons,"files":{"found":counts["files_found"],"audited":0,"excluded_other_project":counts["excluded_other_project"],"unavailable":counts["unavailable"],"incomplete":0},"problems":meta["problems"],"sessions":[],"prompts":[],"aggregates":{}},indent=2,ensure_ascii=False),encoding="utf-8")
+        if args.json_out: Path(args.json_out).write_text(json.dumps({"harness":"pi","selection":selection,"project":project,"store":shown,"no_usable_sessions":True,"reasons":reasons,"files":{"found":counts["files_found"],"audited":0,"excluded_other_project":counts["excluded_other_project"],"below_min_turns":below,"before_since":stale,"workers_excluded":workers,"unavailable":counts["unavailable"],"incomplete":0},"problems":meta["problems"],"sessions":[],"prompts":[],"aggregates":{}},indent=2,ensure_ascii=False),encoding="utf-8")
         return
     report(sessions,windows,shown,args.min_turns,time.monotonic()-started,args.json_out,args.flag,args.top,args.prompts,len(all_sessions),sum(s.kind=="worker" for s in all_sessions if not args.include_workers),harness="pi",meta=meta)
 

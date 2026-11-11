@@ -13,7 +13,7 @@ This page states what each published skill can do on each harness, and what it c
 | Bundled Claude hooks | Run after a plugin install | Not loaded from a symlinked skill directory | Not executed. A hook file is inert text on Pi |
 | Plugin marketplace metadata | Required for `/plugin` install | Required for `codex plugin` install | Not used. Pi discovers the skill directory |
 
-Pi discovers a directory named `SKILL.md` recursively from `~/.agents/skills/` and from project `.agents/skills/` directories, walking ancestors up to the repository root. `pi --skill <path>` loads one skill explicitly. Install steps are in the README. Pi does not need `.claude-plugin/plugin.json`.
+Pi discovers a directory named `SKILL.md` recursively from `~/.agents/skills/` and from project `.agents/skills/` directories, walking ancestors up to the repository root. Pi loads project skills only after project trust is granted; with the default `defaultProjectTrust: "ask"`, a non-interactive `pi -p` run skips them unless you pass `-a` to trust the project for that command. Skills in `~/.agents/skills/` are not trust-gated. `pi --skill <path>` loads one skill explicitly. Install steps are in the README. Pi does not need `.claude-plugin/plugin.json`.
 
 ## Published skills
 

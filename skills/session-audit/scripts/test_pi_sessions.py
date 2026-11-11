@@ -608,6 +608,70 @@ class GapTests(PiCase):
         self.assertEqual([(p["prompt"], p["tokens"]) for p in data["prompts"]], [("first ask", 8), ("second ask", None)])
 
 
+    def buckets(self, f):
+        return f["audited"] + f["excluded_other_project"] + len(f["unavailable"]) + f["below_min_turns"] + f["before_since"] + f["workers_excluded"]
+
+    def test_below_min_turns_is_counted_and_buckets_sum_to_found(self):
+        write(self.store / "long.jsonl", [header("long", str(self.project))] + linear(3))
+        write(self.store / "short.jsonl", [header("short", str(self.project))] + linear(1, prefix="s"))
+        write(self.store / "other.jsonl", [header("other", "/elsewhere")] + linear(3, prefix="x"))
+        write(self.store / "v9.jsonl", [header("v9", str(self.project), version=9)])
+        out, data = self.in_store(min_turns="2")
+        f = data["files"]
+        self.assertEqual((f["found"], f["audited"], f["below_min_turns"], f["before_since"]), (4, 1, 1, 0))
+        self.assertEqual(self.buckets(f), f["found"])
+        self.assertIn("below min turns: 1 (--min-turns 2)\nbefore since: 0\n", out)
+        self.assertLess(out.index("excluded other project"), out.index("below min turns"))
+        self.assertTrue(all(s["kind"] == "main" for s in data["sessions"]))
+
+    def test_worker_sessions_are_counted_when_excluded(self):
+        write(self.store / "main.jsonl", [header("main", str(self.project))] + linear(2))
+        write(self.store / "w.jsonl", [header("w", str(self.project)), message("w0", None, "user", "You are a subagent. do the work", 1)] + linear(2, prefix="w")[1:])
+        out, data = self.in_store()
+        f = data["files"]
+        self.assertEqual((f["found"], f["audited"], f["workers_excluded"]), (2, 1, 1))
+        self.assertEqual(self.buckets(f), f["found"])
+        self.assertIn("workers excluded: 1\n", out)
+        _, data = self.in_store("--include-workers")
+        self.assertEqual((data["files"]["audited"], data["files"]["workers_excluded"]), (2, 0))
+        write(self.store / "main.jsonl", [header("main", "/elsewhere")] + linear(2))
+        out, data = self.in_store()
+        self.assertIn("no usable sessions", out)
+        self.assertEqual(data["reasons"], {"excluded_other_project": 1, "workers_excluded": 1})
+        self.assertEqual(data["files"]["workers_excluded"], 1)
+
+    def test_session_file_below_threshold_reports_no_usable_sessions(self):
+        path = write(self.root / "short.jsonl", [header("short", str(self.project))] + linear(1))
+        out, data = self.pi("--session-file", str(path), min_turns="2")
+        self.assertIn("no usable sessions", out)
+        self.assertIn("below_min_turns=1", out)
+        self.assertEqual((data["no_usable_sessions"], data["reasons"], data["sessions"]), (True, {"below_min_turns": 1}, []))
+        self.assertEqual((data["files"]["found"], data["files"]["audited"], data["files"]["below_min_turns"], data["files"]["before_since"]), (1, 0, 1, 0))
+
+    def test_since_counts_before_since_and_both_failures_count_once(self):
+        old = [header("old", str(self.project))] + linear(3, prefix="o")
+        for entry in old:
+            entry["timestamp"] = "2020-01-01T00:00:00.000Z"
+        write(self.store / "old.jsonl", old)
+        write(self.store / "new.jsonl", [header("new", str(self.project))] + linear(3))
+        out, data = self.in_store("--since", "2026-01-01")
+        f = data["files"]
+        self.assertEqual((f["found"], f["audited"], f["below_min_turns"], f["before_since"]), (2, 1, 0, 1))
+        self.assertEqual(self.buckets(f), f["found"])
+        self.assertIn("before since: 1", out)
+        out, data = self.in_store("--since", "2026-01-01", min_turns="9")
+        self.assertEqual((data["files"]["below_min_turns"], data["files"]["before_since"], data["reasons"]), (2, 0, {"below_min_turns": 2}))
+
+    def test_since_excluding_everything_takes_no_usable_path(self):
+        old = [header("old", str(self.project))] + linear(3, prefix="o")
+        for entry in old:
+            entry["timestamp"] = "2020-01-01T00:00:00.000Z"
+        write(self.store / "old.jsonl", old)
+        out, data = self.in_store("--since", "2026-01-01")
+        self.assertIn("no usable sessions", out)
+        self.assertEqual((data["reasons"], data["files"]["before_since"]), ({"before_since": 1}, 1))
+
+
 class ClaudeCompatTests(PiCase):
     def test_claude_report_names_harness_and_keeps_keys(self):
         records = [{"type": "user", "sessionId": "c", "timestamp": "2026-09-10T00:00:00Z", "message": {"content": "go"}},
@@ -618,6 +682,8 @@ class ClaudeCompatTests(PiCase):
         self.assertEqual((data["harness"], data["sessions"][0]["harness"], data["problems"]), ("claude", "claude", []))
         self.assertEqual(data["aggregates"]["tokens_per_model"], {"x": 5})
         self.assertNotIn("problems\n", out)
+        self.assertNotIn("below min turns", out)
+        self.assertNotIn("files", data)
 
 
 if __name__ == "__main__":

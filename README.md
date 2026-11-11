@@ -95,10 +95,10 @@ Pi reads the skill directory. It does not read `.claude-plugin/plugin.json`, and
 cd /path/to/claude-skills
 test -f skills/obsidian/SKILL.md
 mkdir -p ~/.agents/skills
-test ! -e ~/.agents/skills/obsidian && ln -s "$(pwd)/skills/obsidian" ~/.agents/skills/obsidian
+test ! -e ~/.agents/skills/obsidian && test ! -L ~/.agents/skills/obsidian && ln -s "$(pwd)/skills/obsidian" ~/.agents/skills/obsidian
 ```
 
-Run the last two lines once per skill, with that skill's directory name in place of `obsidian`. `mkdir -p` creates the parent without touching anything already there. `$(pwd)` has to be this repository's root, because the link target is `skills/<skill>` underneath it. `test ! -e` refuses an existing file, directory, or link, so a second run will not replace a destination you already have. Remove or rename that destination yourself before linking a different path.
+Run the last two lines once per skill, with that skill's directory name in place of `obsidian`. `mkdir -p` creates the parent without touching anything already there. `$(pwd)` has to be this repository's root, because the link target is `skills/<skill>` underneath it. `test ! -e` refuses an existing file or directory, and `test ! -L` refuses any link, including a broken one, so a second run will not replace a destination you already have. Remove or rename that destination yourself before linking a different path.
 
 `pi --skill ~/.agents/skills/obsidian` loads one skill without the user directory. Which skills work, and which Claude grants do not carry over, is in [docs/harness-coverage.md](docs/harness-coverage.md).
 
