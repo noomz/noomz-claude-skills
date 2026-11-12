@@ -122,7 +122,7 @@ class Links(Fixture):
         before = self.tree(self.root)
         code, out = self.run_cli("fix-links", "--memory", str(self.mem))
         self.assertEqual(code, 0)
-        self.assertIn("src.md: [[Foo-Bar]] -> [[foo-bar]]", out)
+        self.assertIn("src.md: [[Foo-Bar]] -> [[foo_bar]]", out)
         self.assertIn("dry run", out)
         self.assertEqual(self.tree(self.root), before)
 
@@ -130,11 +130,54 @@ class Links(Fixture):
         code, out = self.run_cli("fix-links", "--memory", str(self.mem), "--apply")
         self.assertEqual(code, 0)
         text = self.src.read_text()
-        self.assertIn("[[foo-bar|alias]]", text)
+        self.assertIn("[[foo_bar|alias]]", text)
         self.assertIn("[[nope]]", text)
         backups = list((self.root / "proj" / "memory-backups").glob("memory-*.tar.gz"))
         self.assertEqual(len(backups), 1)
         self.assertIn(str(backups[0]), out)
+
+
+class LinkTargets(Fixture):
+    def test_rewrite_targets_file_stem_not_title(self):
+        self.put("unicef-staging-deploy.md", note("UNICEF staging deploy"))
+        src = self.put("src.md", note("src", body="[[unicef_staging_deploy]] [[UNICEF staging deploy]] [[unicef-staging-deploy]]"))
+        _, notes, _ = dream.lint(str(self.mem))
+        plan = dream.link_plan(notes)
+        self.assertEqual(plan["fix"], [("src.md", "unicef_staging_deploy", "unicef-staging-deploy")])
+        code, out = self.run_cli("fix-links", "--memory", str(self.mem), "--apply")
+        self.assertEqual(code, 0)
+        self.assertEqual(src.read_text().count("[[unicef-staging-deploy]]"), 2)
+        self.assertIn("[[UNICEF staging deploy]]", src.read_text())
+
+    def test_archive_link_resolves_when_archived_note_exists(self):
+        self.put("archive/old.md", note("old"))
+        self.put("archive/sub/deep.md", note("deep"))
+        self.put("src.md", note("src", body="[[archive/old]] [[archive/old.md]] [[archive/sub/deep]] [[archive/gone]]"))
+        r, notes, _ = dream.lint(str(self.mem))
+        self.assertEqual(list(notes), ["src.md"])
+        self.assertEqual(r["dead"], [("src.md", "archive/gone")])
+        self.assertEqual(r["fixable"], [])
+        self.assertEqual(r["notes"], 1)
+        self.assertEqual(r["orphans"], ["src.md"])
+
+    def test_fix_links_leaves_archive_links_alone(self):
+        self.put("archive/old.md", note("old"))
+        self.put("old.md", note("Old Title"))
+        src = self.put("src.md", note("src", body="[[archive/old]] [[Archive/Old]] [[old]]"))
+        before = src.read_text()
+        _, notes, _ = dream.lint(str(self.mem))
+        plan = dream.link_plan(notes, dream.archived_stems(str(self.mem)))
+        self.assertEqual(plan["fix"], [])
+        self.assertEqual([t for _, t, _ in plan["unresolved"]], ["Archive/Old"])
+        self.run_cli("fix-links", "--memory", str(self.mem), "--apply")
+        self.assertEqual(src.read_text(), before)
+
+    def test_plain_link_is_never_pointed_into_archive(self):
+        self.put("archive/old.md", note("old"))
+        self.put("src.md", note("src", body="[[old]]"))
+        r, _, _ = dream.lint(str(self.mem))
+        self.assertEqual(r["dead"], [("src.md", "old")])
+        self.assertEqual(r["fixable"], [])
 
 
 class Apply(Fixture):
@@ -333,6 +376,18 @@ class Retire(Fixture):
         code, out = self.run_cli("retire", "--root", str(self.root), "--note", "old")
         self.assertEqual(code, 2)
         self.assertIn("exactly one project", out)
+
+
+class RetireRefusals(Fixture):
+    def test_non_md_file_is_refused_with_a_plain_message(self):
+        self.put("a.md", note("a"))
+        self.put("MEMORY.md.migrated-from-work", "old index\n")
+        before = self.tree(self.root)
+        code, out = self.run_cli("retire", "--memory", str(self.mem), "--note", "MEMORY.md.migrated-from-work", "--apply")
+        self.assertNotEqual(code, 0)
+        self.assertIn("only .md notes can be retired", out)
+        self.assertIn("MEMORY.md.migrated-from-work", out)
+        self.assertEqual(self.tree(self.root), before)
 
 
 class Safety(Fixture):

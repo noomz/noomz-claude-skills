@@ -101,6 +101,17 @@ def load(mem):
     return notes, (read(idx_path) if os.path.exists(idx_path) else None)
 
 
+def archived_stems(mem):
+    base = os.path.join(mem, "archive")
+    out = set()
+    for d, dirs, files in os.walk(base):
+        dirs[:] = [x for x in dirs if not x.startswith(".")]
+        for f in files:
+            if f.endswith(".md"):
+                out.add(stem(os.path.relpath(os.path.join(d, f), base).replace(os.sep, "/")))
+    return out
+
+
 def note_keys(rel, fm):
     return {k for k in (stem(rel), posixpath.basename(stem(rel)), fm.get("name", "")) if k}
 
@@ -144,7 +155,7 @@ def lint(mem):
             deep |= refs
     r["deep"] = sorted(deep)
     r["orphans"] = [f for f in r["orphans"] if f not in deep]
-    plan = link_plan(notes)
+    plan = link_plan(notes, archived_stems(mem))
     r["fixable"] = [(f, old) for f, old, _ in plan["fix"]]
     r["dead"] = [(f, old) for f, old, _ in plan["unresolved"]]
     for f, (_, text) in notes.items():
@@ -158,7 +169,7 @@ def lint(mem):
     return r, notes, index
 
 
-def link_plan(notes):
+def link_plan(notes, archived=frozenset()):
     exact, by_norm = {"MEMORY"}, {}
     for rel, (fm, _) in notes.items():
         for key in note_keys(rel, fm):
@@ -169,10 +180,13 @@ def link_plan(notes):
         for target in sorted({m.group(1).strip() for m in WIKI.finditer(text)}):
             if target in exact:
                 continue
+            if target.startswith("archive/"):
+                if stem(target[len("archive/"):]) not in archived:
+                    unresolved.append((rel, target, "no such archived note"))
+                continue
             cands = sorted(by_norm.get(norm(target), ()))
             if len(cands) == 1:
-                fm = notes[cands[0]][0]
-                fix.append((rel, target, fm.get("name") or posixpath.basename(stem(cands[0]))))
+                fix.append((rel, target, posixpath.basename(stem(cands[0]))))
             else:
                 why = "ambiguous: " + ", ".join(cands) if cands else "no such note"
                 unresolved.append((rel, target, why))
@@ -442,7 +456,7 @@ def cmd_fix_links(a):
     status = 0
     for d, mem in rows:
         notes, _ = load(mem)
-        plan = link_plan(notes)
+        plan = link_plan(notes, archived_stems(mem))
         if not plan["fix"] and not plan["unresolved"]:
             continue
         print(f"== {short(d)}: {len(plan['fix'])} fixable, {len(plan['unresolved'])} unresolved")
@@ -471,6 +485,8 @@ def cmd_retire(a):
     notes, index = load(mem)
     moves = {}
     for n in a.note:
+        if not n.endswith(".md") and os.path.isfile(os.path.join(mem, n)):
+            raise Die(f"cannot retire {n}: only .md notes can be retired")
         rel = posixpath.normpath(n if n.endswith(".md") else n + ".md")
         if rel not in notes:
             raise Die(f"no such note in {mem}: {n}")

@@ -42,7 +42,7 @@ Exit code: 0 clean, 1 a check failed or a write was refused, 2 bad input.
 | deep | notes reachable only through another listed page (a topic page), not orphans |
 | orph | notes no index line or topic page mentions |
 | miss | index links to notes that do not exist |
-| dead | `[[links]]` that resolve to nothing, or to more than one note |
+| dead | `[[links]]` that resolve to nothing, or to more than one note; `[[archive/<stem>]]` counts only when `archive/<stem>.md` does not exist |
 | fix | `[[links]]` that resolve to exactly one note after dash, underscore and case normalisation |
 | sec | notes that look like they hold a password, token or credentialed URL; name and kind only |
 
@@ -53,7 +53,10 @@ Exit code: 0 clean, 1 a check failed or a write was refused, 2 bad input.
 - In a git repo, a write is refused when a file it would change has uncommitted modifications or is untracked, unless `--force`.
 - Notes are never deleted. `retire` moves a note to `archive/` (same relative path; a name clash gets a `-2` suffix) and drops the index lines pointing at it. `lint` ignores `archive/`.
 - Secret values are never printed and never copied into a proposed index; a hook that looks secret is replaced by `NEEDS HOOK`.
-- `fix-links` rewrites `[[target]]` only when it resolves to exactly one existing note. Ambiguous and unresolved links are listed and left alone. Aliases (`[[x|alias]]`) are kept.
+- `fix-links` rewrites `[[target]]` only when it resolves to exactly one existing note after dash, underscore and case normalisation, matching both file stems and frontmatter `name`s. The new target is always the note's file stem (file name without `.md`), never its `name`. A link that already equals a file stem or a `name` exactly is valid and untouched. Ambiguous and unresolved links are listed and left alone. Aliases (`[[x|alias]]`) are kept.
+- `[[archive/<stem>]]` and `[[archive/<stem>.md]]` are valid when that archived note exists and dead when it does not. `fix-links` never rewrites an `archive/` link and never points a plain link into `archive/`. Archived notes are excluded from every other lint count.
+- `retire` only moves `.md` notes. Any other file (for example `MEMORY.md.migrated-from-work`) is refused by name with "only .md notes can be retired", exit 2, nothing moved.
+- `apply` keeps every existing index line as it is, even when the note's `description` has changed, so hand-written hooks survive; it only appends lines for unlisted notes and rebuilds lines over 150 characters. To refresh one line from its note, delete that line from `MEMORY.md` and run `apply` again: the note is unlisted, so it is appended with its current `description`.
 
 ## The dream.toml format
 
