@@ -1,0 +1,4 @@
+interface:
+  display_name: "Dream"
+  short_description: "Clean up stale Claude Code memory notes and indexes"
+  default_prompt: "Use $dream to lint my memory folder, verify the notes and propose a cleanup."

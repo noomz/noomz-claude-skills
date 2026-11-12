@@ -1,0 +1,33 @@
+# Copy to <workspace>/.claude/dream.toml, then run:
+#   python3 <skill-root>/scripts/dream.py rules <workspace>
+# Every path is relative to the workspace folder. Only the checks you write are run.
+
+goal = "Keep the always-loaded status short and the written rules true: the index, the ledger and the handoffs say what the folders hold."
+
+# Optional. Without it the memory folder is derived from the workspace path under the memory root.
+# memory = "../memory"
+
+[[file_cap]]
+path = "STATUS.md"
+max_lines = 60
+
+[[row_cap]]
+path = "docs/decisions.md"
+max_bytes = 300
+
+[[index_count]]
+index = "wiki/index.md"
+folder = "wiki"
+
+[[required_field]]
+path = "handoffs/*.md"
+field = "status"
+
+[[superseded]]
+path = "handoffs/*.md"
+
+[[stale_label]]
+path = "handoffs/*.md"
+statuses = ["open", "active", "in-progress"]
+max_age_days = 30
+date_field = "date"
