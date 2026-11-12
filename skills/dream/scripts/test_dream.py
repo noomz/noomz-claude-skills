@@ -67,6 +67,16 @@ class IndexLint(Fixture):
         self.assertEqual(len(r["deep"]), 12)
         self.assertEqual(r["orphans"], [])
 
+    def test_small_topic_page_is_an_index_page_by_name_only(self):
+        for n in ("a", "b", "c", "d"):
+            self.put(f"{n}.md", note(n))
+        self.put("topic_x.md", note("topic x", body="- [[a]]\n- [[b]]"))
+        self.put("plain.md", note("plain", body="see [[c]] and [[d]]"))
+        self.put("MEMORY.md", "- [x](topic_x.md) — x\n- [plain](plain.md) — p\n")
+        r, _, _ = dream.lint(str(self.mem))
+        self.assertEqual(r["deep"], ["a.md", "b.md"])
+        self.assertEqual(r["orphans"], ["c.md", "d.md"])
+
     def test_missing_index_target(self):
         self.put("MEMORY.md", "- [gone](gone.md) — x\n")
         r, _, _ = dream.lint(str(self.mem))

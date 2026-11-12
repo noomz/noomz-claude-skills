@@ -151,7 +151,7 @@ def lint(mem):
         text = notes[page][1]
         refs = {f for f in r["orphans"] if f in text or posixpath.basename(f) in text
                 or f"[[{stem(f)}]]" in text or f"[[{notes[f][0].get('name') or f}]]" in text}
-        if len(refs) >= DEEP_PAGE_MIN:
+        if len(refs) >= DEEP_PAGE_MIN or re.match(r"topic[_-]", posixpath.basename(page), re.I):
             deep |= refs
     r["deep"] = sorted(deep)
     r["orphans"] = [f for f in r["orphans"] if f not in deep]

@@ -39,7 +39,7 @@ Exit code: 0 clean, 1 a check failed or a write was refused, 2 bad input.
 | idxB, ln | index bytes and lines; `OVER` when past 25,000 bytes or 200 lines |
 | long | index lines over 150 characters |
 | cut | notes whose only index line sits past the load limit |
-| deep | notes reachable only through another listed page (a topic page), not orphans |
+| deep | notes reachable only through another listed page, not orphans. A listed page counts as an index page when its file is named `topic_*` or `topic-*`, or when it names 10 or more unlisted notes |
 | orph | notes no index line or topic page mentions |
 | miss | index links to notes that do not exist |
 | dead | `[[links]]` that resolve to nothing, or to more than one note; `[[archive/<stem>]]` counts only when `archive/<stem>.md` does not exist |

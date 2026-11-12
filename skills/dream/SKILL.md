@@ -50,7 +50,7 @@ Rules for the decision, with examples, are in [reference/decisions.md](reference
 
 ## Step 4: index and topic pages
 
-Keep `MEMORY.md` under the load limit: one line per note, a short hook, curated order. `dream.py propose` keeps your curated lines, shortens only lines over budget and appends unlisted notes. Past roughly 150 notes, the index lists topic pages and each topic page lists its notes: one page per subject, and parallel agents never write the same page.
+Keep `MEMORY.md` under the load limit: one line per note, a short hook, curated order. `dream.py propose` keeps your curated lines, shortens only lines over budget and appends unlisted notes. Past roughly 150 notes, the index lists topic pages and each topic page lists its notes: one page per subject, named `topic_<subject>.md` so `lint` treats it as an index page, and parallel agents never write the same page.
 
 ## Step 5: propose, then apply
 
