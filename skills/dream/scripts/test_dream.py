@@ -540,6 +540,123 @@ class Root(Fixture):
         code, out = self.run_cli("lint", "--root", str(self.root), "pro")
         self.assertIn("== proj", out)
 
+class BytesSurvive(Fixture):
+    def setUp(self):
+        super().setUp()
+        self.put("foo-bar.md", note("foo-bar"))
+
+    def raw(self, rel, data):
+        p = self.mem / rel
+        p.write_bytes(data)
+        return p
+
+    def test_crlf_note_keeps_its_line_endings(self):
+        data = note("src", body="caf\u00e9 [[foo_bar]]\nline2").replace("\n", "\r\n").encode()
+        p = self.raw("src.md", data)
+        code, out = self.run_cli("fix-links", "--memory", str(self.mem), "--apply")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(p.read_bytes(), data.replace(b"[[foo_bar]]", b"[[foo-bar]]"))
+
+    def test_non_utf8_note_is_skipped_by_name_and_never_rewritten(self):
+        data = b"---\nname: bad\ndescription: d\n---\n\ncaf\xe9 [[foo_bar]]\n"
+        p = self.raw("bad.md", data)
+        other = self.put("ok.md", note("ok", body="[[foo_bar]]"))
+        code, out = self.run_cli("fix-links", "--memory", str(self.mem), "--apply")
+        self.assertEqual(code, 1)
+        self.assertIn("bad.md", out)
+        self.assertEqual(p.read_bytes(), data)
+        self.assertIn("[[foo-bar]]", other.read_text())
+
+    def test_apply_keeps_crlf_index_and_appends_crlf_lines(self):
+        self.put("b.md", note("b"))
+        data = b"- [foo-bar](foo-bar.md) \xe2\x80\x94 x\r\n"
+        p = self.raw("MEMORY.md", data)
+        code, out = self.run_cli("apply", "--memory", str(self.mem), "--apply")
+        self.assertEqual(code, 0, out)
+        got = p.read_bytes()
+        self.assertTrue(got.startswith(data))
+        self.assertTrue(got.endswith(b"\r\n"))
+        self.assertNotIn(b"\n", got.replace(b"\r\n", b""))
+
+    def test_non_utf8_index_is_refused_and_untouched(self):
+        self.put("b.md", note("b"))
+        data = b"- [foo-bar](foo-bar.md) \xe9\n"
+        p = self.raw("MEMORY.md", data)
+        code, out = self.run_cli("apply", "--memory", str(self.mem), "--apply")
+        self.assertEqual(code, 1)
+        self.assertIn("MEMORY.md", out)
+        self.assertEqual(p.read_bytes(), data)
+
+
+class LostUpdate(Fixture):
+    def edit_after_every_load(self, rel):
+        real = dream.load
+        path = self.mem / rel
+
+        def load(mem):
+            got = real(mem)
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write("\nOTHER SESSION\n")
+            return got
+        dream.load = load
+        self.addCleanup(setattr, dream, "load", real)
+
+    def test_fix_links_skips_a_note_changed_after_it_was_read(self):
+        self.put("foo-bar.md", note("foo-bar"))
+        self.put("src.md", note("src", body="[[foo_bar]]"))
+        other = self.put("other.md", note("other", body="[[foo_bar]]"))
+        self.edit_after_every_load("src.md")
+        code, out = self.run_cli("fix-links", "--memory", str(self.mem), "--apply")
+        self.assertEqual(code, 1)
+        self.assertIn("src.md", out)
+        self.assertIn("changed", out)
+        text = (self.mem / "src.md").read_text()
+        self.assertIn("OTHER SESSION", text)
+        self.assertIn("[[foo_bar]]", text)
+        self.assertIn("[[foo-bar]]", other.read_text())
+
+    def test_apply_skips_an_index_changed_after_it_was_read(self):
+        self.put("a.md", note("a"))
+        self.put("b.md", note("b"))
+        self.put("MEMORY.md", "- [a](a.md) \u2014 x\n")
+        self.edit_after_every_load("MEMORY.md")
+        code, out = self.run_cli("apply", "--memory", str(self.mem), "--apply")
+        self.assertEqual(code, 1)
+        self.assertIn("MEMORY.md", out)
+        got = (self.mem / "MEMORY.md").read_text()
+        self.assertIn("OTHER SESSION", got)
+        self.assertNotIn("b.md", got)
+
+
+class ApplyKeepsLines(Fixture):
+    INDEX = ("# Heading\n- [a](a.md) \u2014 keep\n- [old](archive/old.md) \u2014 retired earlier\n"
+             "- [gone](gone.md) \u2014 dead\n- [a again](a.md) \u2014 dup\n- [x](../x.md) \u2014 outside\n"
+             "hand written line\n")
+
+    def setUp(self):
+        super().setUp()
+        self.put("a.md", note("a"))
+        self.put("my note.md", note("my note"))
+        self.put("b (1).md", note("b one"))
+        self.put("archive/old.md", note("old"))
+        self.put("MEMORY.md", self.INDEX)
+
+    def test_dry_run_lists_lines_it_cannot_match(self):
+        code, out = self.run_cli("apply", "--memory", str(self.mem))
+        for want in ("archive/old.md", "gone.md", "../x.md", "dup"):
+            self.assertIn(want, out)
+
+    def test_apply_drops_no_line_and_is_idempotent(self):
+        code, out = self.run_cli("apply", "--memory", str(self.mem), "--apply")
+        self.assertEqual(code, 0, out)
+        first = (self.mem / "MEMORY.md").read_text()
+        self.assertTrue(first.startswith(self.INDEX))
+        self.assertEqual(first.count("(my note.md)"), 1)
+        self.assertEqual(first.count("(b (1).md)"), 1)
+        code, out = self.run_cli("apply", "--memory", str(self.mem), "--apply")
+        self.assertIn("no change", out)
+        self.assertEqual((self.mem / "MEMORY.md").read_text(), first)
+
 
 if __name__ == "__main__":
     unittest.main()

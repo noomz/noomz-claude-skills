@@ -16,13 +16,16 @@ Nothing is written without --apply. Never deletes a note (retire moves it to arc
 import argparse
 import fnmatch
 import glob
+import hashlib
 import os
 import posixpath
 import re
 import statistics
+import stat
 import subprocess
 import sys
 import tarfile
+import tempfile
 import time
 from datetime import datetime
 
@@ -31,7 +34,7 @@ LINE_BUDGET = 150
 DEEP_PAGE_MIN = 10
 TOPIC_PAGES_ADVISED = 150
 
-LINK = re.compile(r"\]\(([^)#\s]+\.md)(?:#[^)]*)?\)")
+LINK = re.compile(r"\]\(<?((?:[^()\[\]<>#\n]|\([^()\n]*\))+?\.md)>?(?:#[^)]*)?\)")
 WIKI = re.compile(r"\[\[([^\]|#]+)([^\]]*)\]\]")
 FOLDED = ("", ">", "|", ">-", "|-")
 
@@ -57,8 +60,43 @@ def norm(s):
 
 
 def read(path):
-    with open(path, encoding="utf-8", errors="replace") as fh:
-        return fh.read()
+    with open(path, "rb") as fh:
+        return fh.read().decode("utf-8", "replace")
+
+
+def split_lines(text):
+    lines = text.split("\n")
+    if lines[-1] == "":
+        lines.pop()
+    return lines
+
+
+class Notes(dict):
+    """rel -> (frontmatter, text), plus what the files looked like when read."""
+
+    def __init__(self):
+        super().__init__()
+        self.digest = {}
+        self.locked = {}
+
+
+def read_tracked(mem, rel, notes):
+    path = os.path.join(mem, rel)
+    try:
+        with open(path, "rb") as fh:
+            data = fh.read()
+    except OSError as e:
+        notes.locked[rel] = "broken symlink" if os.path.islink(path) else (e.strerror or "unreadable")
+        return None
+    notes.digest[rel] = hashlib.sha256(data).hexdigest()
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        notes.locked[rel] = "not valid UTF-8"
+        text = data.decode("utf-8", "replace")
+    if os.path.islink(path):
+        notes.locked.setdefault(rel, "symlink")
+    return text
 
 
 def frontmatter(text):
@@ -89,16 +127,17 @@ def stem(rel):
 
 
 def load(mem):
-    notes = {}
+    notes = Notes()
     for d, dirs, files in os.walk(mem):
         dirs[:] = sorted(x for x in dirs if x != "archive" and not x.startswith("."))
         for f in sorted(files):
             rel = os.path.relpath(os.path.join(d, f), mem).replace(os.sep, "/")
             if f.endswith(".md") and rel != "MEMORY.md":
-                text = read(os.path.join(d, f))
-                notes[rel] = (frontmatter(text), text)
-    idx_path = os.path.join(mem, "MEMORY.md")
-    return notes, (read(idx_path) if os.path.exists(idx_path) else None)
+                text = read_tracked(mem, rel, notes)
+                if text is not None:
+                    notes[rel] = (frontmatter(text), text)
+    index = read_tracked(mem, "MEMORY.md", notes) if os.path.lexists(os.path.join(mem, "MEMORY.md")) else None
+    return notes, index
 
 
 def archived_stems(mem):
@@ -132,8 +171,9 @@ def lint(mem):
     if index is not None:
         r["bytes"] = len(index.encode())
         used = 0
-        for n, line in enumerate(index.splitlines(), 1):
-            used += len(line.encode()) + 1
+        for n, raw in enumerate(split_lines(index), 1):
+            line = raw.rstrip("\r")
+            used += len(raw.encode()) + 1
             past = used > MAX_BYTES or n > MAX_LINES
             if len(line) > LINE_BUDGET:
                 r["long"].append((len(line), "(secret-like, not shown)" if secret_kinds(line) else line[:70]))
@@ -214,9 +254,23 @@ def first_body_line(text):
     return ""
 
 
-def propose(notes, index):
-    """Keep order and curated lines; rebuild only lines over budget; append unlisted notes."""
+def unmatched(first, notes, seen):
+    if first.startswith("archive/"):
+        return "archived"
+    if first.startswith("../") or first == ".." or posixpath.isabs(first):
+        return "outside the folder"
+    if first not in notes:
+        return "missing"
+    return "duplicate" if first in seen else None
+
+
+def propose(notes, index, kept=None):
+    """Keep every line and its order; rebuild only live lines over budget; append unlisted notes.
+
+    Lines that point at no live note are kept as they are and appended to `kept` as (line number, reason, line)."""
     out, seen, need = [], set(), []
+    old = split_lines(index or "")
+    eol = "\r" if "\r\n" in (index or "") else ""
 
     def entry(rel, title=None):
         fm, text = notes[rel]
@@ -230,21 +284,22 @@ def propose(notes, index):
         head = f"- [{title}]({rel}) — "
         return head + clip(hook, max(40, LINE_BUDGET - len(head)))
 
-    for line in (index or "").splitlines():
+    for n, raw in enumerate(old, 1):
+        line = raw.rstrip("\r")
         targets = index_targets(line)
-        if not targets:
-            out.append(line)
-        elif targets[0] in notes and targets[0] not in seen:
-            seen.add(targets[0])
-            if len(line) <= LINE_BUDGET:
-                out.append(line)
-            else:
-                m = re.search(r"\[([^\]]+)\]\(", line)
-                out.append(entry(targets[0], m.group(1) if m else None))
+        why = unmatched(targets[0], notes, seen) if targets else None
+        if why and kept is not None:
+            kept.append((n, why, line))
+        if targets and not why and len(line) > LINE_BUDGET:
+            m = re.search(r"\[([^\]]+)\]\(", line)
+            out.append(entry(targets[0], m.group(1) if m else None) + raw[len(line):])
+        else:
+            out.append(raw)
+        seen.update(x for x in targets if x in notes)
     for rel in notes:
         if rel not in seen:
-            out.append(entry(rel))
-    return "\n".join(out) + "\n", need
+            out.append(entry(rel) + eol)
+    return "".join(x + "\n" for x in out), need
 
 
 def git_toplevel(path):
@@ -282,19 +337,56 @@ def prepare_write(mem, files, force):
     return snapshot(mem)
 
 
-def write_files(mem, contents, force, moves=None):
-    moves = moves or {}
+def sha(path):
+    try:
+        with open(path, "rb") as fh:
+            return hashlib.sha256(fh.read()).hexdigest()
+    except FileNotFoundError:
+        return None
+
+
+def replace_file(path, data):
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".dream-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        try:
+            mode = stat.S_IMODE(os.stat(path).st_mode)
+        except FileNotFoundError:
+            mode = 0o644
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+
+def write_files(mem, build, loaded, force):
+    """build(notes, index) -> (contents, moves). Returns the (file, reason) pairs it did not write.
+
+    Snapshot first, then read again, so the bytes written are built from what the snapshot holds
+    and each file is checked against that read right before it is replaced."""
+    contents, moves = build(*loaded)
     snap = prepare_write(mem, list(contents) + list(moves), force)
     print(f"  snapshot: {snap}")
+    notes, index = load(mem)
+    contents, moves = build(notes, index)
+    skipped = []
     for src, dst in moves.items():
         os.makedirs(os.path.dirname(os.path.join(mem, dst)), exist_ok=True)
         os.rename(os.path.join(mem, src), os.path.join(mem, dst))
     for rel, text in contents.items():
         path = os.path.join(mem, rel)
-        tmp = path + ".dream-tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            fh.write(text)
-        os.replace(tmp, path)
+        if rel in notes.locked:
+            skipped.append((rel, notes.locked[rel]))
+        elif sha(path) != notes.digest.get(rel):
+            skipped.append((rel, "changed since it was read"))
+        else:
+            replace_file(path, text.encode("utf-8"))
+    for rel, why in skipped:
+        print(f"  skipped {rel}: {why}")
+    return skipped
 
 
 def memory_root(arg):
@@ -418,10 +510,11 @@ def cmd_propose(a):
 
 
 def describe_index(label, text, need):
-    longest = max((len(x) for x in text.splitlines()), default=0)
-    over = " OVER LIMIT" if len(text.encode()) > MAX_BYTES or len(text.splitlines()) > MAX_LINES else ""
+    lines = split_lines(text)
+    longest = max((len(x.rstrip("\r")) for x in lines), default=0)
+    over = " OVER LIMIT" if len(text.encode()) > MAX_BYTES or len(lines) > MAX_LINES else ""
     extra = f", {len(need)} notes need a hook" if need else ""
-    return f"{short(label)}: proposed index {len(text.encode())} B, {len(text.splitlines())} lines, longest {longest}{over}{extra}"
+    return f"{short(label)}: proposed index {len(text.encode())} B, {len(lines)} lines, longest {longest}{over}{extra}"
 
 
 def cmd_apply(a):
@@ -431,21 +524,24 @@ def cmd_apply(a):
         notes, index = load(mem)
         if not notes and index is None:
             continue
-        text, need = propose(notes, index)
+        odd = []
+        text, need = propose(notes, index, odd)
         print(describe_index(d, text, need) + f" (was {len((index or '').encode())} B)")
+        for n, why, line in odd:
+            print(f"  kept as is, line {n} ({why}): " + ("(secret-like, not shown)" if secret_kinds(line) else line[:100]))
         if text == index:
             print("  no change")
         elif not a.apply:
             print("  dry run: nothing written (pass --apply)")
         else:
-            status |= guarded(lambda: write_files(mem, {"MEMORY.md": text}, a.force))
+            status |= guarded(lambda: write_files(
+                mem, lambda n, i: ({"MEMORY.md": propose(n, i)[0]}, {}), (notes, index), a.force))
     return status
 
 
 def guarded(fn):
     try:
-        fn()
-        return 0
+        return 1 if fn() else 0
     except Die as e:
         print(f"  refused: {e}")
         return 1
@@ -469,22 +565,18 @@ def cmd_fix_links(a):
         if not a.apply:
             print("  dry run: nothing written (pass --apply)")
             continue
-        per_file = {}
-        for f, old, new in plan["fix"]:
-            per_file.setdefault(f, {})[old] = new
-        contents = {f: rewrite_links(notes[f][1], m) for f, m in per_file.items()}
-        status |= guarded(lambda: write_files(mem, contents, a.force))
+        def build(n, i):
+            per_file = {}
+            for f, old, new in link_plan(n, archived_stems(mem))["fix"]:
+                per_file.setdefault(f, {})[old] = new
+            return {f: rewrite_links(n[f][1], m) for f, m in per_file.items()}, {}
+        status |= guarded(lambda: write_files(mem, build, (notes, None), a.force))
     return status
 
 
-def cmd_retire(a):
-    rows, _ = targets(a)
-    if len(rows) != 1:
-        raise Die(f"retire needs exactly one project, found {len(rows)}; narrow the filter or pass --memory")
-    d, mem = rows[0]
-    notes, index = load(mem)
+def retire_plan(mem, notes, index, names):
     moves = {}
-    for n in a.note:
+    for n in names:
         if not n.endswith(".md") and os.path.isfile(os.path.join(mem, n)):
             raise Die(f"cannot retire {n}: only .md notes can be retired")
         rel = posixpath.normpath(n if n.endswith(".md") else n + ".md")
@@ -497,18 +589,29 @@ def cmd_retire(a):
         moves[rel] = dst
     contents, dropped = {}, 0
     if index is not None:
-        lines = index.splitlines()
-        kept = [x for x in lines if not (index_targets(x) and index_targets(x)[0] in moves)]
-        dropped = len(lines) - len(kept)
+        parts = index.split("\n")
+        kept = [x for x in parts if not (index_targets(x) and index_targets(x)[0] in moves)]
+        dropped = len(parts) - len(kept)
         if dropped:
-            contents["MEMORY.md"] = "\n".join(kept) + "\n"
+            contents["MEMORY.md"] = "\n".join(kept)
+    return contents, moves, dropped
+
+
+def cmd_retire(a):
+    rows, _ = targets(a)
+    if len(rows) != 1:
+        raise Die(f"retire needs exactly one project, found {len(rows)}; narrow the filter or pass --memory")
+    d, mem = rows[0]
+    notes, index = load(mem)
+    contents, moves, dropped = retire_plan(mem, notes, index, a.note)
     print(f"== {short(d)}: retire {len(moves)} note(s), drop {dropped} index line(s)")
     for src, dst in moves.items():
         print(f"  {src} -> {dst}")
     if not a.apply:
         print("  dry run: nothing written (pass --apply)")
         return 0
-    return guarded(lambda: write_files(mem, contents, a.force, moves))
+    return guarded(lambda: write_files(
+        mem, lambda n, i: retire_plan(mem, n, i, a.note)[:2], (notes, index), a.force))
 
 
 def cmd_snapshot(a):

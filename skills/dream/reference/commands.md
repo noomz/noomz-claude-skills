@@ -21,7 +21,7 @@ dream.py snapshot [FILTER]             tar.gz of the memory folder into memory-b
 dream.py rules [PATH]                  run the checks written in PATH/.claude/dream.toml
 ```
 
-Exit code: 0 clean, 1 a check failed or a write was refused, 2 bad input.
+Exit code: 0 clean, 1 a check failed or a write was refused or skipped, 2 bad input.
 
 ## Scoping
 
@@ -56,7 +56,9 @@ Exit code: 0 clean, 1 a check failed or a write was refused, 2 bad input.
 - `fix-links` rewrites `[[target]]` only when it resolves to exactly one existing note after dash, underscore and case normalisation, matching both file stems and frontmatter `name`s. The new target is always the note's file stem (file name without `.md`), never its `name`. A link that already equals a file stem or a `name` exactly is valid and untouched. Ambiguous and unresolved links are listed and left alone. Aliases (`[[x|alias]]`) are kept.
 - `[[archive/<stem>]]` and `[[archive/<stem>.md]]` are valid when that archived note exists and dead when it does not. `fix-links` never rewrites an `archive/` link and never points a plain link into `archive/`. Archived notes are excluded from every other lint count.
 - `retire` only moves `.md` notes. Any other file (for example `MEMORY.md.migrated-from-work`) is refused by name with "only .md notes can be retired", exit 2, nothing moved.
-- `apply` keeps every existing index line as it is, even when the note's `description` has changed, so hand-written hooks survive; it only appends lines for unlisted notes and rebuilds lines over 150 characters. To refresh one line from its note, delete that line from `MEMORY.md` and run `apply` again: the note is unlisted, so it is appended with its current `description`.
+- `apply` never drops an index line. Every existing line stays, in order, byte for byte (line endings included); it only appends lines for unlisted notes and rebuilds live lines over 150 characters. Lines that point at no live note (`archive/` links, missing notes, links outside the folder, a second line for a note already listed) are kept as they are and listed, with the reason, in the dry run and in the `--apply` output, so you can decide. A second `apply` changes nothing. To refresh one line from its note, delete that line from `MEMORY.md` and run `apply` again: the note is unlisted, so it is appended with its current `description`.
+- Files keep their bytes outside the edited spans: line endings and encoding are unchanged. A file that is not valid UTF-8, or a symlink, is never rewritten; it is skipped, reported by name, and the exit code is 1.
+- The snapshot is taken before the files that get written are read again. Right before each file is replaced, its content is compared with what was read; if another session changed it, that file is skipped, reported, and the exit code is 1 after the rest are done. Writes are atomic (temp file in the same folder, then rename).
 
 ## The dream.toml format
 
