@@ -641,6 +641,17 @@ class ApplyKeepsLines(Fixture):
         self.put("archive/old.md", note("old"))
         self.put("MEMORY.md", self.INDEX)
 
+    def test_long_line_naming_two_notes_is_not_rebuilt(self):
+        self.put("c.md", note("c"))
+        long_line = "- [a](a.md) — " + "word " * 40 + "see also [c](c.md)\n"
+        self.put("MEMORY.md", long_line)
+        code, out = self.run_cli("apply", "--memory", str(self.mem), "--apply")
+        self.assertEqual(code, 0, out)
+        text = (self.mem / "MEMORY.md").read_text()
+        self.assertIn(long_line, text)
+        r, _, _ = dream.lint(str(self.mem))
+        self.assertNotIn("c.md", r["orphans"])
+
     def test_dry_run_lists_lines_it_cannot_match(self):
         code, out = self.run_cli("apply", "--memory", str(self.mem))
         for want in ("archive/old.md", "gone.md", "../x.md", "dup"):

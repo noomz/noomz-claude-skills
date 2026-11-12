@@ -311,7 +311,8 @@ def propose(notes, index, kept=None):
         why = unmatched(targets[0], notes, seen) if targets else None
         if why and kept is not None:
             kept.append((n, why, line))
-        if targets and not why and len(line) > LINE_BUDGET:
+        one_note = len({x for x in targets if x in notes}) == 1
+        if targets and not why and one_note and len(line) > LINE_BUDGET:
             m = re.search(r"\[([^\]]+)\]\(", line)
             out.append(entry(targets[0], m.group(1) if m else None) + raw[len(line):])
         else:
