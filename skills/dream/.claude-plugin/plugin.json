@@ -1,0 +1,20 @@
+{
+  "name": "dream",
+  "description": "Offline dreaming pass over Claude Code memory folders: lints the MEMORY.md index, repairs broken wiki links, checks a project's own written caps, then verifies notes against the repo and git and retires stale ones to archive/. Dry run by default; every write is snapshotted first.",
+  "version": "0.1.0",
+  "author": {
+    "name": "noomz",
+    "email": "lazym0m3nt@gmail.com"
+  },
+  "homepage": "https://github.com/noomz/noomz-claude-skills",
+  "license": "MIT",
+  "keywords": [
+    "memory",
+    "dreaming",
+    "claude-code",
+    "cleanup",
+    "index",
+    "wiki-links",
+    "snapshot"
+  ]
+}

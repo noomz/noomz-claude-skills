@@ -1,0 +1,4 @@
+# Copy to <repo>/.claude/dream.toml (or <repo>/dream.toml). A goal alone is a valid config:
+# it tells the dreaming pass what to optimise memory for, and no check runs.
+
+goal = "Memory holds only what the repo, git and the screen will not show next time: deploy quirks, owner decisions and tested rules."
