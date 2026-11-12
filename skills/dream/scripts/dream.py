@@ -11,7 +11,8 @@
 
 Memory root: --root, then $DREAM_MEMORY_ROOT, then $CLAUDE_CONFIG_DIR/projects, then
 ~/.claude/projects (first that exists).
-Nothing is written without --apply. Never deletes a note (retire moves it to archive/). Never prints a secret value.
+apply, fix-links and retire write nothing without --apply; propose writes its staging file and snapshot its archive.
+Never deletes a note (retire moves it to archive/). Never prints a secret value.
 """
 import argparse
 import fnmatch
@@ -36,6 +37,7 @@ TOPIC_PAGES_ADVISED = 150
 
 LINK = re.compile(r"\]\(<?((?:[^()\[\]<>#\n]|\([^()\n]*\))+?\.md)>?(?:#[^)]*)?\)")
 WIKI = re.compile(r"\[\[([^\]|#]+)([^\]]*)\]\]")
+CODE = re.compile(r"^ {0,3}(`{3,}|~{3,})[^\n]*\n.*?(?:^ {0,3}\1[`~]*[ \t]*\r?$|\Z)|`[^`\n]+`", re.S | re.M)
 FOLDED = ("", ">", "|", ">-", "|-")
 
 SECRETS = [
@@ -100,6 +102,7 @@ def read_tracked(mem, rel, notes):
 
 
 def frontmatter(text):
+    text = text.lstrip("\ufeff")
     if not text.startswith("---"):
         return {}
     end = text.find("\n---", 3)
@@ -120,6 +123,15 @@ def frontmatter(text):
             val = " ".join(cont)
         out.setdefault(key, val.strip("\"'"))
     return out
+
+
+def wiki_links(text):
+    code = [m.span() for m in CODE.finditer(text)]
+    return [m for m in WIKI.finditer(text) if not any(a <= m.start() < b for a, b in code)]
+
+
+def shown(s):
+    return "(secret-like, not shown)" if secret_kinds(s) else s
 
 
 def stem(rel):
@@ -166,11 +178,11 @@ def index_targets(line):
 def lint(mem):
     notes, index = load(mem)
     r = {"notes": len(notes), "has_index": index is not None, "bytes": 0, "lines": 0,
-         "long": [], "cut": [], "orphans": [], "missing": [], "dead": [], "fixable": [], "secrets": []}
+         "long": [], "cut": [], "orphans": [], "missing": [], "dead": [], "fixable": [], "secrets": [], "locked": dict(notes.locked)}
     listed = set()
     if index is not None:
         r["bytes"] = len(index.encode())
-        used = 0
+        used, inside = 0, set()
         for n, raw in enumerate(split_lines(index), 1):
             line = raw.rstrip("\r")
             used += len(raw.encode()) + 1
@@ -183,7 +195,10 @@ def lint(mem):
                     r["missing"].append(target)
                 elif past:
                     r["cut"].append(target)
+                else:
+                    inside.add(target)
             r["lines"] = n
+        r["cut"] = [x for x in dict.fromkeys(r["cut"]) if x not in inside]
         listed |= {f for f in notes if re.search(r"(?<![\w/-])" + re.escape(f), index)}
     r["orphans"] = [f for f in notes if f not in listed]
     deep = set()
@@ -210,14 +225,15 @@ def lint(mem):
 
 
 def link_plan(notes, archived=frozenset()):
-    exact, by_norm = {"MEMORY"}, {}
+    exact, by_norm, basenames = {"MEMORY"}, {}, {}
     for rel, (fm, _) in notes.items():
+        basenames[posixpath.basename(stem(rel))] = basenames.get(posixpath.basename(stem(rel)), 0) + 1
         for key in note_keys(rel, fm):
             exact.add(key)
             by_norm.setdefault(norm(key), set()).add(rel)
     fix, unresolved = [], []
     for rel, (_, text) in notes.items():
-        for target in sorted({m.group(1).strip() for m in WIKI.finditer(text)}):
+        for target in sorted({m.group(1).strip() for m in wiki_links(text)}):
             if target in exact:
                 continue
             if target.startswith("archive/"):
@@ -226,7 +242,8 @@ def link_plan(notes, archived=frozenset()):
                 continue
             cands = sorted(by_norm.get(norm(target), ()))
             if len(cands) == 1:
-                fix.append((rel, target, posixpath.basename(stem(cands[0]))))
+                base = posixpath.basename(stem(cands[0]))
+                fix.append((rel, target, base if basenames[base] == 1 else stem(cands[0])))
             else:
                 why = "ambiguous: " + ", ".join(cands) if cands else "no such note"
                 unresolved.append((rel, target, why))
@@ -234,10 +251,13 @@ def link_plan(notes, archived=frozenset()):
 
 
 def rewrite_links(text, mapping):
-    def sub(m):
+    out, last = [], 0
+    for m in wiki_links(text):
         old = m.group(1).strip()
-        return f"[[{mapping[old]}{m.group(2)}]]" if old in mapping else m.group(0)
-    return WIKI.sub(sub, text)
+        if old in mapping:
+            out += [text[last:m.start()], f"[[{mapping[old]}{m.group(2)}]]"]
+            last = m.end()
+    return "".join(out) + text[last:]
 
 
 def clip(s, n):
@@ -246,6 +266,7 @@ def clip(s, n):
 
 
 def first_body_line(text):
+    text = text.lstrip("\ufeff")
     end = text.find("\n---", 3) + 4 if text.startswith("---") and text.find("\n---", 3) > 0 else 0
     for line in text[end:].splitlines():
         line = line.strip()
@@ -318,11 +339,19 @@ def snapshot(mem):
     os.makedirs(dest, exist_ok=True)
     base = os.path.join(dest, "memory-" + datetime.now().strftime("%Y%m%d-%H%M%S"))
     path, n = base + ".tar.gz", 1
-    while os.path.exists(path):
-        n += 1
-        path = f"{base}-{n}.tar.gz"
-    with tarfile.open(path, "w:gz") as tar:
-        tar.add(mem, arcname="memory")
+    while True:
+        try:
+            tar = tarfile.open(path, "x:gz")
+            break
+        except FileExistsError:
+            n += 1
+            path = f"{base}-{n}.tar.gz"
+    try:
+        with tar:
+            tar.add(mem, arcname="memory")
+    except OSError as e:
+        os.unlink(path)
+        raise Die(f"snapshot failed, nothing was written: {e}")
     os.chmod(path, 0o600)
     return path
 
@@ -372,18 +401,44 @@ def write_files(mem, build, loaded, force):
     print(f"  snapshot: {snap}")
     notes, index = load(mem)
     contents, moves = build(notes, index)
-    skipped = []
+
+    def stale(rel):
+        return sha(os.path.join(mem, rel)) != notes.digest.get(rel)
+
+    skipped = [(rel, notes.locked[rel]) for rel in contents if rel in notes.locked]
+    skipped += [(rel, "changed since it was read") for rel in contents if rel not in notes.locked and stale(rel)]
     for src, dst in moves.items():
-        os.makedirs(os.path.dirname(os.path.join(mem, dst)), exist_ok=True)
-        os.rename(os.path.join(mem, src), os.path.join(mem, dst))
-    for rel, text in contents.items():
-        path = os.path.join(mem, rel)
-        if rel in notes.locked:
-            skipped.append((rel, notes.locked[rel]))
-        elif sha(path) != notes.digest.get(rel):
-            skipped.append((rel, "changed since it was read"))
-        else:
-            replace_file(path, text.encode("utf-8"))
+        if stale(src):
+            skipped.append((src, "changed since it was read"))
+        top = os.path.dirname(os.path.join(mem, dst))
+        while not os.path.lexists(top):
+            top = os.path.dirname(top)
+        if os.path.lexists(os.path.join(mem, dst)) or not os.path.isdir(top):
+            skipped.append((src, f"cannot move to {dst}"))
+    if moves and skipped:
+        raise Die("nothing moved: " + "; ".join(f"{rel} ({why})" for rel, why in skipped))
+    blocked = {rel for rel, _ in skipped}
+    moved = []
+    try:
+        for src, dst in moves.items():
+            os.makedirs(os.path.dirname(os.path.join(mem, dst)), exist_ok=True)
+            if os.path.lexists(os.path.join(mem, dst)):
+                raise Die(f"{dst} appeared meanwhile")
+            os.rename(os.path.join(mem, src), os.path.join(mem, dst))
+            moved.append((src, dst))
+        for rel, text in contents.items():
+            if rel in blocked:
+                continue
+            if stale(rel):
+                if moves:
+                    raise Die(f"{rel} changed since it was read")
+                skipped.append((rel, "changed since it was read"))
+            else:
+                replace_file(os.path.join(mem, rel), text.encode("utf-8"))
+    except (OSError, Die) as e:
+        for src, dst in reversed(moved):
+            os.rename(os.path.join(mem, dst), os.path.join(mem, src))
+        raise Die(f"{e}" + (f"; {len(moved)} moved note(s) put back" if moved else "")) from e
     for rel, why in skipped:
         print(f"  skipped {rel}: {why}")
     return skipped
@@ -439,9 +494,15 @@ def targets(a):
     if a.workspace:
         cfg_path, ws = find_config(a.workspace)
         cfg = read_toml(cfg_path) if cfg_path else {}
+        validate_config(cfg, cfg_path)
         slug = re.sub(r"[^A-Za-z0-9]", "-", ws)
-        mem = (os.path.join(ws, os.path.expanduser(cfg["memory"])) if cfg.get("memory")
-               else os.path.join(memory_root(a.root), slug, "memory"))
+        mem = os.path.join(memory_root(a.root), slug, "memory")
+        if cfg.get("memory"):
+            mem = os.path.join(ws, cfg["memory"])
+            inside = os.path.commonpath([os.path.realpath(ws), os.path.realpath(mem)]) == os.path.realpath(ws)
+            if os.path.isabs(cfg["memory"]) or cfg["memory"].startswith("~") or not inside:
+                raise Die(f"{cfg_path}: memory must be a path inside the workspace; "
+                          "for a folder elsewhere pass --memory")
         if not os.path.isdir(mem):
             raise Die(f"no memory folder for workspace {ws}: {mem}")
         return [(slug, os.path.realpath(mem))], True
@@ -484,9 +545,11 @@ def cmd_lint(a):
             print(f"  long line {n:5}: {head}")
         for k in ("fixable", "dead"):
             for f, t in r[k][:8]:
-                print(f"  {k} link: {f} -> [[{t}]]")
+                print(f"  {k} link: {f} -> [[{shown(t)}]]")
             if len(r[k]) > 8:
                 print(f"  … {len(r[k]) - 8} more {k} links")
+        for f, why in sorted(r["locked"].items()):
+            print(f"  not rewritable by write commands: {f} ({why})")
         for f, kinds in r["secrets"]:
             print(f"  secret-like content in {f}: {', '.join(kinds)} (value not shown)")
         if r["notes"] >= TOPIC_PAGES_ADVISED:
@@ -502,10 +565,15 @@ def cmd_propose(a):
             continue
         text, need = propose(notes, index)
         dest = os.path.join(a.out, d) if a.out else os.path.join(os.path.dirname(mem), "dream-staging")
-        os.makedirs(dest, exist_ok=True)
-        with open(os.path.join(dest, "MEMORY.md"), "w", encoding="utf-8") as fh:
+        os.makedirs(dest, mode=0o700, exist_ok=True)
+        target = os.path.join(dest, "MEMORY.md")
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        os.chmod(target, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
             fh.write(text)
-        print(describe_index(d, text, need) + f" -> {dest}/MEMORY.md")
+        print(describe_index(d, text, need) + f" -> {target}")
+        if secret_kinds(text):
+            print(f"  secret-like content in the proposed index: {', '.join(secret_kinds(text))} (a curated line, value not shown)")
     return 0
 
 
@@ -557,9 +625,9 @@ def cmd_fix_links(a):
             continue
         print(f"== {short(d)}: {len(plan['fix'])} fixable, {len(plan['unresolved'])} unresolved")
         for f, old, new in plan["fix"]:
-            print(f"  {f}: [[{old}]] -> [[{new}]]")
+            print(f"  {f}: [[{shown(old)}]] -> [[{new}]]")
         for f, old, why in plan["unresolved"]:
-            print(f"  unresolved {f}: [[{old}]] ({why})")
+            print(f"  unresolved {f}: [[{shown(old)}]] ({shown(why)})")
         if not plan["fix"]:
             continue
         if not a.apply:
@@ -576,12 +644,14 @@ def cmd_fix_links(a):
 
 def retire_plan(mem, notes, index, names):
     moves = {}
-    for n in names:
+    for n in dict.fromkeys(names):
         if not n.endswith(".md") and os.path.isfile(os.path.join(mem, n)):
             raise Die(f"cannot retire {n}: only .md notes can be retired")
         rel = posixpath.normpath(n if n.endswith(".md") else n + ".md")
         if rel not in notes:
             raise Die(f"no such note in {mem}: {n}")
+        if rel in moves:
+            continue
         dst, k = "archive/" + rel, 1
         while os.path.exists(os.path.join(mem, dst)) or dst in moves.values():
             k += 1
@@ -607,6 +677,12 @@ def cmd_retire(a):
     print(f"== {short(d)}: retire {len(moves)} note(s), drop {dropped} index line(s)")
     for src, dst in moves.items():
         print(f"  {src} -> {dst}")
+    gone = {norm(k) for rel in moves for k in note_keys(rel, notes[rel][0])}
+    linking = sorted(f for f, (_, text) in notes.items()
+                     if f not in moves and any(norm(m.group(1)) in gone for m in wiki_links(text)))
+    if linking:
+        print(f"  note: {len(linking)} note(s) still link to these by [[name]] and will show as dead links "
+              f"after the move: {', '.join(linking[:8])}")
     if not a.apply:
         print("  dry run: nothing written (pass --apply)")
         return 0
@@ -632,7 +708,7 @@ RULE_KEYS = {
 INT_OPTIONS = {"max_lines", "max_bytes", "max_age_days"}
 STR_OPTIONS = {"path", "index", "folder", "field", "date_field"}
 RULE_REQUIRED = {
-    "file_cap": [("max_lines", "max_bytes")], "row_cap": [("max_bytes",)], "index_count": [("index",), ("folder",)],
+    "file_cap": [("path",), ("max_lines", "max_bytes")], "row_cap": [("path",), ("max_bytes",)], "index_count": [("index",), ("folder",)],
     "required_field": [("path",), ("field",)], "superseded": [("path",)],
     "stale_label": [("path",), ("statuses",), ("max_age_days",)],
 }
@@ -684,7 +760,7 @@ def check_file_cap(root, rule):
     for p in files:
         with open(p, "rb") as fh:
             data = fh.read()
-        lines, size = len(data.decode("utf-8", "replace").splitlines()), len(data)
+        lines, size = len(split_lines(data.decode("utf-8", "replace"))), len(data)
         bad = []
         if "max_lines" in rule and lines > rule["max_lines"]:
             bad.append(f"{lines} lines > {rule['max_lines']}")
@@ -731,7 +807,7 @@ def check_index_count(root, rule):
             linked.add(target)
         elif not os.path.exists(os.path.join(root, target)):
             dead.append(t)
-    for name in {m.group(1).strip() for m in WIKI.finditer(text)}:
+    for name in {m.group(1).strip() for m in wiki_links(text)}:
         hit = by_name.get(norm(posixpath.basename(name)), set())
         if hit:
             linked |= hit
@@ -768,6 +844,8 @@ def check_superseded(root, rule):
     for p in files:
         text = read(p)
         raw = frontmatter(text).get("superseded_by")
+        if raw and raw.strip().lower() in ("null", "~", "[]"):
+            raw = None
         if not raw:
             m = SUPERSEDED_TEXT.search(text)
             raw = m.group(1) if m else None

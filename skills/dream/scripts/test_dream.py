@@ -657,6 +657,209 @@ class ApplyKeepsLines(Fixture):
         self.assertIn("no change", out)
         self.assertEqual((self.mem / "MEMORY.md").read_text(), first)
 
+class RetireAtomic(Fixture):
+    def setUp(self):
+        super().setUp()
+        self.put("a.md", note("a"))
+        self.put("sub/b.md", note("b"))
+        self.put("c.md", note("c", body="see [[a]]"))
+        self.put("MEMORY.md", "- [a](a.md) \u2014 x\n- [b](sub/b.md) \u2014 y\n- [c](c.md) \u2014 z\n")
+
+    def test_blocked_destination_moves_nothing(self):
+        self.put("archive/sub", "iamafile")
+        before = self.tree(self.mem)
+        code, out = self.run_cli("retire", "--memory", str(self.mem), "--note", "a", "--note", "sub/b.md", "--apply")
+        self.assertEqual(code, 1)
+        self.assertNotIn("Traceback", out)
+        self.assertEqual(self.tree(self.mem), before)
+
+    def test_index_changed_after_read_rolls_the_moves_back(self):
+        real = dream.load
+        path = self.mem / "MEMORY.md"
+
+        def load(mem):
+            got = real(mem)
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write("- [new](a.md) \u2014 other session\n")
+            return got
+        dream.load = load
+        self.addCleanup(setattr, dream, "load", real)
+        code, out = self.run_cli("retire", "--memory", str(self.mem), "--note", "a", "--apply")
+        self.assertEqual(code, 1)
+        self.assertTrue((self.mem / "a.md").is_file())
+        self.assertFalse((self.mem / "archive" / "a.md").exists())
+        self.assertIn("other session", path.read_text())
+
+    def test_repeated_note_is_planned_once(self):
+        code, out = self.run_cli("retire", "--memory", str(self.mem), "--note", "a", "--note", "a")
+        self.assertEqual(out.count("-> archive/"), 1)
+        self.assertNotIn("a-2", out)
+
+    def test_warns_about_wiki_links_left_dangling(self):
+        code, out = self.run_cli("retire", "--memory", str(self.mem), "--note", "a")
+        self.assertIn("c.md", out)
+        self.assertIn("still link", out)
+
+
+class WorkspaceMemoryPath(Fixture):
+    def lint_ws(self, toml):
+        ws = self.root / "ws"
+        self.put(".claude/dream.toml", toml, base=ws)
+        self.put("a.md", note("a"), base=self.root / "outside" / "x")
+        return self.run_cli("lint", "--workspace", str(ws))
+
+    def test_escaping_and_absolute_paths_are_refused(self):
+        for toml in ('memory = "../outside/x"\n', f'memory = "{self.root}/outside/x"\n', 'memory = "~/x"\n'):
+            code, out = self.lint_ws(toml)
+            self.assertEqual(code, 2, toml)
+            self.assertIn("memory", out)
+
+    def test_wrong_type_is_a_message_not_a_traceback(self):
+        code, out = self.lint_ws("memory = 5\n")
+        self.assertEqual(code, 2)
+        self.assertIn("memory must be a string", out)
+
+
+class ProposeStaging(Fixture):
+    def test_staging_is_private_and_warns_about_a_curated_secret(self):
+        self.put("a.md", note("a"))
+        self.put("MEMORY.md", "- [a](a.md) \u2014 token ghp_" + "a" * 36 + "\n")
+        code, out = self.run_cli("propose", "--memory", str(self.mem))
+        self.assertEqual(code, 0)
+        self.assertIn("secret-like", out)
+        self.assertNotIn("ghp_a", out)
+        stage = self.root / "proj" / "dream-staging"
+        self.assertEqual(oct(stage.stat().st_mode & 0o777), "0o700")
+        self.assertEqual(oct((stage / "MEMORY.md").stat().st_mode & 0o777), "0o600")
+
+
+class DeadLinkOutput(Fixture):
+    def test_secret_like_link_text_is_not_printed(self):
+        self.put("a.md", note("a", body='see [[ "$T" == "ghp_' + "q" * 36 + '" ]]'))
+        for cmd in ("lint", "fix-links"):
+            code, out = self.run_cli(cmd, "--memory", str(self.mem))
+            self.assertNotIn("ghp_q", out)
+
+    def test_links_in_code_are_not_links(self):
+        self.put("a.md", note("a", body="```\n[[ -f x ]]\n```\nand `[[inline]]`"))
+        r, _, _ = dream.lint(str(self.mem))
+        self.assertEqual(r["dead"], [])
+
+
+class FixLinksScope(Fixture):
+    def test_code_is_left_alone_and_frontmatter_is_fixed(self):
+        self.put("foo-bar.md", note("foo-bar"))
+        src = self.put("src.md", "---\nname: src\ndescription: see [[foo_bar]]\n---\n\n```\nexample [[foo_bar]]\n```\nuse `[[foo_bar]]` or [[foo_bar]]\n")
+        code, out = self.run_cli("fix-links", "--memory", str(self.mem), "--apply")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(src.read_text(), "---\nname: src\ndescription: see [[foo-bar]]\n---\n\n```\nexample [[foo_bar]]\n```\nuse `[[foo_bar]]` or [[foo-bar]]\n")
+
+    def test_ambiguous_basename_is_written_as_the_full_stem(self):
+        self.put("sub/a.md", note("a1"))
+        self.put("other/a.md", note("a2"))
+        src = self.put("src.md", note("src", body="[[Sub/A]]"))
+        code, out = self.run_cli("fix-links", "--memory", str(self.mem), "--apply")
+        self.assertIn("[[sub/a]]", src.read_text())
+        _, notes, _ = dream.lint(str(self.mem))
+        self.assertEqual(dream.link_plan(notes)["fix"], [])
+
+
+class Unusual(Fixture):
+    def test_broken_symlink_does_not_abort_lint(self):
+        self.put("a.md", note("a"))
+        os.symlink("/nonexistent/x", self.mem / "dead.md")
+        code, out = self.run_cli("lint", "--memory", str(self.mem))
+        self.assertEqual(code, 0, out)
+        self.assertIn("dead.md", out)
+
+    def test_symlinked_note_is_never_replaced(self):
+        self.put("foo-bar.md", note("foo-bar"))
+        real = self.put("real.md", note("real", body="[[foo_bar]]"), base=self.root / "shared")
+        os.symlink(real, self.mem / "link.md")
+        code, out = self.run_cli("fix-links", "--memory", str(self.mem), "--apply")
+        self.assertEqual(code, 1)
+        self.assertIn("link.md", out)
+        self.assertTrue((self.mem / "link.md").is_symlink())
+        self.assertIn("[[foo_bar]]", real.read_text())
+
+    def test_file_mode_survives_a_rewrite(self):
+        self.put("foo-bar.md", note("foo-bar"))
+        src = self.put("src.md", note("src", body="[[foo_bar]]"))
+        os.chmod(src, 0o640)
+        self.run_cli("fix-links", "--memory", str(self.mem), "--apply")
+        self.assertIn("[[foo-bar]]", src.read_text())
+        self.assertEqual(oct(src.stat().st_mode & 0o777), "0o640")
+
+    def test_unreadable_file_makes_snapshot_fail_cleanly_without_a_partial_archive(self):
+        self.put("a.md", note("a"))
+        bad = self.put("secret.txt", "x")
+        os.chmod(bad, 0)
+        self.addCleanup(os.chmod, bad, 0o600)
+        code, out = self.run_cli("snapshot", "--memory", str(self.mem))
+        self.assertEqual(code, 2)
+        self.assertEqual(list((self.root / "proj" / "memory-backups").glob("*")), [])
+
+    def test_snapshot_never_overwrites_an_existing_backup(self):
+        self.put("a.md", note("a"))
+        real_exists = os.path.exists
+        os.path.exists = lambda p: False if str(p).endswith(".tar.gz") else real_exists(p)
+        self.addCleanup(setattr, os.path, "exists", real_exists)
+        first = dream.snapshot(str(self.mem))
+        second = dream.snapshot(str(self.mem))
+        self.assertNotEqual(first, second)
+
+
+class SmallerFindings(Fixture):
+    def test_unicode_line_separators_do_not_split_an_index_line(self):
+        self.put("a.md", note("a"))
+        line = "- [a](a.md) \u2014 has \u2028sep and \x0cff and \x85"
+        self.put("MEMORY.md", line + "\n")
+        r, _, _ = dream.lint(str(self.mem))
+        self.assertEqual(r["lines"], 1)
+        self.run_cli("apply", "--memory", str(self.mem), "--apply")
+        self.assertEqual((self.mem / "MEMORY.md").read_text(), line + "\n")
+
+    def test_file_cap_counts_lines_like_the_index_does(self):
+        ws = self.root / "ws"
+        self.put("S.md", "a\u2028b\x0cc\n", base=ws)
+        self.put(".claude/dream.toml", '[[file_cap]]\npath = "S.md"\nmax_lines = 1\n', base=ws)
+        code, out = self.run_cli("rules", str(ws))
+        self.assertEqual(code, 0, out)
+
+    def test_rules_without_path_are_rejected_not_crashed(self):
+        ws = self.root / "ws"
+        ws.mkdir()
+        for kind, extra in (("file_cap", "max_lines = 5"), ("row_cap", "max_bytes = 5")):
+            self.put(".claude/dream.toml", f"[[{kind}]]\n{extra}\n", base=ws)
+            code, out = self.run_cli("rules", str(ws))
+            self.assertEqual(code, 2, kind)
+            self.assertIn("needs path", out)
+
+    def test_superseded_null_and_empty_are_not_pointers(self):
+        ws = self.root / "ws"
+        self.put("h/a.md", "---\nsuperseded_by: null\n---\n", base=ws)
+        self.put("h/b.md", "---\nsuperseded_by: ~\n---\n", base=ws)
+        self.put("h/c.md", "---\nsuperseded_by: []\n---\n", base=ws)
+        self.put(".claude/dream.toml", '[[superseded]]\npath = "h/*.md"\n', base=ws)
+        code, out = self.run_cli("rules", str(ws))
+        self.assertEqual(code, 0, out)
+        self.assertIn("0 superseded pointers", out)
+
+    def test_bom_does_not_hide_frontmatter(self):
+        self.put("a.md", "\ufeff" + note("a", desc="real desc"))
+        _, notes, index = dream.lint(str(self.mem))
+        text, need = dream.propose(notes, index)
+        self.assertIn("real desc", text)
+
+    def test_note_listed_inside_and_past_the_limit_is_not_cut(self):
+        lines = ["- [n0](n0.md) \u2014 first"] + [f"- [n{i}](n{i}.md) \u2014 h" for i in range(1, 200)]
+        lines.append("- [n0 again](n0.md) \u2014 late")
+        for i in range(200):
+            self.put(f"n{i}.md", note(f"n{i}"))
+        self.put("MEMORY.md", "\n".join(lines) + "\n")
+        r, _, _ = dream.lint(str(self.mem))
+        self.assertEqual(r["cut"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

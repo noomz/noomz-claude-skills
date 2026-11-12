@@ -5,7 +5,7 @@
 goal = "Keep the always-loaded status short and the written rules true: the index, the ledger and the handoffs say what the folders hold."
 
 # Optional. Without it the memory folder is derived from the workspace path under the memory root.
-# memory = "../memory"
+# memory = "notes/memory"   # must be inside the workspace; pass --memory for a folder elsewhere
 
 [[file_cap]]
 path = "STATUS.md"
