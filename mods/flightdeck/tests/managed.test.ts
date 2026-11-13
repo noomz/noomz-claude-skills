@@ -1,6 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 import { advanceManaged, failManaged, finishManaged, identifyManaged, managedArgv, managedHeader, managedLabel, managedPhase, managedPrompt, requestCancelManaged, startManaged } from '../hooks/managed'
 import { flightdeck, stateStoreWithoutRedraw } from './store'
+import type { On } from './store'
 
 const header = (id = '11111111-1111-4111-8111-111111111111') => `{"type":"session","version":3,"id":"${id}","timestamp":"2024-12-03T14:00:00.000Z","cwd":"/secret/path"}\n`
 const event = (type: string, extra = '') => `{"type":"${type}"${extra}}\n`
@@ -220,4 +221,99 @@ test('a clear aborts a live child and leaves no managed row', { timeoutMs: 20_00
   release()
   expect((await live).text).toMatch(/unavailable/)
   expect(JSON.stringify(flightdeck(values)).includes('11111111')).toBe(false)
+})
+
+const blockedManaged = (on: On, launched: string[] = []) => {
+  let release: () => void = () => undefined
+  const gate = new Promise<void>(resolve => { release = resolve })
+  on('ui.status', () => ({ value: undefined }))
+  on('ui.log', () => ({ value: undefined }))
+  on('command.register', (_$, e) => ({ value: { command: e.name } }))
+  on('session.start', (_$, e) => ({ cwd: e.cwd }))
+  on('process.spawn', async function* (_$, e) {
+    launched.push(e.argv.at(-1) ?? '')
+    yield { stream: 'stdout' as const, text: header() }
+    await gate
+    return { value: { code: 0, signal: null } }
+  })
+  return () => release()
+}
+
+const managedPane = (bodyColumns: number, placement: 'dock' | 'inline' = 'dock') => ({
+  plugin: 'flightdeck',
+  component: 'Pane' as const,
+  requestId: 'flightdeck',
+  surface: 'terminal' as const,
+  props: { title: 'Flightdeck', isFocused: true, bodyColumns, placement, scroll: { offset: 0, bodyRows: 70 }, view: {} },
+})
+
+test('an open pane redraws when a managed run starts, changes and is turned off', { timeoutMs: 20_000 }, async ($, on) => {
+  stateStoreWithoutRedraw(on)
+  mock.clock(on)
+  const release = blockedManaged(on)
+  await $.session.start({ cwd: '/work' } as never)
+  await $.command.run({ command: 'flightdeck', args: 'managed on' } as never)
+  const ui = await $.ui.mount(managedPane(120))
+  expect(await ui.find({ text: /^managed / })).toBeUndefined()
+  const live = $.command.run({ command: 'flightdeck', args: 'managed pong' } as never)
+  for (let i = 0; i < 200; i++) await Promise.resolve()
+  expect(await ui.find({ text: /^managed pi-bolt · live/ })).toBeDefined()
+  await $.command.run({ command: 'flightdeck', args: 'managed off' } as never)
+  expect(await ui.find({ text: /^managed / })).toBeUndefined()
+  release()
+  await live
+  await ui.unmount()
+})
+
+test('concurrent managed prompts never launch more than the limit', { timeoutMs: 20_000 }, async ($, on) => {
+  stateStoreWithoutRedraw(on)
+  mock.clock(on)
+  const launched: string[] = []
+  const release = blockedManaged(on, launched)
+  await $.session.start({ cwd: '/work' } as never)
+  await $.command.run({ command: 'flightdeck', args: 'managed on' } as never)
+  const runs = ['one', 'two', 'three'].map(p => $.command.run({ command: 'flightdeck', args: `managed ${p}` } as never))
+  for (let i = 0; i < 200; i++) await Promise.resolve()
+  expect(launched.length).toBe(2)
+  release()
+  const texts = (await Promise.all(runs)).map(r => r.text)
+  expect(texts.filter(t => /two sessions are already running/.test(t ?? '')).length).toBe(1)
+  expect(launched.length).toBe(2)
+})
+
+test('the mini layout keeps managed runs inside its three agent rows and counts the rest', { timeoutMs: 20_000 }, async ($, on) => {
+  stateStoreWithoutRedraw(on)
+  mock.clock(on)
+  const release = blockedManaged(on)
+  let n = 0
+  on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: `a${++n}` }))
+  await $.session.start({ cwd: '/work' } as never)
+  await $.command.run({ command: 'flightdeck', args: 'managed on' } as never)
+  const runs = ['one', 'two'].map(p => $.command.run({ command: 'flightdeck', args: `managed ${p}` } as never))
+  for (let i = 0; i < 200; i++) await Promise.resolve()
+  for (const d of ['first', 'second', 'third']) {
+    await $.agent.spawn({ prompt: d, description: d, subagentType: 'general-purpose', tool_use_id: `tu-${d}`, provider: { plugin: 'engine', tier: 'core' as const }, parentModel: 'claude-opus-5-5', background: true, fork: false })
+  }
+  const mini = await $.ui.mount(managedPane(80, 'inline'))
+  expect(await mini.find({ text: /^managed / })).toBeUndefined()
+  expect(await mini.find({ text: /^\+2 more agents · / })).toBeDefined()
+  await mini.unmount()
+  release()
+  await Promise.all(runs)
+})
+
+test('a managed prompt racing a reset launches nothing', { timeoutMs: 20_000 }, async ($, on) => {
+  stateStoreWithoutRedraw(on)
+  mock.clock(on)
+  const launched: string[] = []
+  const release = blockedManaged(on, launched)
+  on('ui.close', () => ({ value: undefined }))
+  await $.session.start({ cwd: '/work' } as never)
+  await $.command.run({ command: 'flightdeck', args: 'managed on' } as never)
+  const raced = $.command.run({ command: 'flightdeck', args: 'managed pong' } as never)
+  const reset = $.command.run({ command: 'flightdeck', args: 'reset' } as never)
+  release()
+  await reset
+  expect((await raced).text).toMatch(/Nothing was launched/)
+  expect(launched).toEqual([])
 })

@@ -459,8 +459,8 @@ export const register: Register = (on, options) => {
 
   on('session.end', async ($, e, next) => {
     endedSessionId = scrub(e.sessionId, CAP.sessionId).text
-    $.ui.invalidate('ui.render')
     stopManaged()
+    $.ui.invalidate('ui.render')
     await forgetSession($, memory)
     if (e.reason === 'clear' || e.reason === 'resume') {
       await resetSession($)
@@ -491,6 +491,7 @@ export const register: Register = (on, options) => {
     }
     if (verb === 'reset') {
       stopManaged()
+      $.ui.invalidate('ui.render')
       await forgetSession($, memory)
       await resetSession($)
       await refreshStatus($, cfg)
@@ -500,6 +501,7 @@ export const register: Register = (on, options) => {
       if (arg === 'off') {
         managedEnabled = false
         stopManaged()
+        $.ui.invalidate('ui.render')
         return { text: 'Flightdeck managed activity off. Nothing was retained.' }
       }
       if (arg === 'on') {
@@ -512,18 +514,23 @@ export const register: Register = (on, options) => {
           run.activity = requestCancelManaged(run.activity, run.activity.spawnKey, await $.clock.now())
           run.stop()
         }
+        if (live.length) $.ui.invalidate('ui.render')
         return { text: live.length ? 'Flightdeck managed cancel requested. No transcript is available.' : 'Flightdeck managed activity has nothing running.' }
       }
       if (!managedEnabled) return { text: 'Flightdeck managed is off. /flightdeck managed on enables one new pi-bolt session per command.' }
       const prompt = managedPrompt(e.args.trim().slice(verb.length))
       if (!prompt) return { text: 'Usage: /flightdeck managed <prompt>. The prompt must be one line of at most 4000 characters.' }
-      if ([...managedRuns.values()].filter(run => run.activity.endedAt === null).length >= MANAGED_LIMIT) return { text: 'Flightdeck managed activity unavailable: two sessions are already running.' }
+      // Read the clock first: the limit check, the reservation and the spawn below share one synchronous step.
       const epoch = managedEpoch
+      const startedAt = await $.clock.now()
+      if (!managedEnabled || epoch !== managedEpoch) return { text: 'Flightdeck managed pi-bolt unavailable: managed activity was turned off or reset. Nothing was launched.' }
+      if ([...managedRuns.values()].filter(run => run.activity.endedAt === null).length >= MANAGED_LIMIT) return { text: 'Flightdeck managed activity unavailable: two sessions are already running.' }
       const spawnKey = `pi-bolt-${++managedSequence}`
-      let activity = startManaged(spawnKey, await $.clock.now())
+      let activity = startManaged(spawnKey, startedAt)
       const child = $.process.spawn({ argv: managedArgv(prompt), input: '' })
       const stop = () => { void child.return({ code: null, signal: null }).catch(() => undefined) }
       managedRuns.set(spawnKey, { activity, stop })
+      $.ui.invalidate('ui.render')
       let sawHeader = false
       let pending = ''
       let skipping = false
@@ -531,7 +538,10 @@ export const register: Register = (on, options) => {
       const keep = (next: ManagedActivity) => {
         activity = next
         const run = current()
-        if (run) run.activity = next
+        if (run) {
+          run.activity = next
+          $.ui.invalidate('ui.render')
+        }
       }
       const take = async (piece: string) => {
         if (skipping) {
@@ -575,6 +585,7 @@ export const register: Register = (on, options) => {
       if (epoch !== managedEpoch || !current()) return { text: 'Flightdeck managed pi-bolt unavailable. No transcript is available.' }
       const finished = [...managedRuns.entries()].filter(([, run]) => run.activity.endedAt !== null)
       for (const [key] of finished.slice(0, Math.max(0, finished.length - 2))) managedRuns.delete(key)
+      $.ui.invalidate('ui.render')
       return { text: `Flightdeck managed pi-bolt ${managedLabel(activity)}. No transcript is available.` }
     }
     if (verb === 'audit') {
@@ -1506,6 +1517,10 @@ export const register: Register = (on, options) => {
       const live = [...cards.filter(c => c.status === 'running'), ...cards.filter(c => c.status !== 'running').reverse()].slice(0, 3)
       const externalSlots = Math.max(0, 3 - live.length)
       const liveExternal = externalSlots ? x.cards.slice(-externalSlots) : []
+      const managedSlots = Math.max(0, externalSlots - liveExternal.length)
+      const managedAll = managedView()
+      const liveManaged = managedSlots ? managedAll.slice(-managedSlots) : []
+      const hidden = cards.length - live.length + x.cards.length - liveExternal.length + managedAll.length - liveManaged.length
       const counts = ` ${s.rule} allowed · ${s.cleared} ${decider}${s.granted > 0 ? ` · ${s.granted} approved` : ''}${s.ask > 0 ? ` · ${s.ask} pending` : ''} · ${s.deny} denied`
       const showGate = control.gateVisible ?? cfg.panels.includes('gate')
       const strip = showGate ? g.recent.slice(-Math.max(4, W - cfg.gateLabel.length - 1 - counts.length)) : []
@@ -1551,9 +1566,9 @@ export const register: Register = (on, options) => {
             </Box>
           ))}
           {liveExternal.map(c => <Text color={C.agent} wrap="truncate">{`external ${c.provider} · ${c.status === 'handed-off' ? 'handed off' : c.status}`}</Text>)}
-          {managedView().slice(-2).map(c => <Text color={C.agent} wrap="truncate">{`managed ${c.provider} · ${managedLabel(c)}${c.phase ? ` · ${c.phase}` : ''}`}</Text>)}
-          {cards.length > live.length || x.cards.length > liveExternal.length ? (
-            <Text color={C.faint} wrap="truncate">{`+${plural(cards.length - live.length + x.cards.length - liveExternal.length, 'more agent')} · /flightdeck layout compact for all`}</Text>
+          {liveManaged.map(c => <Text color={C.agent} wrap="truncate">{`managed ${c.provider} · ${managedLabel(c)}${c.phase ? ` · ${c.phase}` : ''}`}</Text>)}
+          {hidden > 0 ? (
+            <Text color={C.faint} wrap="truncate">{`+${plural(hidden, 'more agent')} · /flightdeck layout compact for all`}</Text>
           ) : null}
           {lp.length > 0 ? <Text dimColor>{`other loops ${lp.length} · ${lp.filter(l => isLoopActive(l, now)).length} active`}</Text> : null}
           <Box>
