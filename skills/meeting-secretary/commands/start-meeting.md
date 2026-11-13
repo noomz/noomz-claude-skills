@@ -1,5 +1,5 @@
 ---
-description: Start recording and live-transcribing a meeting (on-device), with Claude as real-time secretary that answers and fact-checks from project sources
+description: Start recording and live-transcribing a meeting (on-device), with the agent as real-time secretary that answers and fact-checks from project sources
 argument-hint: "[name or topic] [online|in-room] [--app <call app>]"
 ---
 

@@ -1,7 +1,7 @@
 ---
 name: domain-gloss
 description: Keeps English domain terms and attaches short glosses in the developer's configured first language. Covers specialist jargon (subrogation, estoppel, indemnity), ordinary-looking words carrying a shifted domain meaning (consideration in contract law, endorsement in insurance, stewardship in nonprofit), and opaque table names, column names, enum values, or legacy codes cited in explanations. Triggers on "domain-gloss", "gloss the jargon", "explain in my language", "add Thai", "I don't know these insurance words", "what is subrogation", "too many hard words", "table names without glosses", and domain-heavy insurance, legal, finance, healthcare, nonprofit, or technical work once the user has asked for glossing. Preserves identifiers exactly and explains their evidenced role beside them. Reads the target language from configuration rather than assuming one. Distinct from explain-clear, which replaces difficult terms. Applies to conversation, not code edits, git artifacts, or whole-document translation.
-allowed-tools: Bash(printenv CLAUDE_GLOSS_LANG), Bash(printenv CLAUDE_GLOSS_SKIP)
+allowed-tools: Bash(printenv CLAUDE_GLOSS_LANG), Bash(printenv GLOSS_LANG), Bash(printenv CLAUDE_GLOSS_SKIP)
 ---
 
 # Domain Gloss
@@ -24,17 +24,26 @@ The term stays greppable and sayable in standup. The anchor makes it stick.
 Never assume a language. Resolve in this order, most specific first:
 
 1. **Stated this turn** — "gloss in Japanese", "add Thai". Wins over everything, never persisted.
-2. **Named at invocation** — `/domain-gloss th`. Read the tag from the user's own text.
-3. **Project, personal** — `CLAUDE_GLOSS_LANG` in the repo's `.claude/settings.local.json` env block.
-4. **Project, shared** — same variable in the committed `.claude/settings.json` env block.
-5. **User default** — same variable in `~/.claude/settings.json` env block.
-6. **Unset** — ask once, then continue.
+2. **Named at invocation** — `/domain-gloss th` in Claude Code, `$domain-gloss th` in Codex, `/skill:domain-gloss th` in Pi. Read the tag from the user's own text.
+3. **Environment** — `CLAUDE_GLOSS_LANG`, else `GLOSS_LANG`.
+4. **Unset** — ask once, then continue.
 
-Rungs 3 through 5 arrive as an environment variable. Read it with exactly:
+Rung 3 reads two variables. Read each with exactly:
 
 ```bash
 printenv CLAUDE_GLOSS_LANG || echo unset
+printenv GLOSS_LANG || echo unset
 ```
+
+Use `CLAUDE_GLOSS_LANG` when its value is nonempty, ignoring whitespace and control
+characters; otherwise use `GLOSS_LANG`. Validate only the variable you chose. If it is malformed
+or English, follow the table below and do not fall back to the other variable. The
+standing-mode hook applies the same rule.
+
+Where the variables come from depends on the harness:
+
+- **Claude Code** — the `env` block of `.claude/settings.local.json` (project, personal), the committed `.claude/settings.json` (project, shared), or `~/.claude/settings.json` (user default), plus the shell that launched it.
+- **Codex and Pi** — the environment the harness was launched from, such as `export GLOSS_LANG=th` in the shell profile. Claude settings files have no effect there.
 
 Values are BCP-47 tags — `th`, `ja`, `zh-Hant`, `pt-BR`. Region and script are not
 decoration: `zh-Hans` and `zh-Hant` are different scripts, and `pt-BR` and `pt-PT`
@@ -49,13 +58,14 @@ Two values need explicit handling:
 
 | Situation | Do this |
 |---|---|
-| `printenv` unavailable or not permitted | Treat as unset — fall to rung 6 |
+| `printenv` unavailable or not permitted | Treat as unset — fall to rung 4 |
 | Unset | Ask once, then continue |
 | Unrecognised or malformed tag (`thai`, `Thai`, `th-TH-x-junk`) | Ask which language was meant; never infer from a near-miss |
 | Value is `en` or any English tag | Do not activate. There is nothing to anchor to — suggest `simple-en`, or explain-clear if the goal is simpler English |
 
-When nothing is configured, ask once — then offer to persist to rung 3 and let the
-user do it. Do not write to a settings file on your own initiative.
+When nothing is configured, ask once — then offer to persist the answer in the
+harness's place for rung 3 and let the user do it. Do not write to a settings file
+or shell profile on your own initiative.
 
 ### Excluding categories
 
@@ -64,8 +74,8 @@ lockable domains too, so `singleflight` and `cache stampede` are legitimate Band
 terms in a Redis repo. That is the default and it is deliberate — a developer
 reading a second language is not only reading insurance contracts.
 
-When a category is unwanted, name it in `CLAUDE_GLOSS_SKIP`, resolved through the
-same six rungs as the language:
+When a category is unwanted, name it in `CLAUDE_GLOSS_SKIP`, set in the same places
+as the language. It has no `GLOSS_` alias:
 
 ```bash
 printenv CLAUDE_GLOSS_SKIP || echo none
@@ -266,8 +276,8 @@ Unknown status semantics — the spelling alone does not define the workflow:
 | Invocation | Effect |
 |---|---|
 | *(none)* | Off until asked — ambient repo state does not trigger this skill. The one exception is the opt-in hook in [Standing mode](#standing-mode-opt-in-hook) |
-| `/domain-gloss` | On, using the resolved language |
-| `/domain-gloss th` | On, forcing a language for this thread |
+| `/domain-gloss` | On, using the resolved language. Codex: `$domain-gloss`. Pi: `/skill:domain-gloss` |
+| `/domain-gloss th` | On, forcing a language for this thread. Same tag after the Codex and Pi forms |
 | `gloss off` | Off |
 | `/domain-gloss off` | Off |
 | `gloss skip software` | Stop glossing one category for this thread |
@@ -286,6 +296,9 @@ Before sending, confirm all six:
 
 ## Standing mode (opt-in hook)
 
+Standing mode is Claude Code only. Codex and Pi do not run this hook; invoke the
+skill yourself there.
+
 Asking once does not last: a mode set by prose decays across turns. The plugin
 bundles a `UserPromptSubmit` hook ([hooks/hooks.json](hooks/hooks.json) → [scripts/gloss_reminder.py](scripts/gloss_reminder.py))
 that restates the rule on every prompt. It prints **nothing** unless you opt in,
@@ -300,7 +313,7 @@ Opt in through settings.json `env` (user, project, or local):
 | Variable | Effect |
 |---|---|
 | `CLAUDE_GLOSS_HOOK` | Trimmed and case-insensitive `on` activates. Anything else, including unset, keeps the hook silent |
-| `CLAUDE_GLOSS_LANG` | Must be a non-English tag; every entry of a comma chain must be well-formed, and the chain at most 80 characters. `simple-en` counts as active |
+| `CLAUDE_GLOSS_LANG`, else `GLOSS_LANG` | Chosen by the rung 3 rule above. Must be a non-English tag; every entry of a comma chain must be well-formed, and the chain at most 80 characters. `simple-en` counts as active. A malformed or English `CLAUDE_GLOSS_LANG` keeps the hook silent; it never falls back to `GLOSS_LANG` |
 | `CLAUDE_GLOSS_SKIP` | Passed into the reminder for the model to apply, sanitized: control characters removed, first 80 characters |
 | `CLAUDE_GLOSS_SUBAGENT_MARKER` | Optional. Prompts starting with this string get no reminder |
 
@@ -318,7 +331,7 @@ subagent calls, and the hook stays silent when it is present. The marker and
 slash-command guards exist because that field has not been confirmed for every way a
 subagent can start. It also stays silent for prompts starting with
 `CLAUDE_GLOSS_SUBAGENT_MARKER`, for slash-command prompts other than `/domain-gloss`,
-when any `CLAUDE_GLOSS_LANG` entry is malformed, when the primary subtag is `en`,
+when no language variable is set, when any entry of the chosen chain is malformed, when the primary subtag is `en`,
 `eng`, or `english`, and when the prompt is missing or not text. Headless workers
 (`claude -p`) are new main sessions, so an orchestrator must not hand them
 `CLAUDE_GLOSS_HOOK=on` — unset it or set `off`.
@@ -351,7 +364,8 @@ appears in any subagent transcript). A missing transcript store exits 2. `--leak
 - **No bundled glossary.** Renderings come from model knowledge and will vary slightly between sessions. For a fixed house translation, keep a glossary file in the repo and point at it.
 - **Band 3 depends on repo evidence.** Cue (c) is the strongest signal; in a repo with thin schema and no defined terms, false-friend coverage degrades quietly.
 - **Identifier roles need a source of truth.** With no inspected schema, data dictionary, or query result, most identifiers resolve to an explicit unknown rather than a role. That is the correct output, but a legacy database with no dictionary will produce a page of unknowns instead of a reading aid. Supply a dictionary first, or accept the unknowns as a map of what is undocumented.
-- **The `allowed-tools` entry pins an exact command.** `Bash(printenv CLAUDE_GLOSS_LANG)` is deliberate — the `:*` prefix form would pre-allow bare `printenv` and dump every token and key in the environment into context. If exact-command matching is not honoured, the only symptom is a one-time permission prompt, which is the safe way to fail.
+- **`allowed-tools` is a Claude Code grant.** Codex and Pi are not documented to honour it as a permission (Pi lists the field as experimental); their own permission rules decide whether `printenv` runs. If it cannot run, the language falls to rung 4.
+- **The `allowed-tools` entries pin exact commands.** `Bash(printenv CLAUDE_GLOSS_LANG)` and `Bash(printenv GLOSS_LANG)` are deliberate — the `:*` prefix form would pre-allow bare `printenv` and dump every token and key in the environment into context. If exact-command matching is not honoured, the only symptom is a one-time permission prompt, which is the safe way to fail.
 - **Overlaps with `explain-clear`** (`~/.claude/skills/explain-clear/SKILL.md`), whose `thai` / `th` command has its own bilingual mode. That skill replaces hard words; this one keeps them. If the wrong one activates, name it explicitly.
 - **Breadth is the default.** Any locked domain is glossed, software included, so an ordinary repo with a dependency manifest will produce glosses. Narrow it with `CLAUDE_GLOSS_SKIP` rather than expecting the skill to guess which domains you already know.
 - **Situational auto-firing is not available.** A skill is selected by matching your words, not by ambient facts about the repo, so working in an insurance codebase will not turn this on by itself. The opt-in hook is driven by your environment variables, not by the repo.

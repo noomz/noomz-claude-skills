@@ -16,7 +16,7 @@ Each skill lives in its own directory under `skills/` and follows the [official 
 | [`safe-to-exit`](skills/safe-to-exit) | End-of-session safety check (also `/safe-to-exit`) — uncommitted and unpushed work, secrets about to be committed, unfinished-work markers, still-running servers and subagents, PRs waiting on you — as one SAFE / NOT SAFE verdict with the fix for each blocker. |
 | [`agent-router`](skills/agent-router) | Quota-aware subagent routing — reads `aub --json`, colours each provider GREEN/AMBER/RED per quota window, and picks the cheapest fit per tier (T0 frontier … T3 mechanical). Ships a SessionStart quota line and a warn-only PreToolUse guard for `Agent`/`Task`/`Workflow` calls with no `model` pinned or a brief over 7 KB. |
 | [`session-audit`](skills/session-audit) | Audit Claude Code JSONL transcripts against CLAUDE.md working rules — one detector per rule (checklist-first, narration, subagent use, truth repos on calc topics, model pinning, verify-by-diff, review rounds, brief size) plus a per-prompt stall classifier (LOOP / GRIND / WAIT). Prints fail rates per rule window and flagged sessions for hand-labelling. |
-| [`meeting-secretary`](skills/meeting-secretary) | Live meeting secretary for Claude Code on macOS. Audio is recorded and transcribed on the Mac (transcribe.cpp + Qwen3-ASR, Thai and English by default); the transcript text goes to Claude. `/start-meeting` records and transcribes every 20 s, and Claude answers questions, checks statuses and figures against the project's own sources, flags contradictions and logs decisions while the meeting runs. `/end-meeting` re-transcribes the whole recording and writes a meeting note where every claim carries `path:line` evidence. `/meeting-vocab` builds the project's recognizer vocabulary. Audio stays in a self-gitignored `.meetings/` folder. Claude Code only. |
+| [`meeting-secretary`](skills/meeting-secretary) | Live meeting secretary on macOS. Audio is recorded and transcribed on the Mac (transcribe.cpp + Qwen3-ASR, Thai and English by default); the transcript text goes to the model provider of the agent that runs the skill. `/start-meeting` records and transcribes every 20 s, and the agent answers questions, checks statuses and figures against the project's own sources, flags contradictions and logs decisions while the meeting runs. `/end-meeting` re-transcribes the whole recording and writes a meeting note where every claim carries `path:line` evidence. `/meeting-vocab` builds the project's recognizer vocabulary. Audio stays in a self-gitignored `.meetings/` folder. The live phase needs Claude Code; wrap-up and vocab instructions are harness-neutral. |
 | [`dream`](skills/dream) | Offline "dreaming" pass over Claude Code memory (`/dream`). A stdlib script lints the `MEMORY.md` index against the 200-line / 25 KB load limit, repairs `[[links]]` that resolve to exactly one note, and checks a project's own written caps from a small `dream.toml` (file and row caps, index counts, required fields, superseded pointers, stale labels); the agent then verifies notes against the repo, git and transcripts and corrects, merges, moves or retires them to `archive/`. Dry run by default, a snapshot before every write, notes never deleted, secret values never printed. |
 
 More skills incoming — see [`CONTRIBUTING.md`](CONTRIBUTING.md) to add your own.
@@ -86,6 +86,21 @@ ln -s "$(pwd)/skills/dream" .agents/skills/dream
 Each skill requires `SKILL.md`; the optional `agents/openai.yaml` files provide Codex display metadata and starter prompts.
 
 Bundled hooks (for example `domain-gloss`'s standing-mode reminder) load only through plugin install; a symlinked or copied skill directory gets the skill without its hook.
+
+### Pi
+
+Pi reads the skill directory. It does not read `.claude-plugin/plugin.json`, and it does not run Claude hooks. From a checkout of this repository:
+
+```bash
+cd /path/to/claude-skills
+test -f skills/obsidian/SKILL.md
+mkdir -p ~/.agents/skills
+test ! -e ~/.agents/skills/obsidian && test ! -L ~/.agents/skills/obsidian && ln -s "$(pwd)/skills/obsidian" ~/.agents/skills/obsidian
+```
+
+Run the last two lines once per skill, with that skill's directory name in place of `obsidian`. `mkdir -p` creates the parent without touching anything already there. `$(pwd)` has to be this repository's root, because the link target is `skills/<skill>` underneath it. `test ! -e` refuses an existing file or directory, and `test ! -L` refuses any link, including a broken one, so a second run will not replace a destination you already have. Remove or rename that destination yourself before linking a different path.
+
+`pi --skill ~/.agents/skills/obsidian` loads one skill without the user directory. Which skills work, and which Claude grants do not carry over, is in [docs/harness-coverage.md](docs/harness-coverage.md).
 
 ### Claude Code — `/plugin` (recommended)
 
@@ -165,7 +180,7 @@ That covers skill-scoped usage. If you want the same commands allowed **globally
 }
 ```
 
-Note: at the time of writing, Claude Code plugins cannot pre-declare `permissions` in a plugin-shipped `settings.json` (only `agent` and `subagentStatusLine` are supported). Skill-level `allowed-tools` is the supported mechanism.
+Note: at the time of writing, Claude Code plugins cannot pre-declare `permissions` in a plugin-shipped `settings.json` (only `agent` and `subagentStatusLine` are supported). Skill-level `allowed-tools` is the supported mechanism in Claude Code. It is not a permission grant on Codex, and Pi does not treat it as permission enforcement or run Claude hooks automatically. Pi uses its own tool permissions. See [docs/harness-coverage.md](docs/harness-coverage.md).
 
 ## Repo layout
 

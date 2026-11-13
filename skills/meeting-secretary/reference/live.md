@@ -105,7 +105,7 @@ value. Pick the first row that applies:
 
 | Heard | Reply |
 |---|---|
-| A question, explicit or implied ("is it on prod yet", "how many", "who approved it", "what did we agree", "ขึ้น prod หรือยัง", "ใช่ไหม") that project sources can answer | `❓ <the question in 1 line> → <answer>` + evidence `path:line`. Answer even though nobody asked Claude — that is the job. |
+| A question, explicit or implied ("is it on prod yet", "how many", "who approved it", "what did we agree", "ขึ้น prod หรือยัง", "ใช่ไหม") that project sources can answer | `❓ <the question in 1 line> → <answer>` + evidence `path:line`. Answer even though nobody asked you — that is the job. |
 | A status, figure, date or decision that **contradicts** a known decision or document | `⚠️ heard "<quote>" — <source> says <X>` + `path:line`. Say plainly if the mismatch may be ASR noise. |
 | A status, figure or rule that a source **confirms** | `✅ <claim> — <path:line>` |
 | A new decision, action item, owner or deadline | `📌 <who> → <what> (<when>)` |

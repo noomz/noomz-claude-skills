@@ -1,6 +1,6 @@
 # Setup — first run and permission errors
 
-macOS and Claude Code only: the mic is captured by a small native helper (`scripts/capture/meeting-capture.swift`,
+macOS only (the live phase also needs Claude Code, see SKILL.md): the mic is captured by a small native helper (`scripts/capture/meeting-capture.swift`,
 built on first live start with `swiftc` from the Xcode command line tools; ffmpeg's `avfoundation` input drops ~12%
 of audio), window capture uses `screencapture` and CoreGraphics. Apple Silicon is assumed for speed.
 Speech windows come from Silero VAD: `curl -L -o ~/.local/share/transcribe.cpp/models/silero-vad-v6.2-F32.gguf https://huggingface.co/handy-computer/silero-vad-v6.2-gguf/resolve/main/silero-vad-v6.2-F32.gguf`.
@@ -37,7 +37,7 @@ and print these steps when either is missing.
 
 ## Permissions
 
-The terminal app that runs Claude Code (Terminal, iTerm2, Ghostty, ...) needs, in
+The terminal app that runs the agent (Claude Code, Codex, or Pi; Terminal, iTerm2, Ghostty, ...) needs, in
 System Settings → Privacy & Security:
 
 - **Microphone** — without it the recorder exits at once and `recorder.log` says

@@ -18,7 +18,8 @@ These are used as `/plugin marketplace add noomz/noomz-claude-skills` and `/plug
 2. Create `skills/<skill-name>/.claude-plugin/plugin.json` (name, description, version, author, homepage, license, keywords).
 3. Append a plugins-array entry to `.claude-plugin/marketplace.json`.
 4. Add the skill to the table in `README.md`.
-5. Run the validation block below before committing.
+5. Add a row to `docs/harness-coverage.md` stating Claude Code, Codex, and Pi status, with dependencies, manual steps, and missing functionality distinguished. `allowed-tools` and Claude hooks count as Claude Code support only.
+6. Run the validation block below before committing.
 
 For bigger skills, also add `skills/<skill-name>/reference/*.md`, `skills/<skill-name>/examples/*.md`, and, for a skill that needs runtime helpers, `skills/<skill-name>/hooks/hooks.json` plus `skills/<skill-name>/scripts/`. All bundled files must be linked **directly from SKILL.md** — one level deep only.
 

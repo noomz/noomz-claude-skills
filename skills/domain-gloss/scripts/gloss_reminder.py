@@ -23,11 +23,20 @@ def clean(value):
     return CONTROL.sub("", value).strip()
 
 
+def resolve_lang(env):
+    """CLAUDE_GLOSS_LANG when nonempty after cleaning, else GLOSS_LANG; "" when both are empty.
+
+    The winner is validated on its own: a malformed or English winner silences the hook
+    rather than falling back to the other variable. SKILL.md states the same rule.
+    """
+    return clean(env.get("CLAUDE_GLOSS_LANG", "")) or clean(env.get("GLOSS_LANG", ""))
+
+
 def reminder(payload, env):
     """Return the reminder line, or "" when the hook must stay silent."""
     if env.get("CLAUDE_GLOSS_HOOK", "").strip().lower() != "on":
         return ""
-    chain = clean(env.get("CLAUDE_GLOSS_LANG", ""))
+    chain = resolve_lang(env)
     if len(chain) > 80:  # validate the whole chain; never truncate a bad one into a good one
         return ""
     entries = [e.strip() for e in chain.split(",")]

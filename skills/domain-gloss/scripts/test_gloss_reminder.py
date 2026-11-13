@@ -15,7 +15,7 @@ def fire(prompt="hello", env=None, **payload):
     return gloss_reminder.reminder(dict(payload, prompt=prompt), ON if env is None else env)
 
 def child_env(env=None):
-    base = {k: v for k, v in os.environ.items() if not k.startswith("CLAUDE_GLOSS_")}
+    base = {k: v for k, v in os.environ.items() if not k.startswith(("CLAUDE_GLOSS_", "GLOSS_"))}
     base.update(ON if env is None else env)
     return base
 
@@ -44,6 +44,22 @@ class ReminderTests(unittest.TestCase):
         self.assertIn("(th,en):", fire(env=dict(ON, CLAUDE_GLOSS_LANG=" th , en ")))  # normalized chain
         for lang in ("simple-en", "pt-BR", "zh-Hant-TW"):
             self.assertIn("(%s)" % lang, fire(env=dict(ON, CLAUDE_GLOSS_LANG=lang)))
+
+    def test_lang_precedence(self):
+        hook = {"CLAUDE_GLOSS_HOOK": "on"}
+        self.assertIn("(ja):", fire(env=dict(hook, CLAUDE_GLOSS_LANG="ja", GLOSS_LANG="th")))  # both set: CLAUDE wins
+        self.assertEqual(fire(env=dict(hook, GLOSS_LANG="th")), EXPECTED)  # only GLOSS_LANG
+        for empty in ("", "  ", "\n", "\x1b"):  # empty after cleaning falls through
+            self.assertEqual(fire(env=dict(hook, CLAUDE_GLOSS_LANG=empty, GLOSS_LANG="th")), EXPECTED, repr(empty))
+        self.assertEqual(fire(env=dict(hook, CLAUDE_GLOSS_LANG="th", GLOSS_LANG="th_TH!")), EXPECTED)  # loser unchecked
+        for unset in ({}, {"GLOSS_LANG": ""}, {"GLOSS_LANG": " ", "CLAUDE_GLOSS_LANG": " "}):
+            self.assertEqual(fire(env=dict(hook, **unset)), "", unset)
+
+    def test_bad_winner_never_falls_back(self):
+        hook = {"CLAUDE_GLOSS_HOOK": "on"}
+        for bad in ("thai!", "th th", "en", "en-US", ",th"):
+            self.assertEqual(fire(env=dict(hook, CLAUDE_GLOSS_LANG=bad, GLOSS_LANG="th")), "", bad)
+            self.assertEqual(fire(env=dict(hook, GLOSS_LANG=bad)), "", bad)
 
     def test_guard_c_subagent(self):
         self.assertEqual(fire(agent_id="agent-1"), "")
@@ -110,6 +126,10 @@ class EndToEndTests(unittest.TestCase):
         finally:
             os.close(write_fd)
         self.assertEqual((r.returncode, r.stderr), (0, b""))
+
+    def test_valid_run_reads_gloss_lang(self):
+        r = run(b'{"prompt": "hello"}', env={"CLAUDE_GLOSS_HOOK": "on", "GLOSS_LANG": "th"})
+        self.assertEqual((r.returncode, r.stdout.decode("utf-8"), r.stderr), (0, EXPECTED + "\n", b""))
 
     def test_valid_run_silent_when_off(self):
         r = run(b'{"prompt": "hello"}', env={"CLAUDE_GLOSS_HOOK": "off", "CLAUDE_GLOSS_LANG": "th"})
