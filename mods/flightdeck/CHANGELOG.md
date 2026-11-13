@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.2
+
+- Track plan mode from Claude's own `EnterPlanMode` and `ExitPlanMode` calls in the main loop too. On Team and Enterprise accounts `cc-plugin-sec-default` skips the `prompt.attachment` hook that read plan mode, so the main box never showed it there. A refused or failed call, or one from a subagent, changes nothing.
+- Correct Troubleshooting: flightdeck does print a skipped-hook line under `cc-plugin-sec-default`, for `prompt.attachment`. List the events it keeps from installed plugins, note that the compaction count stays empty there because `session.compact` is skipped too, and name the managed-plugin route.
+
+## 0.9.1
+
+- Document that Claude Code 2.1.323's experimental Code Mode does not start while flightdeck is enabled, and how to disable the mod to use it (#45). No code changes.
+
 ## 0.9.0
 
 - Add opt-in managed pi-bolt sessions. `/flightdeck managed on` enables them, and each prompt starts one new `pi-bolt --mode json --no-session` session, capped at two. The pane shows live, completed, or unavailable, and never a transcript.

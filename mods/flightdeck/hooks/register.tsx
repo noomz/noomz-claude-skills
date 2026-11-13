@@ -804,6 +804,11 @@ export const register: Register = (on, options) => {
     const refuser = refuserOf(e.tool, ran)
     const didRun = refuser === null
     const isSettled = await settleCalls($, memory, [e.tool_use_id], didRun ? { didRun } : { didRun, refuser })
+    // A seated cc-plugin-sec-default skips prompt.attachment for installed mods, so Claude's own plan-mode tools also count.
+    if (!e.agentId && didRun && ran.isError !== true) {
+      if (e.tool === 'EnterPlanMode') await noteMode($, 'plan')
+      else if (e.tool === 'ExitPlanMode') await leavePlan($)
+    }
     // A background agent hands its report back through this tool; an architect's report is its advice.
     if (String(e.tool) === 'SubagentHandback') {
       const message = (e as unknown as { message?: unknown }).message
