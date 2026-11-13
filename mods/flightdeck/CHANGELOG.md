@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.10.0
+
+- Detect external agent launches inside chains, pipelines, redirects, and substitutions. A launch such as `codex exec "$(cat brief.md)" > out.log 2>&1; echo $?` drew no card before, because any redirect, `;`, or `$` made Flightdeck skip the whole command. It now splits the line into simple commands, skips redirects and heredoc bodies, and names the card after the first command that launches an agent.
+- Recognize Grok `-p`, `--prompt-file`, and `--prompt-json`, Pi `-p`, `codex e`, a path to the binary, and leading `VAR=value` assignments. Wrappers such as `sh -c` and `env` are still not detected.
+
 ## 0.9.2
 
 - Track plan mode from Claude's own `EnterPlanMode` and `ExitPlanMode` calls in the main loop too. On Team and Enterprise accounts `cc-plugin-sec-default` skips the `prompt.attachment` hook that read plan mode, so the main box never showed it there. A refused or failed call, or one from a subagent, changes nothing.
