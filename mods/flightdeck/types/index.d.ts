@@ -32,7 +32,7 @@ export type Usage = {
   lastCompactAt: number | null
 }
 
-export type Consult = { id: string; at: number; endAt: number | null; moment: Moment; via: SafeText }
+export type Consult = { id: string; at: number; endAt: number | null; moment: Moment; via: SafeText; task: SafeText; advice: SafeText }
 
 export type Architect = { consults: Consult[]; ids: string[]; lastAdvice: SafeText }
 
@@ -90,6 +90,21 @@ export type AgentCard = {
 }
 
 /** A model loop whose id matches no card: a workflow agent, a compaction or a memory fork. */
+export type ExternalProvider = 'codex' | 'pi' | 'hermes' | 'grok'
+export type ExternalStatus = 'running' | 'handed-off' | 'completed' | 'failed' | 'cancelled' | 'unknown'
+export type ExternalCard = {
+  kind: 'external'
+  id: SafeText
+  taskId: SafeText | null
+  provider: ExternalProvider
+  status: ExternalStatus
+  sequence: number
+  startedAt: number
+  endedAt: number | null
+}
+export type ExternalNotice = { id: SafeText; taskId: SafeText; status: 'completed' | 'failed' | 'cancelled'; at: number }
+export type ExternalState = { cards: ExternalCard[]; notices: ExternalNotice[] }
+
 export type Loop = { id: string; steps: number; firstAt: number; lastAt: number; isDone: boolean }
 
 export type LogLine = {
@@ -118,6 +133,8 @@ export type Receipt = {
   reason: string
 }
 
+export type Controls = { gateVisible: boolean | null; intervention: boolean }
+
 export type Layout = 'auto' | 'compact' | 'wide' | 'mini'
 
 /**
@@ -137,6 +154,8 @@ declare module 'claude-code' {
       architect: Architect
       gate: Gate
       agents: AgentCard[]
+      external: ExternalState
+      controls: Controls
       loops: Loop[]
       log: LogLine[]
       turn: Turn

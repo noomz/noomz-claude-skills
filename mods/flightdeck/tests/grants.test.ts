@@ -36,8 +36,7 @@ describe('a grant never changes a verdict but a plain ask outside plan mode', ()
     ['ask from a settings rule', { decision: 'ask', rule: 'Bash(git push:*)' }],
     ['ask under a hook', { decision: 'ask', hook: 'PreToolUse' }],
     ["ask from an option's own check", { decision: 'ask', setting: 'permissions.blockReadsOutsideWorkingDirectories' }],
-    ['ask a hook puts to the person', { decision: 'ask', decider: 'person' }],
-    ['ask a host answers', { decision: 'ask', decider: 'host' }],
+    ['ask made by another plugin', { decision: 'ask', plugin: 'other-plugin' }],
     ['ask under an organization ceiling', { decision: 'ask', ceiling: 'ask' }],
     ['plain ask in plan mode', { decision: 'ask' }, 'plan'],
   ]
@@ -46,6 +45,10 @@ describe('a grant never changes a verdict but a plain ask outside plan mode', ()
       expect(answer(granted(), verdict, call.tool, call.input, mode)).toEqual(verdict)
     })
   }
+
+  test('an ask answered by a host never receives a Flightdeck grant', () => {
+    expect(askSubject({ decision: 'ask' }, call.tool, call.input, 'default', 'host')).toBe(null)
+  })
 
   test('a plain ask with a grant for the exact call becomes allow', () => {
     expect(answer(granted(), { decision: 'ask' }, call.tool, call.input).decision).toBe('allow')

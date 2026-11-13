@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.9.0
+
+- Add opt-in managed pi-bolt sessions. `/flightdeck managed on` enables them, and each prompt starts one new `pi-bolt --mode json --no-session` session, capped at two. The pane shows live, completed, or unavailable, and never a transcript.
+- Keep the managed session ID and event type in module memory only. The prompt, answer, paths, and raw events are not retained. A partial event line longer than 8 KiB is dropped rather than held. Managed-off, reset, clear, and resume abort the children and drop the rows, and the aborted run reports unavailable.
+- An open pane redraws when a managed run starts, changes phase, ends, is cancelled, or is turned off. The two-session cap is checked and reserved in one step, so concurrent prompts cannot launch a third child, and a prompt that races managed-off or reset launches nothing. A run whose first event is not a session header stops its child, so an unavailable row never hides a live process from the cap.
+- A cancel is never overwritten by a later event or a clean exit: the run still ends unavailable. Running managed runs are listed before finished ones, so finished history never hides a live child.
+- The mini layout shows managed runs only in its three agent rows and counts the rest in its `+N more agents` line, so it stays within eight rows.
+- Leave passive external cards and native permission controls unchanged.
+
+## 0.8.0
+
+- Show a bounded, scrubbed session ID. During clear and resume, show unavailable until a redraw reads the replacement ID. Peer addresses and terminal-background controls remain unavailable or unverified.
+- Track observed standalone Codex, Pi, Hermes, and Grok Bash launches as external cards. Shell completion does not prove agent success; uncertain results remain handed off or unknown. External cards do not use Claude transcript controls.
+- Show recent denials in the inline summary. Gate visibility and Flightdeck approval and retry can be controlled independently. Disabling intervention invalidates session grants and leaves native permissions unchanged.
+- Fall back to compact layout when wide is selected in a pane narrower than 110 columns.
+- Keep up to 12 scrubbed architect task descriptions and advice excerpts. Server-advisor content remains unavailable. Pattern-based masking can miss secrets.
+- Reset state from older schema versions. Schema version 7 includes external cards, gate controls, and advisor history.
+- Recognize plugin-originated permission asks using the current Claude Code API and never override them with a Flightdeck grant.
+
 ## 0.6.0
 
 - A card's number shows that subagent's real conversation in the main view, as the tasks list does, and the next Enter goes to that agent. Press the number again, or `m`, to return. Flightdeck stores none of the conversation. When Claude Code cannot show an agent, the card opens its summary with the reason, masked.

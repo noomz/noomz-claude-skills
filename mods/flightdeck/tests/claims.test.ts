@@ -167,9 +167,9 @@ const base = (on: On) => {
   on('ui.view', () => ({ value: { deny: 'no agent holds the id' } }))
 }
 
-const engine = (on: On) => {
+const engine = (on: On, beforeSet?: (e: { plugin: string; key: string; value: unknown }) => Promise<void>) => {
   base(on)
-  return stateStoreWithoutRedraw(on)
+  return stateStoreWithoutRedraw(on, beforeSet)
 }
 
 const pane = (bodyColumns = 64) => ({
@@ -349,10 +349,16 @@ type CheckVerdict = Awaited<ReturnType<Engine['tool']['check']>>
 
 const PUSH = 'git push origin main'
 
-const gateEngine = (on: On) => {
-  const values = engine(on)
-  const core: { verdict: CheckVerdict } = { verdict: { decision: 'ask' } }
-  on('tool.check', () => core.verdict)
+const gateEngine = (on: On, beforeSet?: (e: { plugin: string; key: string; value: unknown }) => Promise<void>) => {
+  const values = engine(on, beforeSet)
+  const core: { verdict: CheckVerdict; delay?: Promise<void>; entered?: () => void } = { verdict: { decision: 'ask' } }
+  on('tool.check', async (_$, e) => {
+    if (e.tool_use_id === 'race' && core.delay) {
+      core.entered?.()
+      await core.delay
+    }
+    return core.verdict
+  })
   on('tool.call', () => ({ result: `Error: ${PERSON_NO}`, text: PERSON_NO, isError: true }) as never)
   return { values, core }
 }
@@ -398,7 +404,7 @@ describe("flightdeck's tool.check answer", () => {
     ['an ask from a settings rule', { decision: 'ask', rule: 'Bash(git push:*)' }],
     ['an ask under a hook', { decision: 'ask', hook: 'PreToolUse' }],
     ["an ask from an option's own check", { decision: 'ask', setting: 'permissions.blockReadsOutsideWorkingDirectories' }],
-    ['an ask a hook puts to the person', { decision: 'ask', decider: 'person' }],
+    ['an ask made by another plugin', { decision: 'ask', plugin: 'other-plugin' }],
     ['an ask under an organization ceiling', { decision: 'ask', ceiling: 'ask' }],
   ]
   for (const [label, verdict] of [...denies, ...nonPlain]) {
@@ -536,6 +542,99 @@ describe('what an approve press acts on', () => {
   })
 })
 
+describe('independent gate controls', () => {
+  test('hiding the panel preserves intervention, disabling it forgets grants and leaves native checks unchanged', async ($, on) => {
+    const { values, core } = gateEngine(on)
+    const id = await refuse($)
+    await approveDenied($, id)
+    await $.command.run({ command: 'flightdeck', args: 'gate hide' } as never)
+    expect((await ask($)).decision).toBe('allow')
+    let ui = await $.ui.mount(pane())
+    expect(await ui.find({ text: /GATE · permissions/ })).toBeUndefined()
+    await ui.unmount()
+    await $.command.run({ command: 'flightdeck', args: 'intervention off' } as never)
+    expect(state(values).gate.grants).toEqual([])
+    expect((await ask($)).decision).toBe('ask')
+    core.verdict = { decision: 'deny', rule: 'Bash(git push:*)' }
+    expect((await ask($)).decision).toBe('deny')
+    await $.command.run({ command: 'flightdeck', args: 'gate show' } as never)
+    ui = await $.ui.mount(pane())
+    expect(await ui.find({ text: /GATE · permissions/ })).toBeDefined()
+    expect(await ui.find({ text: /intervention off/ })).toBeDefined()
+    await ui.unmount()
+    await $.command.run({ command: 'flightdeck', args: 'intervention on' } as never)
+    core.verdict = { decision: 'ask' }
+    expect((await ask($)).decision).toBe('ask')
+  })
+
+  test('disabling intervention after grant lookup invalidates the in-flight check and persisted grant', async ($, on) => {
+    let block = false
+    let release: () => void = () => undefined
+    let entered: () => void = () => undefined
+    const waiting = new Promise<void>(resolve => { release = resolve })
+    const started = new Promise<void>(resolve => { entered = resolve })
+    const { values } = gateEngine(on, async e => {
+      if (block && e.key === 'gate' && JSON.stringify(e.value).includes('race2')) {
+        block = false
+        entered()
+        await waiting
+      }
+    })
+    const id = await refuse($)
+    await approveDenied($, id)
+    block = true
+    const pending = $.tool.check({ tool: 'Bash', input: { command: PUSH }, tool_use_id: 'race2' })
+    await started
+    await $.command.run({ command: 'flightdeck', args: 'intervention off' } as never)
+    release()
+    expect((await pending).decision).toBe('ask')
+    expect(state(values).gate.grants).toEqual([])
+  })
+
+  test('disabling intervention during approval prevents a late persisted grant', async ($, on) => {
+    let block = false
+    let release: () => void = () => undefined
+    let entered: () => void = () => undefined
+    const waiting = new Promise<void>(resolve => { release = resolve })
+    const started = new Promise<void>(resolve => { entered = resolve })
+    const { values } = gateEngine(on, async e => {
+      const value = e.value as { grants?: unknown[] }
+      if (block && e.key === 'gate' && (value.grants?.length ?? 0) > 0) {
+        block = false
+        entered()
+        await waiting
+      }
+    })
+    const id = await refuse($)
+    await pressDenied($, `ok-${id}`)
+    block = true
+    const pending = pressDenied($, `ok-${id}`)
+    await started
+    await $.command.run({ command: 'flightdeck', args: 'intervention off' } as never)
+    release()
+    await pending
+    expect(state(values).gate.grants).toEqual([])
+    expect((await ask($)).decision).toBe('ask')
+  })
+
+  test('disabling intervention while a check is in flight returns the native verdict', async ($, on) => {
+    const { values, core } = gateEngine(on)
+    const id = await refuse($)
+    await approveDenied($, id)
+    let release: () => void = () => undefined
+    let entered: () => void = () => undefined
+    core.delay = new Promise<void>(resolve => { release = resolve })
+    const started = new Promise<void>(resolve => { entered = resolve })
+    core.entered = entered
+    const pending = $.tool.check({ tool: 'Bash', input: { command: PUSH }, tool_use_id: 'race' })
+    await started
+    await $.command.run({ command: 'flightdeck', args: 'intervention off' } as never)
+    release()
+    expect((await pending).decision).toBe('ask')
+    expect(state(values).gate.grants).toEqual([])
+  })
+})
+
 describe('a subject line', () => {
   test('keeps both ends of a long command inside its cap, and masks a secret the cut falls beside', () => {
     const command = `PGPASSWORD=hunter2hunter2 psql -h db ${'/very/long/segment'.repeat(12)}/dump-final.sql`
@@ -645,17 +744,28 @@ describe('refuserOf reads who refused a call, or null when it ran', () => {
   for (const [label, tool, result, expected] of cases) test(label, () => expect(refuserOf(tool, result)).toBe(expected))
 })
 
+const enteredCalls = new Map<string, () => void>()
+
 const askEngine = (on: On, ran: () => unknown) => {
   const values = engine(on)
   on('tool.check', () => ({ decision: 'ask' as const }))
-  on('tool.call', () => ran() as never)
+  on('classic.PermissionRequest', () => ({ decision: { behavior: 'allow' } }))
+  on('tool.call', (_$, e) => {
+    if (e.tool_use_id) enteredCalls.get(e.tool_use_id)?.()
+    return ran() as never
+  })
   return values
 }
 
 const startCallWithoutAwait = async ($: Engine, id: string, agentId?: string) => {
   const who = agentId ? { agentId } : {}
-  await $.tool.check({ tool: 'Bash', input: { command: PUSH }, tool_use_id: id, ...who })
-  return { pendingCall: $.tool.call({ tool: 'Bash', command: PUSH, tool_use_id: id, ...who } as never) }
+  let markEntered: () => void = () => undefined
+  const entered = new Promise<void>(resolve => { markEntered = resolve })
+  enteredCalls.set(id, markEntered)
+  const pendingCall = $.tool.call({ tool: 'Bash', command: PUSH, tool_use_id: id, ...who } as never)
+  await entered
+  enteredCalls.delete(id)
+  return { pendingCall }
 }
 
 const turnEnd = ($: Engine, agentId?: string) =>
@@ -711,7 +821,6 @@ describe('an ask settles as refused', () => {
 
   test("never for an MCP tool's error that names another tool's refusal: it ran, and is cleared", async ($, on) => {
     const values = askEngine(on, () => ({ result: 'x', text: 'Permission to use OtherTool denied.', isError: true }))
-    await $.tool.check({ tool: 'mcp__s__t', input: { q: 1 }, tool_use_id: 'm1' } as never)
     await $.tool.call({ tool: 'mcp__s__t', q: 1, tool_use_id: 'm1' } as never)
     expect(state(values).gate.recent.map(c => [c.id, c.verdict])).toEqual([['m1', 'cleared']])
   })
@@ -773,7 +882,6 @@ describe('the masked count adds the masks scrub() finds each time flightdeck rea
     on('tool.call', () => ({ result: {}, text: 'ok' }))
     await $.turn.start({ text: 'go', turnId: 'M2' })
     await $.agent.spawn(spawn('general-purpose', 'migrate'))
-    await $.tool.check({ tool: 'Bash', input: { command: 'AKIAABCDEFGHIJKLMNOP' }, tool_use_id: 'sk1' })
     await $.tool.call({ tool: 'Bash', command: 'AKIAABCDEFGHIJKLMNOP', agentId: 'mc2', tool_use_id: 'sk1' } as never)
     const s = state(values)
     expect([s.gate.recent.map(c => c.detail), s.agents[0]?.tools.map(n => n.text), s.hygiene.masked]).toEqual([['Bash → [masked]'], ['Bash → [masked]'], 2])
@@ -878,8 +986,11 @@ describe('what a reset empties and keeps', () => {
   const metas: [label: string, meta: unknown, kept: number][] = [
     ['version 2', { schemaVersion: 2 }, 0],
     ['version 3', { schemaVersion: 3 }, 0],
-    ['version 4', { schemaVersion: 4 }, 1],
+    ['version 4', { schemaVersion: 4 }, 0],
     ['version 5', { schemaVersion: 5 }, 0],
+    ['version 6', { schemaVersion: 6 }, 0],
+    ['version 7', { schemaVersion: 7 }, 1],
+    ['version 8', { schemaVersion: 8 }, 0],
     ['no meta, as upstream flightdeck wrote it', undefined, 0],
     ['an empty meta', {}, 0],
     ['a meta that is not an object', 'v3', 0],
@@ -960,7 +1071,7 @@ test('/flightdeck audit lists the text fields under gate, architect and roster t
   expect(state(values).gate.recent.length).toBe(1)
   expect(logged.filter(row => /^(gate|architect|roster):/.test(row))).toEqual([
     'gate: recent.0.detail 13',
-    'architect: lastAdvice 7, consults.0.via 9',
+    'architect: lastAdvice 7, consults.0.via 9, consults.0.task 6, consults.0.advice 7',
     'roster: architectTypes.0 9',
   ])
 })

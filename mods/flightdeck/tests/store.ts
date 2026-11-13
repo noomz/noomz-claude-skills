@@ -3,11 +3,12 @@ import type { test } from 'claude-code/testing'
 export type On = Parameters<Extract<Parameters<typeof test>[1], (...args: never[]) => unknown>>[1]
 export type Engine = Parameters<Extract<Parameters<typeof test>[1], (...args: never[]) => unknown>>[0]
 
-export function stateStoreWithoutRedraw(on: On) {
+export function stateStoreWithoutRedraw(on: On, beforeSet?: (e: { plugin: string; key: string; value: unknown }) => Promise<void>) {
   const values = new Map<string, { value: unknown; version: number }>()
   const name = (e: { plugin: string; key: string; id?: string }) => `${e.plugin}/${e.key}/${e.id ?? ''}`
   on('state.get', (_$, e) => ({ value: values.get(name(e)) ?? { value: undefined, version: 0 } }))
-  on('state.set', (_$, e) => {
+  on('state.set', async (_$, e) => {
+    if (beforeSet) await beforeSet(e)
     const version = values.get(name(e))?.version ?? 0
     if (e.ifVersion !== undefined && e.ifVersion !== version) return { value: { isSet: false as const, version } }
     values.set(name(e), { value: e.value, version: version + 1 })
