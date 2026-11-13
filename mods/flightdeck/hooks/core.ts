@@ -9,6 +9,7 @@ import type {
   Bucket,
   Check,
   Consult,
+  ExternalState,
   Gate,
   Grant,
   Layout,
@@ -29,13 +30,13 @@ import type {
 import { scrub } from './hygiene'
 import type { Hygiene, SafeText, Scrubbed } from './hygiene'
 
-export const SCHEMA_VERSION = 4
+export const SCHEMA_VERSION = 7
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 
 export const isCurrentSchema = (meta: unknown) => isObject(meta) && meta.schemaVersion === SCHEMA_VERSION
 
-export const CAP = { description: 80, name: 40, detail: 64, advice: 160, who: 40, line: 160, cause: 40, viewDeny: 64, subject: 120 } as const
+export const CAP = { description: 80, name: 40, detail: 64, advice: 160, who: 40, line: 160, cause: 40, viewDeny: 64, subject: 120, sessionId: 64 } as const
 
 export const NO_TEXT = '' as SafeText
 
@@ -537,17 +538,22 @@ export const afterCall = (t: Turn, c: { inSubagent: boolean; hasFailed: boolean;
 export const momentOf = (t: Pick<Turn, 'edits' | 'errorStreak'>): Moment =>
   t.errorStreak >= 2 ? 'error repeats' : t.edits === 0 ? 'before a plan' : 'before done'
 
-export const startConsult = (a: Architect, c: Omit<Consult, 'endAt'>): Architect =>
-  a.consults.some(x => x.id === c.id) ? a : { ...a, consults: [...a.consults, { ...c, endAt: null }].slice(-40) }
+export const startConsult = (a: Architect, c: Pick<Consult, 'id' | 'at' | 'moment' | 'via'> & { task?: SafeText }): Architect =>
+  a.consults.some(x => x.id === c.id) ? a : { ...a, consults: [...a.consults, { ...c, task: c.task ?? NO_TEXT, advice: NO_TEXT, endAt: null }].slice(-12) }
 
 /** Ends the open consult (the latest without an end), or the one named. */
 export const endConsult = (a: Architect, at: number, advice: SafeText | null, id?: string): Architect => {
   const open = [...a.consults].reverse().find(c => c.endAt === null && (id === undefined || c.id === id))
   return {
     ...a,
-    consults: a.consults.map(c => (c === open ? { ...c, endAt: at } : c)),
+    consults: a.consults.map(c => (c === open ? { ...c, endAt: at, advice: advice ?? c.advice } : c)),
     lastAdvice: advice ?? a.lastAdvice,
   }
+}
+
+export const addConsultAdvice = (a: Architect, id: string | undefined, advice: SafeText): Architect => {
+  const target = id ? [...a.consults].reverse().find(c => c.id === id) : [...a.consults].reverse().find(c => c.endAt === null)
+  return { ...a, lastAdvice: advice, consults: a.consults.map(c => c === target ? { ...c, advice } : c) }
 }
 
 export const isAdvising = (a: Architect) => a.consults.some(c => c.endAt === null)
@@ -784,7 +790,7 @@ export const consultVia = (subagentType: string): Scrubbed => kept(subagentType,
 
 export const elapsedOf = (c: AgentCard, now: number) => (c.endedAt ?? now) - c.spawnedAt
 
-type Held = { log: LogLine[]; agents: AgentCard[]; gate: Gate; architect: Architect; roster: Roster; view: View }
+type Held = { log: LogLine[]; agents: AgentCard[]; external?: ExternalState; gate: Gate; architect: Architect; roster: Roster; view: View }
 
 export const textFields = (h: Held): { path: string; length: number }[] =>
   [
@@ -794,6 +800,8 @@ export const textFields = (h: Held): { path: string; length: number }[] =>
       [`agents.${i}.description`, c.description] as const,
       ...c.tools.map((n, j) => [`agents.${i}.tools.${j}.text`, n.text] as const),
     ]),
+    ...(h.external?.cards ?? []).flatMap((c, i) => [[`external.cards.${i}.id`, c.id], [`external.cards.${i}.taskId`, c.taskId ?? '']] as const),
+    ...(h.external?.notices ?? []).flatMap((n, i) => [[`external.notices.${i}.id`, n.id], [`external.notices.${i}.taskId`, n.taskId]] as const),
     ...h.gate.recent.flatMap((c, i) => [
       [`gate.recent.${i}.detail`, c.detail] as const,
       ...(c.verdict === 'deny' && c.by !== 'refused' ? [[`gate.recent.${i}.cause`, c.cause] as const] : []),
@@ -801,7 +809,7 @@ export const textFields = (h: Held): { path: string; length: number }[] =>
     ...h.gate.grants.map((g, i) => [`gate.grants.${i}.detail`, g.detail] as const),
     ['view.viewDeny', h.view.viewDeny ?? ''] as const,
     ['architect.lastAdvice', h.architect.lastAdvice] as const,
-    ...h.architect.consults.map((c, i) => [`architect.consults.${i}.via`, c.via] as const),
+    ...h.architect.consults.flatMap((c, i) => [[`architect.consults.${i}.via`, c.via], [`architect.consults.${i}.task`, c.task], [`architect.consults.${i}.advice`, c.advice]] as const),
     ...h.roster.architectTypes.map((t, i) => [`roster.architectTypes.${i}`, t] as const),
   ]
     .filter(([, text]) => text.length > 0)

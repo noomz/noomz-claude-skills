@@ -15,7 +15,7 @@ const SHELL_HARMLESS: ReadonlySet<string> = new Set(['description', 'timeout', '
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 
 export const isPlainAsk = (v: ToolCheckResult): boolean =>
-  v.decision === 'ask' && !v.rule && !v.hook && !v.setting && !v.decider && v.ceiling === undefined
+  v.decision === 'ask' && !v.rule && !v.hook && !v.setting && !v.plugin && v.ceiling === undefined
 
 const stable = (v: unknown): string => {
   if (Array.isArray(v)) return `[${v.map(stable).join(',')}]`
@@ -45,8 +45,8 @@ export const markOf = (subject: Subject): string => {
   return `#${(h >>> 0).toString(36).padStart(7, '0').slice(-4)}`
 }
 
-export const askSubject = (v: ToolCheckResult, tool: string, input: unknown, mode: string): Subject | null =>
-  isPlainAsk(v) && mode !== 'plan' ? identityOf(tool, input) : null
+export const askSubject = (v: ToolCheckResult, tool: string, input: unknown, mode: string, approver?: 'host' | 'person'): Subject | null =>
+  isPlainAsk(v) && mode !== 'plan' && approver !== 'host' ? identityOf(tool, input) : null
 
 export const grantedVerdict = (detail: SafeText): ToolCheckResult => ({
   decision: 'allow',

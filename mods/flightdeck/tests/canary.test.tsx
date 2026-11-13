@@ -27,12 +27,18 @@ const CAPS: [path: RegExp, cap: number][] = [
   [/^agents\.\d+\.description$/, 80],
   [/^agents\.\d+\.type$/, 40],
   [/^agents\.\d+\.tools\.\d+\.text$/, 64],
+  [/^external\.cards\.\d+\.id$/, 64],
+  [/^external\.cards\.\d+\.taskId$/, 64],
+  [/^external\.notices\.\d+\.id$/, 64],
+  [/^external\.notices\.\d+\.taskId$/, 64],
   [/^gate\.recent\.\d+\.detail$/, 64],
   [/^gate\.recent\.\d+\.cause$/, 40],
   [/^gate\.grants\.\d+\.detail$/, 64],
   [/^view\.viewDeny$/, 64],
   [/^architect\.lastAdvice$/, 160],
   [/^architect\.consults\.\d+\.via$/, 40],
+  [/^architect\.consults\.\d+\.task$/, 80],
+  [/^architect\.consults\.\d+\.advice$/, 160],
   [/^roster\.architectTypes\.\d+$/, 40],
   [/^log\.\d+\.who$/, 40],
   [/^log\.\d+\.text$/, 160],
@@ -71,13 +77,13 @@ async function seed($: Engine, on: On) {
   on('agent.offer', () => ({ isOffered: true }) as never)
   on('ui.view', () => ({ value: { deny: `no agent holds password=hunter2 ${ESC}[31m` } }))
   const refusedAsks = new Set(['refusedMain', 'refusedAgent', 'refusedLast'])
-  on('tool.check', (_$, e) => (refusedAsks.has(e.tool_use_id ?? '') ? { decision: 'ask' as const } : ({ decision: 'deny' as const, reason: 'rule', rule: 'Bash(password=hunter2)' }) as never))
+  on('tool.check', (_$, e) => (e.tool_use_id === 'external1' ? { decision: 'allow' as const } : refusedAsks.has(e.tool_use_id ?? '') ? { decision: 'ask' as const } : ({ decision: 'deny' as const, reason: 'rule', rule: 'Bash(password=hunter2)' }) as never))
   on('tool.call', (_$, e) =>
-    (refusedAsks.has(e.tool_use_id) ? { result: `Error: ${COMMAND}`, text: `The user doesn't want to proceed with this tool use. ${COMMAND}`, isError: true } : { result: { stdout: '', stderr: 'boom', interrupted: false }, text: 'boom', isError: true }) as never,
+    (e.tool_use_id === 'external1' ? { result: { backgroundTaskId: 'task1', stdout: PROMPT }, text: PROMPT } : refusedAsks.has(e.tool_use_id) ? { result: `Error: ${COMMAND}`, text: `The user doesn't want to proceed with this tool use. ${COMMAND}`, isError: true } : { result: { stdout: '', stderr: 'boom', interrupted: false }, text: 'boom', isError: true }) as never,
   )
   on('agent.list', () => ({ value: [{ id: 'ag1', description: 'deploy', type: 'general-purpose', status: 'completed' }] }) as never)
   on('prompt.submit', (_$, e) => {
-    RETRIES.push(e.text)
+    if (e.origin.kind !== 'task-notification') RETRIES.push(e.text)
     return { text: e.text }
   })
   on('session.send', (_$, e) => {
@@ -93,6 +99,8 @@ async function seed($: Engine, on: On) {
   await $.agent.spawn(spawnArgs(1, 'general-purpose', `deploy ${JWT} ${ESC}[31mred${RLO}evil`, 'N'.repeat(300)) as never)
   await $.tool.check({ tool: 'Bash', input: { command: COMMAND }, tool_use_id: 'k1' })
   await $.tool.call({ tool: 'Bash', command: COMMAND, agentId: 'ag1', tool_use_id: 'c1' } as never)
+  await $.tool.call({ tool: 'Bash', command: `codex exec "${PROMPT}"`, tool_use_id: 'external1' } as never)
+  await $.prompt.submit({ text: `<task-notification><task-id>task1</task-id><tool-use-id>external1</tool-use-id><status>completed</status><summary>${ANSWER}</summary></task-notification>`, origin: { kind: 'task-notification' }, wait: false })
   await $.tool.check({ tool: 'mcp__vault__password=hunter2', input: { query: 'x' }, tool_use_id: 'k2' } as never)
   await $.tool.call({ tool: 'mcp__vault__password=hunter2', query: 'x', agentId: 'ag1', tool_use_id: 'c3' } as never)
   await $.tool.check({ tool: 'WebFetch', input: { url: 'https://bob:s3cr3t@h.example/x?sig=abc', prompt: 'hunter2' }, tool_use_id: 'k3' })

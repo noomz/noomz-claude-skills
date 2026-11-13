@@ -1,7 +1,10 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, TurnStepServerToolUse } from 'claude-code'
 
-import type { AgentCard, Architect, Bucket, Check, Gate, Layout, LogLine, Loop, Main, Refuser, Roster, Turn, Usage, View } from '../types'
+import type { AgentCard, Architect, Bucket, Check, Controls, ExternalState, Gate, Layout, LogLine, Loop, Main, Refuser, Roster, Turn, Usage, View } from '../types'
+import { EMPTY_EXTERNAL, abortExternal, externalId, externalLanes, externalNotice, externalProvider, finishExternal, noticeExternal, startExternal } from './external'
+import { MANAGED_LIMIT, MANAGED_LINE_CAP, advanceManaged, failManaged, finishManaged, identifyManaged, managedArgv, managedHeader, managedLabel, managedPhase, managedPrompt, requestCancelManaged, startManaged } from './managed'
+import type { ManagedActivity } from './managed'
 import { scrub } from './hygiene'
 import type { Hygiene, SafeText, Scrubbed } from './hygiene'
 import {
@@ -18,6 +21,7 @@ import {
   SCHEMA_VERSION,
   isCurrentSchema,
   afterCall,
+  addConsultAdvice,
   applyStep,
   bucketOf,
   checkOf,
@@ -93,6 +97,9 @@ const usage = atom({ plugin: 'flightdeck', key: 'usage' } as const, DEFAULT_USAG
 const architect = atom({ plugin: 'flightdeck', key: 'architect' } as const, DEFAULT_ARCHITECT)
 const gate = atom({ plugin: 'flightdeck', key: 'gate' } as const, DEFAULT_GATE)
 const agents = atom({ plugin: 'flightdeck', key: 'agents' } as const, [])
+const external = atom({ plugin: 'flightdeck', key: 'external' } as const, EMPTY_EXTERNAL)
+const DEFAULT_CONTROLS: Controls = { gateVisible: null, intervention: true }
+const controls = atom({ plugin: 'flightdeck', key: 'controls' } as const, DEFAULT_CONTROLS)
 const loops = atom({ plugin: 'flightdeck', key: 'loops' } as const, [])
 const log = atom({ plugin: 'flightdeck', key: 'log' } as const, [])
 const turn = atom({ plugin: 'flightdeck', key: 'turn' } as const, DEFAULT_TURN)
@@ -118,6 +125,17 @@ async function getGate($: EngineInterface): Promise<Gate> {
 async function getCards($: EngineInterface): Promise<AgentCard[]> {
   return listOf<unknown>(await read($, agents)).map(normalizeCard)
 }
+async function getExternal($: EngineInterface): Promise<ExternalState> {
+  const value = normalize(EMPTY_EXTERNAL, await read($, external))
+  return { cards: listOf(value.cards), notices: listOf(value.notices) }
+}
+async function getControls($: EngineInterface): Promise<Controls> {
+  const value: unknown = await read($, controls)
+  if (value === undefined || value === null) return DEFAULT_CONTROLS
+  if (typeof value !== 'object') return { gateVisible: null, intervention: false }
+  const c = value as Partial<Controls>
+  return { gateVisible: typeof c.gateVisible === 'boolean' ? c.gateVisible : null, intervention: c.intervention === true }
+}
 async function getLoops($: EngineInterface): Promise<Loop[]> {
   return listOf<Loop>(await read($, loops))
 }
@@ -138,15 +156,16 @@ async function getHygiene($: EngineInterface): Promise<Hygiene> {
   return normalize(DEFAULT_HYGIENE, await read($, hygiene))
 }
 
-async function audit($: EngineInterface) {
-  const [l, a, g, ar, r, v, h] = await Promise.all([getLog($), getCards($), getGate($), getArchitect($), getRoster($), getView($), getHygiene($)])
-  const fields = textFields({ log: l, agents: a, gate: g, architect: ar, roster: r, view: v })
+async function audit($: EngineInterface, endedSessionId: string | null) {
+  const [l, a, x, g, ar, r, v, h] = await Promise.all([getLog($), getCards($), getExternal($), getGate($), getArchitect($), getRoster($), getView($), getHygiene($)])
+  const fields = textFields({ log: l, agents: a, external: x, gate: g, architect: ar, roster: r, view: v })
   const rows = new Map<string, string[]>()
   for (const f of fields) {
     const [key = '', ...rest] = f.path.split('.')
     rows.set(key, [...(rows.get(key) ?? []), `${rest.join('.')} ${f.length}`])
   }
   $.ui.log(`flightdeck audit · ${plural(fields.length, 'stored text field')} · ${h.masked} masked · lengths in UTF-16 units`)
+  if (endedSessionId !== null) $.ui.log(`session: ended ID ${endedSessionId.length}`)
   for (const [key, entries] of rows) $.ui.log(`${key}: ${entries.join(', ')}`)
 }
 
@@ -193,13 +212,14 @@ async function whoIs($: EngineInterface, agentId: string | undefined) {
   return card ? shorten(cardTitle(card), 14) : 'agent'
 }
 
-async function consultStarted($: EngineInterface, cfg: Config, id: string, found: Scrubbed, startedAt?: number) {
+async function consultStarted($: EngineInterface, cfg: Config, id: string, found: Scrubbed, startedAt?: number, task?: Scrubbed) {
   await tally($, found)
+  if (task) await tally($, task)
   const via = found.text
   const t = await getTurn($)
   const moment = momentOf(t)
   const at = startedAt ?? (await $.clock.now())
-  await update($, architect, a => startConsult(normalize(DEFAULT_ARCHITECT, a), { id, at, moment, via }))
+  await update($, architect, a => startConsult(normalize(DEFAULT_ARCHITECT, a), { id, at, moment, via, task: task?.text }))
   if (moment === 'before done') await update($, turn, x => ({ ...normalize(DEFAULT_TURN, x), isReviewing: true }))
   await say($, cfg.architectLabel.toLowerCase(), cfg.moments ? `${moment} · ${via}` : `consulted · ${via}`, 'consult')
   await refreshStatus($, cfg)
@@ -224,11 +244,11 @@ async function noteServerConsults($: EngineInterface, cfg: Config, uses: readonl
   }
 }
 
-async function noteAdvice($: EngineInterface, cfg: Config, report: string) {
+async function noteAdvice($: EngineInterface, cfg: Config, report: string, id?: string) {
   const advice = adviceLine(report)
   if (!advice.text || advice.text === (await getArchitect($)).lastAdvice) return
   await tally($, advice)
-  await update($, architect, x => ({ ...normalize(DEFAULT_ARCHITECT, x), lastAdvice: advice.text }))
+  await update($, architect, x => addConsultAdvice(normalize(DEFAULT_ARCHITECT, x), id, advice.text))
   await say($, cfg.architectLabel.toLowerCase(), `advice: ${shorten(advice.text, 60)}`, 'consult')
 }
 
@@ -247,6 +267,7 @@ async function resetSession($: EngineInterface) {
   await update($, architect, () => DEFAULT_ARCHITECT)
   await update($, gate, () => DEFAULT_GATE)
   await update($, agents, () => [])
+  await update($, external, () => EMPTY_EXTERNAL)
   await update($, loops, () => [])
   await update($, log, () => [])
   await update($, turn, () => DEFAULT_TURN)
@@ -298,28 +319,29 @@ async function settleCalls($: EngineInterface, memory: GrantMemory, ids: readonl
   return true
 }
 
-async function approveDenial($: EngineInterface, memory: GrantMemory, row: DenialRow) {
+async function approveDenial($: EngineInterface, memory: GrantMemory, row: DenialRow, enabled: () => boolean) {
   const { id, detail } = row.check
   const epoch = memory.epoch
   const forgotten = () => say($, 'gate', `cannot approve, call forgotten · ${detail}`, 'error')
-  if (!memory.holds(id, epoch)) return forgotten()
+  if (!enabled() || !memory.holds(id, epoch)) return forgotten()
   const at = await $.clock.now()
   let isShown = false
   await update($, gate, g => {
     const before = normalizeGate(g)
-    const after = approve(before, id, at, epoch)
+    const after = enabled() && memory.epoch === epoch ? approve(before, id, at, epoch) : before
     isShown = after !== before
     return after
   })
   if (!isShown) return say($, 'gate', `not approvable now · ${detail}`, 'error')
-  if (!memory.approve(id, epoch)) {
+  if (!enabled() || !memory.approve(id, epoch)) {
     await update($, gate, g => dropGrant(normalizeGate(g), id))
     return forgotten()
   }
   await say($, 'gate', `approved for this session · ${detail}`)
 }
 
-async function pressApprove($: EngineInterface, memory: GrantMemory, row: DenialRow) {
+async function pressApprove($: EngineInterface, memory: GrantMemory, row: DenialRow, enabled: () => boolean) {
+  if (!enabled()) return
   const id = row.check.id
   let isArmed = false
   await update($, view, x => {
@@ -327,20 +349,24 @@ async function pressApprove($: EngineInterface, memory: GrantMemory, row: Denial
     isArmed = v.armed === id
     return { ...v, armed: isArmed ? null : id }
   })
-  if (isArmed) return approveDenial($, memory, row)
+  if (!enabled()) return
+  if (isArmed) return approveDenial($, memory, row, enabled)
   await say($, 'gate', `press again to approve · ${row.check.detail}`)
 }
 
-async function retryDenial($: EngineInterface, memory: GrantMemory, row: DenialRow) {
+async function retryDenial($: EngineInterface, memory: GrantMemory, row: DenialRow, enabled: () => boolean) {
+  if (!enabled()) return
+  const epoch = memory.epoch
   const agentId = row.check.agentId
   const status = agentId === null ? undefined : (await $.agent.list()).find(a => a.id === agentId)?.status
+  if (!enabled() || epoch !== memory.epoch) return
   const plan = retryPlan(row, status)
   if (plan.kind === 'none') return say($, 'gate', `no retry, ${plan.why} · ${row.check.detail}`, 'error')
   const at = await $.clock.now()
   let isMarked = false
   await update($, gate, g => {
     const before = normalizeGate(g)
-    const after = markRetried(before, row.check.id, at, memory.epoch)
+    const after = enabled() && epoch === memory.epoch ? markRetried(before, row.check.id, at, epoch) : before
     isMarked = after !== before
     return after
   })
@@ -349,6 +375,7 @@ async function retryDenial($: EngineInterface, memory: GrantMemory, row: DenialR
     await update($, gate, g => unmarkRetried(normalizeGate(g), row.check.id, at))
     await say($, 'gate', `retry not delivered, press again · ${why}`, 'error', row.check.agentId)
   }
+  if (!enabled() || epoch !== memory.epoch) return undo(row.check.detail)
   const text = retryText(row.check.detail)
   if (plan.kind === 'main') {
     // It resolves only when that turn starts; a press must return well before.
@@ -386,15 +413,33 @@ export const register: Register = (on, options) => {
   const cfg = parseConfig(options)
   const C = PALETTES[cfg.palette]
   const memory = grantMemory()
+  let endedSessionId: string | null = null
+  let externalSequence = 0
+  let interventionEnabled = true
+  let managedEnabled = false
+  let managedEpoch = 0
+  let managedSequence = 0
+  const managedRuns = new Map<string, { activity: ManagedActivity; stop: () => void }>()
+  const managedView = (): ManagedActivity[] => [...managedRuns.values()].map(run => run.activity).sort((a, b) => a.startedAt - b.startedAt || a.spawnKey.localeCompare(b.spawnKey))
+  const stopManaged = () => {
+    managedEpoch += 1
+    for (const run of managedRuns.values()) run.stop()
+    managedRuns.clear()
+  }
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'flightdeck',
-      description: 'Flightdeck, the live agent dashboard: open, close, reset, audit what it holds, or set the layout',
-      argumentHint: '[open|close|reset|audit|layout auto|compact|wide|mini]',
+      description: 'Flightdeck dashboard, gate controls, reset, audit, and layout',
+      argumentHint: '[open|close|reset|audit|layout|gate|intervention]',
     })
     await resetUnlessCurrentSchema($)
+    await update($, external, state => {
+      const x = normalize(EMPTY_EXTERNAL, state)
+      return { ...x, cards: listOf<ExternalState['cards'][number]>(x.cards).map(c => c.status === 'running' ? { ...c, status: 'unknown' as const } : c), notices: [] }
+    })
     await forgetSession($, memory)
+    interventionEnabled = (await getControls($)).intervention
     // A host without usage (headless, an SDK host, a session not yet bound) just starts without it.
     const u = await $.session.usage().catch(() => null)
     if (u) {
@@ -413,6 +458,9 @@ export const register: Register = (on, options) => {
   })
 
   on('session.end', async ($, e, next) => {
+    endedSessionId = scrub(e.sessionId, CAP.sessionId).text
+    $.ui.invalidate('ui.render')
+    stopManaged()
     await forgetSession($, memory)
     if (e.reason === 'clear' || e.reason === 'resume') {
       await resetSession($)
@@ -427,14 +475,110 @@ export const register: Register = (on, options) => {
       await $.ui.close({ id: PANE })
       return { text: 'Flightdeck closed.' }
     }
+    if (verb === 'gate' && (arg === 'show' || arg === 'hide')) {
+      await update($, controls, c => ({ ...normalize(DEFAULT_CONTROLS, c), gateVisible: arg === 'show' }))
+      return { text: `Flightdeck gate panel ${arg === 'show' ? 'shown' : 'hidden'}; native permissions unchanged.` }
+    }
+    if (verb === 'intervention' && (arg === 'on' || arg === 'off')) {
+      if (arg === 'off') {
+        interventionEnabled = false
+        memory.reset()
+        await update($, gate, g => clearGrants(normalizeGate(g)))
+      }
+      await update($, controls, c => ({ ...normalize(DEFAULT_CONTROLS, c), intervention: arg === 'on' }))
+      if (arg === 'on') interventionEnabled = true
+      return { text: `Flightdeck approval and retry ${arg}; native permissions unchanged.` }
+    }
     if (verb === 'reset') {
+      stopManaged()
       await forgetSession($, memory)
       await resetSession($)
       await refreshStatus($, cfg)
       return { text: 'Flightdeck reset.' }
     }
+    if (verb === 'managed') {
+      if (arg === 'off') {
+        managedEnabled = false
+        stopManaged()
+        return { text: 'Flightdeck managed activity off. Nothing was retained.' }
+      }
+      if (arg === 'on') {
+        managedEnabled = true
+        return { text: 'Flightdeck managed activity on. /flightdeck managed <prompt> starts one new pi-bolt session. Native permissions unchanged.' }
+      }
+      if (arg === 'cancel') {
+        const live = [...managedRuns.values()].filter(run => run.activity.endedAt === null)
+        for (const run of live) {
+          run.activity = requestCancelManaged(run.activity, run.activity.spawnKey, await $.clock.now())
+          run.stop()
+        }
+        return { text: live.length ? 'Flightdeck managed cancel requested. No transcript is available.' : 'Flightdeck managed activity has nothing running.' }
+      }
+      if (!managedEnabled) return { text: 'Flightdeck managed is off. /flightdeck managed on enables one new pi-bolt session per command.' }
+      const prompt = managedPrompt(e.args.trim().slice(verb.length))
+      if (!prompt) return { text: 'Usage: /flightdeck managed <prompt>. The prompt must be one line of at most 4000 characters.' }
+      if ([...managedRuns.values()].filter(run => run.activity.endedAt === null).length >= MANAGED_LIMIT) return { text: 'Flightdeck managed activity unavailable: two sessions are already running.' }
+      const epoch = managedEpoch
+      const spawnKey = `pi-bolt-${++managedSequence}`
+      let activity = startManaged(spawnKey, await $.clock.now())
+      const child = $.process.spawn({ argv: managedArgv(prompt), input: '' })
+      const stop = () => { void child.return({ code: null, signal: null }).catch(() => undefined) }
+      managedRuns.set(spawnKey, { activity, stop })
+      let sawHeader = false
+      let pending = ''
+      let skipping = false
+      const current = () => epoch === managedEpoch ? managedRuns.get(spawnKey) : undefined
+      const keep = (next: ManagedActivity) => {
+        activity = next
+        const run = current()
+        if (run) run.activity = next
+      }
+      const take = async (piece: string) => {
+        if (skipping) {
+          const newline = piece.indexOf('\n')
+          if (newline === -1) return
+          piece = piece.slice(newline + 1)
+          skipping = false
+        }
+        pending += piece
+        const lines = pending.split('\n')
+        pending = lines.pop() ?? ''
+        for (const line of lines) {
+          if (!current() || activity.endedAt !== null) return
+          const at = await $.clock.now()
+          if (!sawHeader) {
+            const header = managedHeader(line)
+            sawHeader = true
+            keep(header ? identifyManaged(activity, spawnKey, header.sessionId, at) : failManaged(activity, spawnKey, at))
+          } else {
+            const phase = managedPhase(line)
+            if (phase) keep(advanceManaged(activity, spawnKey, phase, at))
+          }
+        }
+        if (pending.length > MANAGED_LINE_CAP) {
+          pending = ''
+          skipping = true
+        }
+      }
+      try {
+        for (;;) {
+          const step = await child.next()
+          if (step.done) {
+            if (current()) keep(finishManaged(activity, spawnKey, step.value.code, step.value.signal, await $.clock.now()))
+            break
+          }
+          if (step.value.stream === 'stdout') await take(step.value.text)
+        }
+      } catch {
+        if (current()) keep(failManaged(activity, spawnKey, await $.clock.now()))
+      }
+      if (epoch !== managedEpoch || !current()) return { text: 'Flightdeck managed pi-bolt unavailable. No transcript is available.' }
+      const finished = [...managedRuns.entries()].filter(([, run]) => run.activity.endedAt !== null)
+      for (const [key] of finished.slice(0, Math.max(0, finished.length - 2))) managedRuns.delete(key)
+      return { text: `Flightdeck managed pi-bolt ${managedLabel(activity)}. No transcript is available.` }
+    }
     if (verb === 'audit') {
-      await audit($)
+      await audit($, endedSessionId)
       return {}
     }
     if (verb === 'layout') {
@@ -452,6 +596,10 @@ export const register: Register = (on, options) => {
   const sources = promptSources()
   // Not classic.UserPromptSubmit: a seated cc-plugin-sec-default skips user plugins on every classic event.
   on('prompt.submit', async ($, e, next) => {
+    if (e.origin?.kind === 'task-notification') {
+      const notice = externalNotice(e.text, await $.clock.now())
+      if (notice) await update($, external, state => noticeExternal(normalize(EMPTY_EXTERNAL, state), notice))
+    }
     sources.submit(e.text, e.origin?.kind)
     return next(e)
   })
@@ -480,6 +628,7 @@ export const register: Register = (on, options) => {
   })
 
   on('turn.start', async ($, e, next) => {
+    if (!e.agentId) $.ui.invalidate('ui.render')
     const [now, cost] = await Promise.all([$.clock.now(), costNow($)])
     await update($, turn, () => ({ ...DEFAULT_TURN, startedAt: now, costAtStart: cost }))
     await update($, main, m => ({ ...normalize(DEFAULT_MAIN, m), isRunning: true }))
@@ -487,7 +636,7 @@ export const register: Register = (on, options) => {
     const back = e.text && isEngineTurn(source) ? handbackOf(e.text) : null
     const a = back ? await getArchitect($) : null
     if (back && a && a.ids.includes(back.from)) {
-      await noteAdvice($, cfg, back.body)
+      await noteAdvice($, cfg, back.body, back.from)
     } else if (e.text) {
       const p = promptLine(e.text, source)
       await say($, p.who, p.text)
@@ -566,7 +715,10 @@ export const register: Register = (on, options) => {
 
   on('tool.check', async ($, e, next) => {
     const verdict = await next(e)
-    const subject = askSubject(verdict, e.tool, e.input, (await getMain($)).mode)
+    const [currentControls, currentMain] = await Promise.all([getControls($), getMain($)])
+    const epoch = memory.epoch
+    const enabled = interventionEnabled && currentControls.intervention
+    const subject = enabled ? askSubject(verdict, e.tool, e.input, currentMain.mode, e.approver) : null
     const grantFrom = subject === null ? null : memory.allows(subject)
     const detail = toolDetail(e.tool, e.input)
     const answer = grantFrom === null ? verdict : grantedVerdict(detail.text)
@@ -575,28 +727,51 @@ export const register: Register = (on, options) => {
       if (isHeld) {
         const line = subjectLine(e.tool, e.input, markOf(subject))
         await tally($, line)
-        memory.hold(e.tool_use_id, subject, line.text)
+        if (interventionEnabled && epoch === memory.epoch) memory.hold(e.tool_use_id, subject, line.text)
       }
       const cause = kept(denyCause(verdict), CAP.cause)
       await tally($, detail, cause)
       const base = { id: e.tool_use_id, bucket: bucketOf(e.tool), detail: detail.text, agentId: e.agentId ?? null, at: await $.clock.now() }
-      const check = checkOf(base, verdict, { isGranted: grantFrom !== null, approvable: isHeld, cause: cause.text })
+      let check = checkOf(base, verdict, { isGranted: false, approvable: false, cause: cause.text })
       await update($, gate, g => {
+        const active = interventionEnabled && epoch === memory.epoch
+        check = checkOf(base, verdict, { isGranted: active && grantFrom !== null, approvable: active && isHeld, cause: cause.text })
         const recorded = recordCheck(normalizeGate(g), check)
-        return grantFrom === null ? recorded : useGrant(recorded, grantFrom)
+        return active && grantFrom !== null ? useGrant(recorded, grantFrom) : recorded
       })
-      if (grantFrom !== null) await say($, 'gate', `allowed by your approval · ${check.detail}`, 'info', check.agentId)
+      if (grantFrom !== null && interventionEnabled && epoch === memory.epoch) await say($, 'gate', `allowed by your approval · ${check.detail}`, 'info', check.agentId)
       // The status line updates when the call settles; only a refusal ends here.
       if (check.verdict === 'deny') {
         await say($, 'gate', `denied by ${check.by} · ${check.detail}`, 'error', check.agentId)
         await refreshStatus($, cfg)
       }
     }
-    return answer
+    return interventionEnabled && epoch === memory.epoch ? answer : verdict
   })
 
   on('tool.call', async ($, e, next) => {
-    const ran = await next(e)
+    const provider = e.tool === 'Bash' ? externalProvider(e.command) : null
+    const callId = provider ? externalId(e.tool_use_id) : null
+    const startedAt = callId ? await $.clock.now() : 0
+    const sequence = callId ? ++externalSequence : 0
+    if (provider && callId) {
+      await update($, external, state => startExternal(normalize(EMPTY_EXTERNAL, state), {
+        kind: 'external', id: callId, taskId: null, provider, status: 'running', sequence, startedAt, endedAt: null,
+      }))
+    }
+    let ran: Awaited<ReturnType<typeof next>>
+    try {
+      ran = await next(e)
+    } catch (error) {
+      if (callId) await update($, external, state => abortExternal(normalize(EMPTY_EXTERNAL, state), callId, sequence, startedAt))
+      throw error
+    }
+    if (callId) {
+      const result = ran.result
+      const backgroundId = typeof result === 'object' && result !== null && 'backgroundTaskId' in result ? externalId(result.backgroundTaskId) : null
+      const at = await $.clock.now()
+      await update($, external, state => finishExternal(normalize(EMPTY_EXTERNAL, state), callId, sequence, startedAt, backgroundId, ran.isError === true || ran.deny !== undefined, at))
+    }
     const refuser = refuserOf(e.tool, ran)
     const didRun = refuser === null
     const isSettled = await settleCalls($, memory, [e.tool_use_id], didRun ? { didRun } : { didRun, refuser })
@@ -604,7 +779,7 @@ export const register: Register = (on, options) => {
     if (String(e.tool) === 'SubagentHandback') {
       const message = (e as unknown as { message?: unknown }).message
       const a = e.agentId ? await getArchitect($) : null
-      if (a && e.agentId && a.ids.includes(e.agentId) && typeof message === 'string') await noteAdvice($, cfg, message)
+      if (a && e.agentId && a.ids.includes(e.agentId) && typeof message === 'string') await noteAdvice($, cfg, message, e.agentId)
       return ran
     }
     if (e.tool === 'Agent') {
@@ -647,7 +822,7 @@ export const register: Register = (on, options) => {
         return { ...x, ids: [...listOf<string>(x.ids), id].slice(-40) }
       })
       await update($, loops, l => listOf<Loop>(l).filter(x => x.id !== id))
-      await consultStarted($, cfg, id, consultVia(e.subagentType))
+      await consultStarted($, cfg, id, consultVia(e.subagentType), undefined, kept(e.description, CAP.description))
       return started
     }
     // The engine wakes a finished agent under its own id, e.g. when its background task ends: revive the card, never draw a second
@@ -726,12 +901,14 @@ export const register: Register = (on, options) => {
     const els = $.ui.resolve(e)
     const { Box, Text, Button } = els
     const hasClient = 'Client' in els
-    const [m, u, a, g, cards, lp, lines, t, r, v, hy, now] = await Promise.all([
+    const [m, u, a, g, cards, x, control, lp, lines, t, r, v, hy, now] = await Promise.all([
       getMain($),
       getUsage($),
       getArchitect($),
       getGate($),
       getCards($),
+      getExternal($),
+      getControls($),
       getLoops($),
       getLog($),
       getTurn($),
@@ -740,9 +917,11 @@ export const register: Register = (on, options) => {
       getHygiene($),
       $.clock.now(),
     ])
+    const currentSessionId = scrub(await $.session.id().catch(() => ''), CAP.sessionId).text
+    const sessionId = currentSessionId && currentSessionId !== endedSessionId ? currentSessionId : 'unavailable'
     const W = Math.max(40, e.props.bodyColumns)
     const layout = v.layout ?? cfg.layout
-    const isWide = layout === 'wide' || (layout === 'auto' && W >= 110)
+    const isWide = (layout === 'wide' || layout === 'auto') && W >= 110
     const colW = isWide ? Math.floor((W - 2) / 2) : W
     const modelName = prettyModel(m.model)
     const speed = speedOf(m.speed)
@@ -755,13 +934,14 @@ export const register: Register = (on, options) => {
     const isEmpty: Record<Panel, boolean> = {
       main: false,
       architect: !showArchitect,
-      gate: g.recent.length === 0 && gateSummary(g).total === 0,
-      agents: cards.length === 0,
+      gate: control.gateVisible === false || (g.recent.length === 0 && gateSummary(g).total === 0),
+      agents: cards.length === 0 && x.cards.length === 0 && managedView().length === 0,
       loops: lp.length === 0,
       receipt: !m.isRunning && !r,
       log: false,
     }
-    const panels = cfg.panels.filter(p => !isEmpty[p])
+    const configuredPanels = control.gateVisible === true && !cfg.panels.includes('gate') ? [...cfg.panels, 'gate' as const] : cfg.panels
+    const panels = configuredPanels.filter(p => !isEmpty[p])
     const decider = m.mode === 'auto' ? 'classifier' : 'you'
 
     // A connector between panels: animated while its flow is live, a dim line otherwise.
@@ -799,6 +979,7 @@ export const register: Register = (on, options) => {
           </Text>
           <Text color={m.isRunning ? C.main : C.dim}>{m.isRunning ? '● working' : '○ idle'}</Text>
         </Box>
+        <Text dimColor wrap="truncate">{`session ${sessionId}`}</Text>
         <Text wrap="truncate">
           <Text dimColor>effort </Text>
           <Text color={C.main}>{'▮'.repeat(effortN) + '▯'.repeat(4 - effortN)} </Text>
@@ -886,6 +1067,12 @@ export const register: Register = (on, options) => {
               » {a.lastAdvice}
             </Text>
           ) : null}
+          {a.consults.slice(-3).reverse().map(c => (
+            <Box flexDirection="column">
+              <Text dimColor wrap="truncate">{`${c.via}${c.task ? ` · ${c.task}` : ' · content unavailable'}`}</Text>
+              {c.advice ? <Text color={C.arch} wrap="truncate">{`» ${c.advice}`}</Text> : null}
+            </Box>
+          ))}
         </Box>
       )
     }
@@ -903,8 +1090,10 @@ export const register: Register = (on, options) => {
     const rowLabel = (r: DenialRow) =>
       r.status === 'expired'
         ? 'expired'
-        : r.status === 'blocked' || r.status === 'approvable' || !r.grant
-          ? ''
+        : r.status === 'blocked'
+          ? 'not approvable'
+          : r.status === 'approvable' || !r.grant
+            ? ''
           : `${r.status} · ${r.grant.uses === 0 ? 'not used yet' : `used ${r.grant.uses}×`}`
     const deniedList = (w: number) => {
       const rows = denialRows(g, DENIED_ROWS, memory.epoch)
@@ -933,11 +1122,11 @@ export const register: Register = (on, options) => {
                     </Text>
                   </Box>
                   {label ? <Text color={r.status === 'expired' ? C.faint : C.main}>{label}</Text> : null}
-                  {r.status === 'approvable' ? (
-                    <Button key={`ok-${r.check.id}`} plain label={r === armed ? 'confirm' : 'approve'} hotkey={r === approveKey ? 'a' : undefined} onPress={() => pressApprove($, memory, r)} />
+                  {control.intervention && r.status === 'approvable' ? (
+                    <Button key={`ok-${r.check.id}`} plain label={r === armed ? 'confirm' : 'approve'} hotkey={r === approveKey ? 'a' : undefined} onPress={() => pressApprove($, memory, r, () => interventionEnabled)} />
                   ) : null}
-                  {r.status === 'approved' ? (
-                    <Button key={`re-${r.check.id}`} plain label="retry" hotkey={r === newestRetryable ? 'r' : undefined} onPress={() => retryDenial($, memory, r)} />
+                  {control.intervention && r.status === 'approved' ? (
+                    <Button key={`re-${r.check.id}`} plain label="retry" hotkey={r === newestRetryable ? 'r' : undefined} onPress={() => retryDenial($, memory, r, () => interventionEnabled)} />
                   ) : null}
                 </Box>
                 {line ? <Text wrap="wrap" color={C.main}>{`  ${line}`}</Text> : null}
@@ -960,7 +1149,7 @@ export const register: Register = (on, options) => {
             <Text color={C.gate} bold>
               {cfg.gateLabel} · permissions
             </Text>
-            <Text dimColor>{plural(s.total, 'check')}</Text>
+            <Box><Text dimColor>{plural(s.total, 'check')}</Text><Text dimColor>{` · intervention ${control.intervention ? 'on' : 'off'}`}</Text></Box>
           </Box>
           <Box>
             {strip.length === 0 ? <Text color={C.faint}>no checks yet</Text> : null}
@@ -1105,6 +1294,50 @@ export const register: Register = (on, options) => {
       )
     }
 
+    const managedRows = () => managedView().slice(-2).map(c => (
+      <Text color={C.agent} wrap="truncate">{`managed ${c.provider} · ${managedLabel(c)}${c.status === 'cancel-requested' ? ' · cancel requested' : ''}${c.phase ? ` · ${c.phase}` : ''} · no transcript`}</Text>
+    ))
+
+    const externalPanel = (w: number) => {
+      const shown = x.cards.slice(-6)
+      if (!shown.length) return managedView().length ? <Box flexDirection="column" width={w}>{managedRows()}</Box> : null
+      const fit = Math.max(1, Math.min(cfg.maxCards, Math.floor((w + 1) / 21)))
+      const useLanes = x.cards.length > fit
+      const label = (status: string) => status === 'handed-off' ? 'handed off' : status
+      if (useLanes) {
+        const geo = externalLanes(shown, Math.max(8, w - 30))
+        return (
+          <Box flexDirection="column" width={w}>
+            <Text bold>{`external agents · ${x.cards.length} total`}</Text>
+            {x.cards.length > shown.length ? <Text dimColor>{`+${x.cards.length - shown.length} earlier`}</Text> : null}
+            {shown.map((c, i) => (
+              <Text wrap="truncate" color={c.status === 'failed' ? C.warn : C.agent}>
+                {`${c.provider} · ${label(c.status)} ${geo[i] ? '·'.repeat(geo[i]?.before ?? 0) + '━'.repeat(geo[i]?.bar ?? 0) : '· outcome unknown'}`}
+              </Text>
+            ))}
+            {managedRows()}
+          </Box>
+        )
+      }
+      const cardW = Math.max(20, Math.floor((w - (shown.length - 1)) / shown.length))
+      return (
+        <Box flexDirection="column" width={w}>
+          <Text bold>{`external agents · ${x.cards.length} total`}</Text>
+          <Box columnGap={1}>
+            {shown.map(c => (
+              <Box flexDirection="column" borderStyle="round" borderColor={c.status === 'failed' ? C.warn : C.agent} width={cardW} paddingX={1}>
+                <Text bold wrap="truncate">{c.provider}</Text>
+                <Text dimColor wrap="truncate">external agent</Text>
+                <Text wrap="truncate">{label(c.status)}</Text>
+                {c.endedAt === null && c.status !== 'running' ? <Text dimColor>outcome unknown</Text> : null}
+              </Box>
+            ))}
+          </Box>
+          {managedRows()}
+        </Box>
+      )
+    }
+
     const expandedCard = cards.find(c => c.id === (viewed ?? v.expanded))
     const expandedPanel = (w: number) =>
       expandedCard ? (
@@ -1209,7 +1442,7 @@ export const register: Register = (on, options) => {
           : p === 'gate'
             ? gatePanel(w)
             : p === 'agents'
-              ? agentsPanel(w)
+              ? <Box flexDirection="column">{cards.length ? agentsPanel(w) : null}{externalPanel(w)}</Box>
               : p === 'loops'
                 ? loopsPanel(w)
                 : p === 'receipt'
@@ -1271,9 +1504,13 @@ export const register: Register = (on, options) => {
     const isMini = layout === 'mini' || (layout === 'auto' && e.props.placement === 'inline')
     if (isMini) {
       const live = [...cards.filter(c => c.status === 'running'), ...cards.filter(c => c.status !== 'running').reverse()].slice(0, 3)
+      const externalSlots = Math.max(0, 3 - live.length)
+      const liveExternal = externalSlots ? x.cards.slice(-externalSlots) : []
       const counts = ` ${s.rule} allowed · ${s.cleared} ${decider}${s.granted > 0 ? ` · ${s.granted} approved` : ''}${s.ask > 0 ? ` · ${s.ask} pending` : ''} · ${s.deny} denied`
-      const strip = g.recent.slice(-Math.max(4, W - cfg.gateLabel.length - 1 - counts.length))
+      const showGate = control.gateVisible ?? cfg.panels.includes('gate')
+      const strip = showGate ? g.recent.slice(-Math.max(4, W - cfg.gateLabel.length - 1 - counts.length)) : []
       const mg = u.pct !== null ? gauge(u.pct, 6) : null
+      const lastDenial = [...g.recent].reverse().find(c => c.verdict === 'deny')
       return (
         <Box flexDirection="column" width={W}>
           <Text wrap="truncate">
@@ -1281,6 +1518,7 @@ export const register: Register = (on, options) => {
               {modelName}
             </Text>
             <Text color={m.isRunning ? C.main : C.dim}>{m.isRunning ? ' ● working' : ' ○ idle'}</Text>
+            <Text dimColor>{` · session ${sessionId}`}</Text>
             {mg ? <Text dimColor> · ctx </Text> : null}
             {mg ? <Text color={(u.pct ?? 0) >= 80 ? C.warn : C.main}>{mg.on}</Text> : null}
             {mg ? <Text color={C.faint}>{mg.off}</Text> : null}
@@ -1298,7 +1536,7 @@ export const register: Register = (on, options) => {
                 </Text>
               ))}
               <Text color={s.deny > 0 ? C.warn : s.ask > 0 ? C.amber : C.dim} wrap="truncate">
-                {counts}
+                {lastDenial ? ` ${s.deny} denied · recent ${lastDenial.detail}` : counts}
               </Text>
             </Box>
           ) : null}
@@ -1312,8 +1550,10 @@ export const register: Register = (on, options) => {
               {clock(`mini-clock-${c.id}`, c.spawnedAt, c.endedAt, C.dim)}
             </Box>
           ))}
-          {cards.length > live.length ? (
-            <Text color={C.faint} wrap="truncate">{`+${plural(cards.length - live.length, 'more agent')} · /flightdeck layout compact for all`}</Text>
+          {liveExternal.map(c => <Text color={C.agent} wrap="truncate">{`external ${c.provider} · ${c.status === 'handed-off' ? 'handed off' : c.status}`}</Text>)}
+          {managedView().slice(-2).map(c => <Text color={C.agent} wrap="truncate">{`managed ${c.provider} · ${managedLabel(c)}${c.phase ? ` · ${c.phase}` : ''}`}</Text>)}
+          {cards.length > live.length || x.cards.length > liveExternal.length ? (
+            <Text color={C.faint} wrap="truncate">{`+${plural(cards.length - live.length + x.cards.length - liveExternal.length, 'more agent')} · /flightdeck layout compact for all`}</Text>
           ) : null}
           {lp.length > 0 ? <Text dimColor>{`other loops ${lp.length} · ${lp.filter(l => isLoopActive(l, now)).length} active`}</Text> : null}
           <Box>

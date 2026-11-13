@@ -456,6 +456,41 @@ test('a main-loop plan-mode row shows plan mode, its exit row clears it, and a s
   expect(mode()).toBe('')
 })
 
+test('session identity is hidden across an end and refreshed after the host changes it', async ($, on) => {
+  engine(on)
+  stateStoreWithoutRedraw(on)
+  let id = 'session-before'
+  on('session.id', () => ({ value: id }))
+  on('session.end', (_$, e) => ({ sessionId: e.sessionId }) as never)
+  const draw = async () => $.ui.mount({ ...pane(120), surface: 'terminal' })
+  let ui = await draw()
+  expect(await ui.find({ text: 'session session-before' })).toBeDefined()
+  await ui.unmount()
+  await $.session.end({ reason: 'clear', sessionId: id } as never)
+  ui = await draw()
+  expect(await ui.find({ text: 'session unavailable' })).toBeDefined()
+  await ui.unmount()
+  id = 'session-after'
+  ui = await draw()
+  expect(await ui.find({ text: 'session session-after' })).toBeDefined()
+  await ui.unmount()
+  await $.session.end({ reason: 'resume', sessionId: id } as never)
+  id = 'session-before'
+  ui = await draw()
+  expect(await ui.find({ text: 'session session-before' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('rendered session identity is scrubbed and bounded', async ($, on) => {
+  engine(on)
+  on('session.id', () => ({ value: `password=hunter2 ${'x'.repeat(100)}` }))
+  const ui = await $.ui.mount({ ...pane(120), surface: 'terminal' })
+  expect(await ui.find({ text: /hunter2/ })).toBeUndefined()
+  expect(await ui.find({ text: /session password=\[masked\]/ })).toBeDefined()
+  expect(await ui.find({ text: new RegExp('x{65}') })).toBeUndefined()
+  await ui.unmount()
+})
+
 test('a fresh session draws on every surface and width, empty panels hidden', async ($, on) => {
   engine(on)
   for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
@@ -468,6 +503,22 @@ test('a fresh session draws on every surface and width, empty panels hidden', as
       await ui.unmount()
     }
   }
+})
+
+test('wide layout falls back to compact when the dock is too narrow', async ($, on) => {
+  engine(on)
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('tool.check', () => ({ decision: 'allow' }))
+  await $.tool.check({ tool: 'Read', input: { file_path: '/a' }, tool_use_id: 'narrow-check' })
+  const draw = async (layout: string, width: number) => {
+    await $.command.run({ command: 'flightdeck', args: `layout ${layout}` } as never)
+    const ui = await $.ui.mount({ ...pane(width), surface: 'terminal' })
+    const result = JSON.stringify(await ui.drawn(), (key, value) => key === 'press' ? undefined : value)
+    await ui.unmount()
+    return result
+  }
+  expect(await draw('wide', 40)).toEqual(await draw('compact', 40))
+  expect(await draw('wide', 120)).not.toEqual(await draw('compact', 120))
 })
 
 test('inline above the prompt, the pane is a summary of at most 8 rows', async ($, on) => {
@@ -569,10 +620,11 @@ test('the denied list names who refused each call and offers approve only where 
     s1: { decision: 'ask', rule: 'Bash(git push:*)' },
   }
   on('tool.check', (_$, e) => (verdicts[e.tool_use_id ?? ''] ?? { decision: 'ask' }) as never)
+  on('classic.PermissionRequest', () => ({ decision: { behavior: 'allow' } }))
   on('tool.call', () => PERSON_NO_RESULT as never)
   for (const id of Object.keys(verdicts)) {
-    await $.tool.check({ tool: 'Bash', input: { command: `${id} x` }, tool_use_id: id })
     if (id === 'a1' || id === 's1') await $.tool.call({ tool: 'Bash', command: `${id} x`, tool_use_id: id } as never)
+    else await $.tool.check({ tool: 'Bash', input: { command: `${id} x` }, tool_use_id: id })
   }
   const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
   await ui.press({ key: 'gate-denied' })
@@ -594,12 +646,26 @@ test('the denied list names who refused each call and offers approve only where 
   await ui.unmount()
 })
 
+test('mini layout shows a scrubbed recent denial within the eight-row summary', async ($, on) => {
+  engine(on)
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('tool.check', () => ({ decision: 'deny', rule: 'Bash(password=hunter2)' }))
+  await $.tool.check({ tool: 'Bash', input: { command: 'git password=hunter2' }, tool_use_id: 'denied-mini' })
+  await $.command.run({ command: 'flightdeck', args: 'layout mini' } as never)
+  const ui = await $.ui.mount({ ...pane(80), props: { ...pane(80).props, placement: 'inline' as const }, surface: 'terminal' })
+  expect(await ui.find({ text: /1 denied · recent Bash → git/ })).toBeDefined()
+  expect(await ui.find({ text: /hunter2/ })).toBeUndefined()
+  const root = await ui.drawn() as { children?: unknown[] }
+  expect((root.children ?? []).filter(Boolean).length <= 8).toBe(true)
+  await ui.unmount()
+})
+
 test('a refusal recorded under another load reads as expired, with nothing to press', async ($, on) => {
   engine(on)
   on('tool.check', () => ({ decision: 'ask' as const }))
+  on('classic.PermissionRequest', () => ({ decision: { behavior: 'allow' } }))
   on('tool.call', () => PERSON_NO_RESULT as never)
   on('session.end', (_$, e) => ({ sessionId: e.sessionId }) as never)
-  await $.tool.check({ tool: 'Bash', input: { command: 'ls' }, tool_use_id: 'e1' })
   await $.tool.call({ tool: 'Bash', command: 'ls', tool_use_id: 'e1' } as never)
   await $.session.end({ reason: 'other', sessionId: 's' } as never)
   const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
@@ -651,6 +717,28 @@ test('a server-side advisor whose result never arrived is read from the step res
   const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
   expect(await ui.find({ text: /ARCHITECT · advising/ })).toBeDefined()
   expect(await ui.find({ text: /◆ before a plan/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('advisor history retains bounded scrubbed subagent excerpts but no server input', async ($, on) => {
+  const values = stateStoreWithoutRedraw(on)
+  engine(on)
+  let n = 0
+  on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: `advisor${++n}` }))
+  serverUses(on, [{ id: 'server-last', name: 'advisor', input: { question: 'SERVERSECRET' }, startedAt: 3, endedAt: 4 }])
+  for (let i = 0; i < 14; i++) {
+    await $.agent.spawn(spawn('architect', `Review task ${i} password=hunter2`))
+    await $.turn.complete({ answer: `Advice ${i}: token=abc123xyz`, durationMs: 2, isAborted: false, turnId: `history${i}`, agentId: `advisor${i + 1}`, reason: 'answer' } as never)
+  }
+  await mainStep($, 'history-server')
+  const architect = flightdeck(values).architect as { consults: { task: string; advice: string }[] }
+  expect(architect.consults.length).toBe(12)
+  expect(architect.consults.some(c => c.task.includes('Review task'))).toBe(true)
+  expect(architect.consults.some(c => c.advice.includes('Advice'))).toBe(true)
+  expect(JSON.stringify(architect).includes('hunter2')).toBe(false)
+  expect(JSON.stringify(architect).includes('SERVERSECRET')).toBe(false)
+  const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  expect(await ui.find({ text: /content unavailable/ })).toBeDefined()
   await ui.unmount()
 })
 
@@ -986,7 +1074,7 @@ for (const [path, fire] of [
   })
 }
 
-const SESSION_TEXT_KEYS = ['log', 'agents', 'gate', 'architect', 'roster'] as const
+const SESSION_TEXT_KEYS = ['log', 'agents', 'external', 'gate', 'architect', 'roster'] as const
 
 const textFields = (values: Map<string, { value: unknown }>) => {
   const state = flightdeck(values)
@@ -1013,7 +1101,7 @@ for (const [how, end] of [
     const once = JSON.stringify(flightdeck(values))
     expect(textFields(values)).toEqual([])
     expect(flightdeck(values).roster).toEqual({ architectTypes: [] })
-    expect(flightdeck(values).meta).toEqual({ schemaVersion: 4 })
+    expect(flightdeck(values).meta).toEqual({ schemaVersion: 7 })
     expect(flightdeck(values).hygiene).toEqual({ masked: 0, rejected: 0 })
     await end($)
     expect(JSON.stringify(flightdeck(values))).toBe(once)
