@@ -91,14 +91,12 @@ def checklist_write(tool, harness="claude"):
     name, inp = tool["name"], json.loads(tool["raw"])
     if harness == "pi":
         if name in ("write", "edit"): return bool(PLANNING_FILE.search(str(inp.get("path") or "")))
-        if name == "bash":
-            command = str(inp.get("command") or ""); return ".planning/" in command and bool(re.search(r">|\btee\b|\bcat\s+<<", command))
-        return False
-    if name in ("Write", "Edit"):
-        return bool(re.search(r"\.planning/(?:STATE[^/\\]*|(?:HANDOFF|PLAN|BRIEF)[^/\\]*)", json.dumps(inp, ensure_ascii=False), re.I))
-    if name == "Bash":
-        command = str(inp.get("command", "")); return ".planning/" in command and bool(re.search(r">|\btee\b|\bcat\s+<<", command))
-    return False
+        return name == "bash" and planning_shell_write(inp.get("command"))
+    if name in ("Write", "Edit"): return bool(PLANNING_FILE.search(json.dumps(inp, ensure_ascii=False)))
+    return name == "Bash" and planning_shell_write(inp.get("command"))
+
+def planning_shell_write(command):
+    command = str(command or ""); return ".planning/" in command and bool(re.search(r">|\btee\b|\bcat\s+<<", command))
 
 class Session:
     def __init__(self, sid, harness="claude"):
@@ -179,21 +177,24 @@ def scan(store,min_turns,since,money_terms,truth_paths,include_workers=False,inc
         parts={part.lower() for part in relative.parts[:-1]}
         subagent=path.name.startswith("agent-") and "subagents" in parts
         if not include_workers and ("worker" in parts or "workers" in parts or "team" in parts or "teams" in parts): continue
-        bad=0
+        bad=0; touched=set(); unreadable=False
         try:
             with path.open("r",encoding="utf-8",errors="replace") as fh:
                 for line in fh:
                     if not line.strip(): continue
                     try: rec=json.loads(line)
-                    except ValueError: rec=None
+                    except (ValueError, RecursionError): rec=None
                     if not isinstance(rec,dict): bad+=1; continue
                     sid=rec.get("sessionId")
                     if subagent and not sid:
                         before=list(relative.parts[:relative.parts.index("subagents")])
                         sid=before[-1] if before else None
-                    if sid: sessions.setdefault(sid,Session(sid)).add(rec,patterns,truth_res,subagent=subagent)
+                    if sid: sessions.setdefault(sid,Session(sid)).add(rec,patterns,truth_res,subagent=subagent); touched.add(sid)
         except OSError:
+            unreadable=True
             if problems is not None: problems.append({"kind":"unreadable","path":str(path),"detail":"file could not be read"})
+        if bad or unreadable:
+            for sid in touched: sessions[sid].complete=False
         if bad and problems is not None: problems.append({"kind":"malformed_lines","path":str(path),"detail":"%d line(s) skipped"%bad})
     kept=keep_sessions(sessions.values(),min_turns,since,money_terms,truth_paths)
     return [s for s in kept if include_workers or s.kind == "main"]
@@ -288,13 +289,13 @@ def print_header_extras(harness,meta,sessions):
 def print_pi_sections(sessions):
     print("\nlineage")
     for s in sessions:
-        l=s.lineage; print("%-8s | v%s | leaf %s (%s) | path %d | abandoned %d | parent_session %s | complete %s | cwd %s"%(s.id[:8],l["version"],l["leaf_id"] or "none",l["leaf_source"],l["path_entries"],l["abandoned_entries"],l["parent_session"] or "none","yes" if s.complete else "no",l["cwd"] or "unknown"))
+        l=s.lineage; print("%s | v%s | leaf %s (%s) | path %d | abandoned %d | parent_session %s | complete %s | cwd %s"%(s.id,l["version"],l["leaf_id"] or "none",l["leaf_source"],l["path_entries"],l["abandoned_entries"],l["parent_session"] or "none","yes" if s.complete else "no",l["cwd"] or "unknown"))
         if l["parent_session"]: print("         lineage_followed: false (parent not opened)")
     print("\nusage (scopes are not Pi's own session statistics)")
     for s in sessions:
-        print("%s"%s.id[:8]); print_scope("path",s.usage["path"]); print_scope("file",s.usage["file"])
+        print("%s"%s.id); print_scope("path",s.usage["path"]); print_scope("file",s.usage["file"])
     agg=pi_aggregate(sessions); print("\n%s: %s"%(agg["label"],usage_line(agg["total"]) if isinstance(agg["total"],dict) else "unavailable"))
-    for ex in agg["excluded_forks"]: print("  excluded fork %s (parent_session %s): %s"%(ex["session_id"][:8],ex["parent_session"],ex["reason"]))
+    for ex in agg["excluded_forks"]: print("  excluded fork %s (parent_session %s): %s"%(ex["session_id"],ex["parent_session"],ex["reason"]))
     note=fork_note(sessions)
     if note: print("note: %s"%note)
 
@@ -369,14 +370,14 @@ def main(argv=None):
     if args.harness != "pi":
         for flag,value in (("--project",args.project),("--session-file",args.session_file),("--leaf",args.leaf)):
             if value: ap.error("%s needs --harness pi"%flag)
-    elif args.session_file and args.store: ap.error("--session-file and --store are mutually exclusive")
+    elif args.session_file and (args.store or args.project): ap.error("--session-file cannot be combined with --store or --project; an explicit file skips project selection")
     elif args.leaf and not (args.session_file and len(args.session_file) == 1): ap.error("--leaf needs exactly one --session-file")
     cwd=os.getcwd(); money,truth,windows=load_config(cwd,args.config); since=dt.date.fromisoformat(args.since) if args.since else None
     if args.harness == "pi": return main_pi(args,cwd,money,truth,windows,since,started)
     store=Path(args.store) if args.store else default_store(cwd); problems=[]; all_sessions=scan(store,args.min_turns,since,money,truth,True,args.include_subagents,problems); sessions=all_sessions if args.include_workers else [s for s in all_sessions if s.kind=="main"]; report(sessions,windows,str(store),args.min_turns,time.monotonic()-started,args.json_out,args.flag,args.top,args.prompts,len(all_sessions),sum(s.kind=="worker" for s in all_sessions if not args.include_workers),meta={"problems":problems})
 
 def main_pi(args,cwd,money,truth,windows,since,started):
-    selection="explicit-files" if args.session_file else "explicit-dir" if args.store else "default-project-dir"; project=None if selection == "explicit-files" else (args.project or cwd)
+    selection="explicit-files" if args.session_file else "explicit-dir" if args.store else "default-project-dir"; project=None if selection == "explicit-files" else os.path.abspath(args.project or cwd)
     store=None if selection == "explicit-files" else Path(args.store) if args.store else pi_sessions.default_store(project)
     files,problems=pi_candidates(selection,store,args.session_file); found,counts=scan_pi(files,project,selection != "explicit-files",money,truth,args.leaf)
     all_sessions=keep_sessions(found,args.min_turns,since,money,truth); sessions=all_sessions if args.include_workers else [s for s in all_sessions if s.kind=="main"]

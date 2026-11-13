@@ -11,6 +11,15 @@ import re
 from collections import Counter
 from pathlib import Path
 
+
+def _reject_constant(name):
+    raise ValueError("non-finite number %s" % name)
+
+
+def loads_strict(line):
+    """json.loads that rejects NaN and Infinity, which are not JSON and which Pi's JSON.parse also rejects."""
+    return json.loads(line, parse_constant=_reject_constant)
+
 SUPPORTED_VERSIONS = (1, 2, 3)
 # A session with any of these problems is audited but reported `complete: false`.
 INCOMPLETE_KINDS = ("malformed_lines", "missing_field", "duplicate_id")
@@ -75,7 +84,7 @@ def load_file(path):
                 if not line.strip():
                     continue
                 try:
-                    obj = json.loads(line)
+                    obj = loads_strict(line)
                 except (ValueError, RecursionError):
                     obj = None
                 valid = isinstance(obj, dict)
@@ -130,19 +139,21 @@ def select_path(result, leaf=None):
             return unavailable("leaf_unsupported_v1", "version 1 files are linear; --leaf needs version 2 or 3")
         info.update(leaf_source="v1-linear", path_entries=len(result.entries))
         return list(result.entries), info
-    index, bad_parent = {}, set()
+    # Pi's loader indexes entries with Map.set, so the last entry with a repeated id wins.
+    index, refs = {}, {}
     for i, entry in enumerate(result.entries):
         eid = entry.get("id")
         if not isinstance(eid, str):
             result.problem("missing_field", "entry #%d: field id" % i)
             continue
-        if "parentId" not in entry or not (entry["parentId"] is None or isinstance(entry["parentId"], str)):
-            result.problem("missing_field", "entry %s: field parentId" % _ref(entry, i))
-            bad_parent.add(eid)
         if eid in index:
             result.problem("duplicate_id", "entry %s: repeated id" % _ref(entry, i))
-            continue
-        index[eid] = entry
+        index[eid], refs[eid] = entry, _ref(entry, i)
+    bad_parent = set()
+    for eid, entry in index.items():
+        if "parentId" not in entry or not (entry["parentId"] is None or isinstance(entry["parentId"], str)):
+            result.problem("missing_field", "entry %s: field parentId" % refs[eid])
+            bad_parent.add(eid)
     if leaf is not None:
         if leaf not in index:
             return unavailable("leaf_not_found", "no entry with id %s" % str(leaf)[:40])

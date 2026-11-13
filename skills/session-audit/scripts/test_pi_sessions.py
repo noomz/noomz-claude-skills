@@ -672,6 +672,56 @@ class GapTests(PiCase):
         self.assertEqual((data["reasons"], data["files"]["before_since"]), ({"before_since": 1}, 1))
 
 
+class ReviewFixTests(PiCase):
+    def test_non_finite_usage_is_a_malformed_line_not_a_crash(self):
+        for literal in ("NaN", "Infinity", "-Infinity"):
+            with self.subTest(literal=literal):
+                good = json.dumps(message("a1", "u", "assistant", "done", 2, usage=tokens(1, 2)))
+                bad = good.replace('"output": 2', '"output": ' + literal)
+                path = write(self.store / "n.jsonl", [header("nan", str(self.project)), message("u", None, "user", "go", 1), good.replace('"a1"', '"a0"'), bad])
+                out, data = self.pi("--session-file", str(path), "--leaf", "a0")
+                self.assertFalse(data["sessions"][0]["complete"])
+                self.assertIn("malformed_lines", [p["kind"] for p in data["problems"]])
+
+    def test_relative_and_trailing_slash_project_resolve_to_pi_dir(self):
+        old = os.environ.get("PI_CODING_AGENT_DIR")
+        self.addCleanup(lambda: os.environ.__setitem__("PI_CODING_AGENT_DIR", old) if old is not None else os.environ.pop("PI_CODING_AGENT_DIR", None))
+        os.environ["PI_CODING_AGENT_DIR"] = str(self.root / "agent")
+        store = pi_sessions.default_store(str(self.project))
+        store.mkdir(parents=True)
+        write(store / "s.jsonl", [header("rel", str(self.project))] + linear(2))
+        os.chdir(self.project)
+        for project in (".", str(self.project) + "/"):
+            with self.subTest(project=project):
+                _, data = self.pi("--project", project)
+                self.assertEqual((data["store"], data["project"], len(data["sessions"])), (str(store), str(self.project), 1))
+
+    def test_project_with_session_file_is_rejected(self):
+        path = write(self.store / "x.jsonl", [header()] + linear(1))
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as ctx:
+            session_audit.main(["--harness", "pi", "--project", str(self.project), "--session-file", str(path)])
+        self.assertEqual(ctx.exception.code, 2)
+
+    def test_duplicate_id_last_wins_and_bad_copy_does_not_poison_kept_entry(self):
+        good = [header("dup", str(self.project)), message("r", None, "user", "go", 1), message("x", "r", "assistant", "first", 2)]
+        bad_first = dict(message("x", 5, "assistant", "broken", 3))
+        res = pi_sessions.load_file(write(self.store / "a.jsonl", good[:2] + [bad_first] + good[2:]))
+        path, info = pi_sessions.select_path(res)
+        self.assertEqual(([e["id"] for e in path], info["leaf_id"]), (["r", "x"], "x"))
+        self.assertIn("duplicate_id", [p["kind"] for p in res.problems])
+        self.assertFalse(res.complete)
+        res = pi_sessions.load_file(write(self.store / "b.jsonl", good + [message("x", "r", "assistant", "second", 3)]))
+        path, _ = pi_sessions.select_path(res)
+        self.assertEqual(path[-1]["message"]["content"], "second")
+
+    def test_lineage_and_usage_print_full_session_ids(self):
+        write(self.store / "a.jsonl", [header("abc12345-one", str(self.project))] + linear(2))
+        write(self.store / "b.jsonl", [header("abc12345-two", str(self.project))] + linear(2))
+        out, _ = self.pi("--store", str(self.store), "--project", str(self.project))
+        self.assertIn("abc12345-one", out)
+        self.assertIn("abc12345-two", out)
+
+
 class ClaudeCompatTests(PiCase):
     def test_claude_report_names_harness_and_keeps_keys(self):
         records = [{"type": "user", "sessionId": "c", "timestamp": "2026-09-10T00:00:00Z", "message": {"content": "go"}},

@@ -144,6 +144,18 @@ class ClaudeProblemTests(unittest.TestCase):
             sessions = session_audit.scan(td, 1, None, MONEY, TRUTH, problems=problems)
             self.assertEqual(sessions[0].assistant, 1)
             self.assertEqual([(p["kind"], p["detail"]) for p in problems], [("malformed_lines", "1 line(s) skipped")])
+            self.assertFalse(sessions[0].complete)
+
+    def test_clean_file_is_complete_and_deep_nesting_is_malformed_not_a_crash(self):
+        records = [rec("user", "deep", "2026-09-10T00:00:00Z", "work"), assistant("deep", "2026-09-10T00:01:00Z", [])]
+        with tempfile.TemporaryDirectory() as td:
+            Path(td, "x.jsonl").write_text("\n".join(json.dumps(r) for r in records) + "\n")
+            self.assertTrue(session_audit.scan(td, 1, None, MONEY, TRUTH, problems=[])[0].complete)
+            Path(td, "x.jsonl").write_text("\n".join(json.dumps(r) for r in records) + "\n" + "[" * 200000 + "\n")
+            problems = []
+            sessions = session_audit.scan(td, 1, None, MONEY, TRUTH, problems=problems)
+            self.assertEqual([p["kind"] for p in problems], ["malformed_lines"])
+            self.assertFalse(sessions[0].complete)
 
 # Keys the Claude JSON report carried before Pi support (T5); Claude output must keep them.
 PRE_T5_TOP = {"store", "sessions", "prompts", "aggregates"}

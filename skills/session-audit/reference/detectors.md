@@ -51,6 +51,8 @@ Two scopes, each entry counted once: `path` (entries on the selected path) and `
 
 Text and JSON list per-file problems with path, kind, and detail (ids, counts, versions; never transcript text): `malformed_lines`, `missing_field`, `duplicate_id`, `unreadable`, `missing_header`, `unsupported_version`, `leaf_unknown`, `leaf_not_found`, `leaf_unsupported_v1`, `broken_lineage`, `lineage_cycle`, `store_not_found`, `cwd_missing`, `duplicate_session_id` (informational; the second file's id gets a `~2` suffix). Sessions with the first three kinds are audited but `complete: false`. `store_not_found` means nothing was scanned, `cwd_missing` excludes the file from project selection, and `duplicate_session_id` is informational; every other kind makes the file unavailable. Claude runs report `malformed_lines` and `unreadable` the same way. Reports contain prompt excerpts: do not paste them into public issues.
 
+A repeated entry id keeps the last entry, as Pi's own loader does, and is reported as `duplicate_id`. A line that holds `NaN` or `Infinity` is not JSON and counts under `malformed_lines`. A Claude session read from a file with malformed lines, or from a file that could not be read to the end, is reported `complete: false`.
+
 ## Prompt handling
 
 Prompt wrapper blocks — local-command output, command metadata, system reminders, and task notifications — are removed before top-level prompts are counted. Worker sessions (identified by a teammate message or "You are a subagent" in their first top-level prompt) are excluded from detectors and stall counts by default; use `--include-workers` to include them.

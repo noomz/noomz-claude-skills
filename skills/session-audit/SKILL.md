@@ -25,9 +25,9 @@ Add `--harness pi`. Choose exactly one selection mode; the report shows which on
 
 | Mode | Flags | Behavior |
 |---|---|---|
-| `default-project-dir` | none, or `--project DIR` | Scans `*.jsonl` directly in `${PI_CODING_AGENT_DIR:-~/.pi/agent}/sessions/--<path>--/`, where `<path>` is the project path without its leading separator and with `/`, `\` and `:` replaced by `-`. `--project` defaults to the current directory. |
+| `default-project-dir` | none, or `--project DIR` | Scans `*.jsonl` directly in `${PI_CODING_AGENT_DIR:-~/.pi/agent}/sessions/--<path>--/`, where `<path>` is the project path without its leading separator and with `/`, `\` and `:` replaced by `-`. `--project` defaults to the current directory; a relative path is resolved against it. |
 | `explicit-dir` | `--store DIR` | Same non-recursive scan of a Pi session directory. Use it for a custom `--session-dir`, `PI_CODING_AGENT_SESSION_DIR`, or `sessionDir`; the scanner never guesses a past launch's override. |
-| `explicit-files` | `--session-file FILE` (repeatable) | Audits those files. No project check; the header `cwd` is still reported. Cannot combine with `--store`. |
+| `explicit-files` | `--session-file FILE` (repeatable) | Audits those files. No project check; the header `cwd` is still reported. Cannot combine with `--store` or `--project`. |
 
 In the two directory modes, only files whose header `cwd` equals the project are audited; others are excluded and counted (`excluded other project`), so a shared directory is safe. `--leaf ID` picks an explicit leaf and needs exactly one `--session-file`. Without it the leaf is the last appended entry, and a file whose last line is malformed is reported unavailable rather than guessed.
 
