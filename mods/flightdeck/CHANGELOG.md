@@ -4,7 +4,7 @@
 
 - Add opt-in managed pi-bolt sessions. `/flightdeck managed on` enables them, and each prompt starts one new `pi-bolt --mode json --no-session` session, capped at two. The pane shows live, completed, or unavailable, and never a transcript.
 - Keep the managed session ID and event type in module memory only. The prompt, answer, paths, and raw events are not retained. A partial event line longer than 8 KiB is dropped rather than held. Managed-off, reset, clear, and resume abort the children and drop the rows, and the aborted run reports unavailable.
-- An open pane redraws when a managed run starts, changes phase, ends, is cancelled, or is turned off. The two-session cap is checked and reserved in one step, so concurrent prompts cannot launch a third child, and a prompt that races managed-off or reset launches nothing.
+- An open pane redraws when a managed run starts, changes phase, ends, is cancelled, or is turned off. The two-session cap is checked and reserved in one step, so concurrent prompts cannot launch a third child, and a prompt that races managed-off or reset launches nothing. A run whose first event is not a session header stops its child, so an unavailable row never hides a live process from the cap.
 - The mini layout shows managed runs only in its three agent rows and counts the rest in its `+N more agents` line, so it stays within eight rows.
 - Leave passive external cards and native permission controls unchanged.
 

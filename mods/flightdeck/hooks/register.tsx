@@ -559,7 +559,12 @@ export const register: Register = (on, options) => {
           if (!sawHeader) {
             const header = managedHeader(line)
             sawHeader = true
-            keep(header ? identifyManaged(activity, spawnKey, header.sessionId, at) : failManaged(activity, spawnKey, at))
+            if (header) keep(identifyManaged(activity, spawnKey, header.sessionId, at))
+            else {
+              // An ended row no longer counts toward the cap, so its process must end too.
+              keep(failManaged(activity, spawnKey, at))
+              stop()
+            }
           } else {
             const phase = managedPhase(line)
             if (phase) keep(advanceManaged(activity, spawnKey, phase, at))

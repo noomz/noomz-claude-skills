@@ -317,3 +317,31 @@ test('a managed prompt racing a reset launches nothing', { timeoutMs: 20_000 }, 
   expect((await raced).text).toMatch(/Nothing was launched/)
   expect(launched).toEqual([])
 })
+
+test('a run whose first event is not a session header stops its child, so the cap still counts every process', { timeoutMs: 20_000 }, async ($, on) => {
+  stateStoreWithoutRedraw(on)
+  mock.clock(on)
+  let release: () => void = () => undefined
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const stopped: string[] = []
+  on('ui.status', () => ({ value: undefined }))
+  on('ui.log', () => ({ value: undefined }))
+  on('command.register', (_$, e) => ({ value: { command: e.name } }))
+  on('session.start', (_$, e) => ({ cwd: e.cwd }))
+  on('process.spawn', async function* (_$, e) {
+    try {
+      yield { stream: 'stdout' as const, text: event('not_a_header') }
+      await gate
+      return { value: { code: 0, signal: null } }
+    } finally {
+      stopped.push(e.argv.at(-1) ?? '')
+    }
+  })
+  await $.session.start({ cwd: '/work' } as never)
+  await $.command.run({ command: 'flightdeck', args: 'managed on' } as never)
+  const bad = $.command.run({ command: 'flightdeck', args: 'managed bad' } as never)
+  for (let i = 0; i < 200 && !stopped.length; i++) await Promise.resolve()
+  expect(stopped).toEqual(['bad'])
+  release()
+  expect((await bad).text).toMatch(/unavailable/)
+})
