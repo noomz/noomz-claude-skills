@@ -18,14 +18,34 @@ test('recognizes the observed standalone agent launch shapes', () => {
   expect(externalProvider('grok --single "Reply OK only."')).toBe('grok')
 })
 
-test('rejects ambiguous shell syntax, wrappers and non-agent commands', () => {
+test('recognizes launches wrapped in redirects, chains and substitutions', () => {
+  // The two worker launches from a real session that drew no card before.
+  expect(externalProvider('codex exec -m gpt-6.1-sol -s workspace-write -C . -o .planning/workers/codex-backend.out "$(cat .planning/workers/codex-backend.md)" > .planning/workers/codex-backend.log 2>&1; echo "codex exit $?"; tail -30 .planning/workers/codex-backend.out')).toBe('codex')
+  expect(externalProvider('grok -m grok-4.7 --permission-mode acceptEdits --allow "Bash(node --check:*)" --no-subagents --disable-web-search --prompt-file .planning/workers/grok-ui.md > .planning/workers/grok-ui.out 2>&1; echo "grok exit $?"')).toBe('grok')
+  for (const [command, provider] of [
+    ['cd /tmp && codex exec --skip-git-repo-check -s read-only "reply OK" 2>&1 | tail -3', 'codex'],
+    ['codex e x &', 'codex'],
+    ['codex exec `cat brief`', 'codex'],
+    ['codex exec x\necho done', 'codex'],
+    ['codex exec \\\n  -m m x', 'codex'],
+    ['/opt/homebrew/bin/codex exec x >>log', 'codex'],
+    ['OPENAI_LOG=0 codex exec x', 'codex'],
+    ["codex exec - <<'EOF'\ngrok --help \"unbalanced\nEOF\necho done", 'codex'],
+    ['cat brief | pi -p --no-session', 'pi'],
+    ['pi --model deepseek/x -p "$(cat brief)" &>out', 'pi'],
+    ['hermes chat --oneshot --query-file brief.md', 'hermes'],
+    ['grok -p "hi" </dev/null', 'grok'],
+    ['# worker\ngrok --prompt-json \'{"a":1}\'', 'grok'],
+  ] as const) expect(externalProvider(command), command).toBe(provider)
+})
+
+test('rejects unreadable shell, wrappers and non-agent commands', () => {
   for (const command of [
-    'codex exec --help', 'codex exec --version', 'codex exec --bg x',
-    'echo codex exec x', 'env codex exec x', 'sh -c "codex exec x"',
-    'codex exec x | tee out', 'codex exec x; echo done', 'codex exec x > out',
-    'codex exec x &', 'codex exec $(whoami)', 'codex exec `whoami`',
-    'codex exec "unterminated', 'codex exec x\necho done', 'codex exec \\x',
-    'pi --help', 'hermes chat -q hello', 'grok --help',
+    'codex exec --help', 'codex exec --version', 'codex exec --bg x', 'codex --version', 'codex exec',
+    'echo codex exec x', 'env codex exec x', 'sh -c "codex exec x"', 'rg "codex exec" .', 'git commit -m "grok -p x"',
+    'which codex grok pi; codex --version 2>&1 | head -1',
+    'codex exec "unterminated', 'codex exec "$(cat brief"', 'codex exec x >', "codex exec - <<EOF\nno end",
+    'pi --help', 'pi -p', 'hermes chat -q hello', 'grok --help', 'grok -m grok-4.7', 'A=1 B=2',
   ]) expect(externalProvider(command), command).toBe(null)
 })
 
