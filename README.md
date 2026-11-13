@@ -49,6 +49,8 @@ Each clip is a real Claude Code session with only that mod loaded, recorded with
 
 Install like a skill: `/plugin install bang-actions@noomz-claude-skills`, `/plugin install pinboard@noomz-claude-skills` or `/plugin install flightdeck@noomz-claude-skills`.
 
+**Code Mode.** Claude Code's experimental Code Mode (`CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1`, Claude Code 2.1.323) does not start while any of these three mods is enabled. Claude Code prints `Code Mode (experimental) isn't available: it doesn't yet work with an installed mod ... that checks tool calls` and starts with the ordinary tools. At startup it reads the source of each installed mod's hooks module. It refuses Code Mode when the module hooks tool calls or agents (`tool.call`, `tool.check`, `agent.offer`, `agent.spawn`, `session.send` or a classic tool, permission, task or elicitation event). It does this even when the hook only watches. bang-actions hooks `tool.check`, pinboard hooks `tool.call`, and flightdeck hooks `tool.check`, `tool.call`, `agent.offer` and `agent.spawn`. The check reads the source, not what runs, so no setting inside a mod can clear it. To use Code Mode, disable the mods (`claude plugin disable <mod>@noomz-claude-skills`, or `/plugin`), then restart Claude Code. Enable them again to get them back. See [#45](https://github.com/noomz/noomz-claude-skills/issues/45).
+
 ## Installation
 
 ### Codex — repo marketplace

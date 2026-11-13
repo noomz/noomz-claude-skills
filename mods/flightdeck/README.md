@@ -252,6 +252,8 @@ In `/config`, or under `pluginConfigs["flightdeck"].options` in `settings.json`:
 
 **On a machine with managed settings, or in a Team or Enterprise organization.** Claude Code seats the built-in `cc-plugin-sec-default` plugin first there. It keeps classic hooks (`classic.*`), `session.append` and `prompt.compose` away from plugins you install, and says so in a start-up line for each skipped hook. Flightdeck hooks none of them, so it prints no such line and every panel works. `claude --debug` logs whether it is seated in a line starting `cc-plugin-sec-default@builtin`.
 
+**Code Mode says it isn't available.** With `CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1` (Claude Code 2.1.323), Claude Code refuses Code Mode while a mod that hooks tool calls or agents is enabled. Flightdeck hooks `tool.check`, `tool.call`, `agent.offer` and `agent.spawn`. Claude Code decides this by reading the hooks module's source at startup, so turning the gate or a panel off does not help. To use Code Mode, run `claude plugin disable flightdeck@noomz-claude-skills` (or use `/plugin`) and restart Claude Code. Enable it again to get the pane back. See [#45](https://github.com/noomz/noomz-claude-skills/issues/45).
+
 **Colours look wrong.** Set `palette` to `pastel` in `/config`.
 
 **It's too much motion.** Set `motion` to `off`.

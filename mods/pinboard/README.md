@@ -94,6 +94,10 @@ Some text is masked that holds no secret. The mod masks what the flightdeck mod'
 /plugin install pinboard@noomz-claude-skills
 ```
 
+## Code Mode
+
+With `CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1` (Claude Code 2.1.323), Claude Code refuses Code Mode while a mod that hooks tool calls is enabled. Pinboard serves its own tool through `tool.call`, so it counts. Claude Code decides this by reading the hooks module's source at startup, so no setting inside the mod can clear it. To use Code Mode, run `claude plugin disable pinboard@noomz-claude-skills` (or use `/plugin`) and restart Claude Code. Enable it again to get the board back. See [#45](https://github.com/noomz/noomz-claude-skills/issues/45).
+
 ## Develop
 
 ```bash

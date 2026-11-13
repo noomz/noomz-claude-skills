@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.1
+
+- Document that Claude Code 2.1.323's experimental Code Mode does not start while flightdeck is enabled, and how to disable the mod to use it (#45). No code changes.
+
 ## 0.9.0
 
 - Add opt-in managed pi-bolt sessions. `/flightdeck managed on` enables them, and each prompt starts one new `pi-bolt --mode json --no-session` session, capped at two. The pane shows live, completed, or unavailable, and never a transcript.
