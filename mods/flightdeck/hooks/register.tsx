@@ -420,7 +420,12 @@ export const register: Register = (on, options) => {
   let managedEpoch = 0
   let managedSequence = 0
   const managedRuns = new Map<string, { activity: ManagedActivity; stop: () => void }>()
-  const managedView = (): ManagedActivity[] => [...managedRuns.values()].map(run => run.activity).sort((a, b) => a.startedAt - b.startedAt || a.spawnKey.localeCompare(b.spawnKey))
+  // Live runs first, oldest first, then finished runs newest first: a row budget never hides a running child behind history.
+  const managedView = (): ManagedActivity[] => {
+    const all = [...managedRuns.values()].map(run => run.activity)
+    const byStart = (a: ManagedActivity, b: ManagedActivity) => a.startedAt - b.startedAt || a.spawnKey.localeCompare(b.spawnKey)
+    return [...all.filter(a => a.endedAt === null).sort(byStart), ...all.filter(a => a.endedAt !== null).sort(byStart).reverse()]
+  }
   const stopManaged = () => {
     managedEpoch += 1
     for (const run of managedRuns.values()) run.stop()
@@ -535,6 +540,12 @@ export const register: Register = (on, options) => {
       let pending = ''
       let skipping = false
       const current = () => epoch === managedEpoch ? managedRuns.get(spawnKey) : undefined
+      // A cancel writes the shared row; read it back before each transition so it is never overwritten.
+      const latest = () => {
+        const run = current()
+        if (run) activity = run.activity
+        return activity
+      }
       const keep = (next: ManagedActivity) => {
         activity = next
         const run = current()
@@ -554,20 +565,20 @@ export const register: Register = (on, options) => {
         const lines = pending.split('\n')
         pending = lines.pop() ?? ''
         for (const line of lines) {
-          if (!current() || activity.endedAt !== null) return
+          if (!current() || latest().endedAt !== null) return
           const at = await $.clock.now()
           if (!sawHeader) {
             const header = managedHeader(line)
             sawHeader = true
-            if (header) keep(identifyManaged(activity, spawnKey, header.sessionId, at))
+            if (header) keep(identifyManaged(latest(), spawnKey, header.sessionId, at))
             else {
               // An ended row no longer counts toward the cap, so its process must end too.
-              keep(failManaged(activity, spawnKey, at))
+              keep(failManaged(latest(), spawnKey, at))
               stop()
             }
           } else {
             const phase = managedPhase(line)
-            if (phase) keep(advanceManaged(activity, spawnKey, phase, at))
+            if (phase) keep(advanceManaged(latest(), spawnKey, phase, at))
           }
         }
         if (pending.length > MANAGED_LINE_CAP) {
@@ -579,13 +590,15 @@ export const register: Register = (on, options) => {
         for (;;) {
           const step = await child.next()
           if (step.done) {
-            if (current()) keep(finishManaged(activity, spawnKey, step.value.code, step.value.signal, await $.clock.now()))
+            const at = await $.clock.now()
+            if (current()) keep(finishManaged(latest(), spawnKey, step.value.code, step.value.signal, at))
             break
           }
           if (step.value.stream === 'stdout') await take(step.value.text)
         }
       } catch {
-        if (current()) keep(failManaged(activity, spawnKey, await $.clock.now()))
+        const at = await $.clock.now()
+        if (current()) keep(failManaged(latest(), spawnKey, at))
       }
       if (epoch !== managedEpoch || !current()) return { text: 'Flightdeck managed pi-bolt unavailable. No transcript is available.' }
       const finished = [...managedRuns.entries()].filter(([, run]) => run.activity.endedAt !== null)
@@ -1310,7 +1323,7 @@ export const register: Register = (on, options) => {
       )
     }
 
-    const managedRows = () => managedView().slice(-2).map(c => (
+    const managedRows = () => managedView().slice(0, 2).map(c => (
       <Text color={C.agent} wrap="truncate">{`managed ${c.provider} · ${managedLabel(c)}${c.status === 'cancel-requested' ? ' · cancel requested' : ''}${c.phase ? ` · ${c.phase}` : ''} · no transcript`}</Text>
     ))
 
@@ -1524,7 +1537,7 @@ export const register: Register = (on, options) => {
       const liveExternal = externalSlots ? x.cards.slice(-externalSlots) : []
       const managedSlots = Math.max(0, externalSlots - liveExternal.length)
       const managedAll = managedView()
-      const liveManaged = managedSlots ? managedAll.slice(-managedSlots) : []
+      const liveManaged = managedAll.slice(0, managedSlots)
       const hidden = cards.length - live.length + x.cards.length - liveExternal.length + managedAll.length - liveManaged.length
       const counts = ` ${s.rule} allowed · ${s.cleared} ${decider}${s.granted > 0 ? ` · ${s.granted} approved` : ''}${s.ask > 0 ? ` · ${s.ask} pending` : ''} · ${s.deny} denied`
       const showGate = control.gateVisible ?? cfg.panels.includes('gate')

@@ -345,3 +345,54 @@ test('a run whose first event is not a session header stops its child, so the ca
   release()
   expect((await bad).text).toMatch(/unavailable/)
 })
+
+test('a cancel during a pending read is kept, so a clean exit afterwards still reports unavailable', { timeoutMs: 20_000 }, async ($, on) => {
+  stateStoreWithoutRedraw(on)
+  mock.clock(on)
+  let release: () => void = () => undefined
+  const gate = new Promise<void>(resolve => { release = resolve })
+  on('ui.status', () => ({ value: undefined }))
+  on('ui.log', () => ({ value: undefined }))
+  on('command.register', (_$, e) => ({ value: { command: e.name } }))
+  on('session.start', (_$, e) => ({ cwd: e.cwd }))
+  on('process.spawn', async function* () {
+    yield { stream: 'stdout' as const, text: header() }
+    await gate
+    yield { stream: 'stdout' as const, text: event('turn_start') }
+    return { value: { code: 0, signal: null } }
+  })
+  await $.session.start({ cwd: '/work' } as never)
+  await $.command.run({ command: 'flightdeck', args: 'managed on' } as never)
+  const live = $.command.run({ command: 'flightdeck', args: 'managed pong' } as never)
+  for (let i = 0; i < 200; i++) await Promise.resolve()
+  expect((await $.command.run({ command: 'flightdeck', args: 'managed cancel' } as never)).text).toMatch(/cancel requested/)
+  release()
+  expect((await live).text).toMatch(/unavailable/)
+})
+
+test('a live managed run stays on the pane when newer runs have finished', { timeoutMs: 20_000 }, async ($, on) => {
+  stateStoreWithoutRedraw(on)
+  mock.clock(on)
+  let release: () => void = () => undefined
+  const gate = new Promise<void>(resolve => { release = resolve })
+  on('ui.status', () => ({ value: undefined }))
+  on('ui.log', () => ({ value: undefined }))
+  on('command.register', (_$, e) => ({ value: { command: e.name } }))
+  on('session.start', (_$, e) => ({ cwd: e.cwd }))
+  on('process.spawn', async function* (_$, e) {
+    yield { stream: 'stdout' as const, text: header() }
+    if (e.argv.at(-1) === 'slow') await gate
+    return { value: { code: 0, signal: null } }
+  })
+  await $.session.start({ cwd: '/work' } as never)
+  await $.command.run({ command: 'flightdeck', args: 'managed on' } as never)
+  const slow = $.command.run({ command: 'flightdeck', args: 'managed slow' } as never)
+  for (let i = 0; i < 200; i++) await Promise.resolve()
+  expect((await $.command.run({ command: 'flightdeck', args: 'managed one' } as never)).text).toMatch(/completed/)
+  expect((await $.command.run({ command: 'flightdeck', args: 'managed two' } as never)).text).toMatch(/completed/)
+  const ui = await $.ui.mount(managedPane(120))
+  expect(await ui.find({ text: /^managed pi-bolt · live/ })).toBeDefined()
+  await ui.unmount()
+  release()
+  await slow
+})
