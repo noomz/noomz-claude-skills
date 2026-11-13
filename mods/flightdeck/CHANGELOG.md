@@ -3,7 +3,7 @@
 ## 0.9.2
 
 - Track plan mode from Claude's own `EnterPlanMode` and `ExitPlanMode` calls in the main loop too. On Team and Enterprise accounts `cc-plugin-sec-default` skips the `prompt.attachment` hook that read plan mode, so the main box never showed it there. A refused or failed call, or one from a subagent, changes nothing.
-- Correct Troubleshooting: flightdeck does print a skipped-hook line under `cc-plugin-sec-default`, for `prompt.attachment`. List the events it keeps from installed plugins and the managed-plugin route.
+- Correct Troubleshooting: flightdeck does print a skipped-hook line under `cc-plugin-sec-default`, for `prompt.attachment`. List the events it keeps from installed plugins, note that the compaction count stays empty there because `session.compact` is skipped too, and name the managed-plugin route.
 
 ## 0.9.1
 

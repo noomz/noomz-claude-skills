@@ -98,7 +98,7 @@ Some text is masked that holds no secret. The mod masks what the flightdeck mod'
 
 On a machine with managed settings, or in a Team or Enterprise organization, Claude Code seats the built-in `cc-plugin-sec-default` plugin ahead of the plugins you install. It keeps prompt-content events away from them, `prompt.compose` included. Pinboard adds the board to the system prompt through `prompt.compose`, so there the board does not reach the system prompt. At the first prompt Claude Code prints `pinboard: its prompt.compose hook was skipped. "cc-plugin-sec-default" runs first and sent the event on past it.`
 
-The pane, `/pinboard audit` and the tool still work. Each accepted update returns the whole board as its result, so Claude reads the board each time it changes it. What Claude loses is the copy that stays in the system prompt. After `/compact` or a resume it no longer sees the board, and it doesn't see a link pinned from another tool's output until its next update. No setting inside a mod changes this. An administrator who lists pinboard as a managed plugin seats it outside the plugins people install, where it gets `prompt.compose`.
+The pane, `/pinboard audit` and the tool still work. Each accepted update returns the whole board as its result, so Claude reads the board each time it changes it. What Claude loses is the copy that stays in the system prompt: after `/compact` or a resume it no longer sees the board until its next update. Links are never part of what Claude reads, on any account; they show in the pane only. No setting inside a mod changes this. An administrator who lists pinboard as a managed plugin seats it outside the plugins people install, where it gets `prompt.compose`.
 
 ## Code Mode
 
