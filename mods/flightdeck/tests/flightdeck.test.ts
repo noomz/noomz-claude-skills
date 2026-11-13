@@ -456,6 +456,33 @@ test('a main-loop plan-mode row shows plan mode, its exit row clears it, and a s
   expect(mode()).toBe('')
 })
 
+test("Claude's plan-mode tools set and clear plan mode in the main loop only, and a refused or failed call changes nothing", async ($, on) => {
+  engine(on)
+  const values = stateStoreWithoutRedraw(on)
+  let answer: object = { result: {}, text: 'ok' }
+  on('tool.call', () => answer as never)
+  const mode = () => (flightdeck(values).main as { mode?: string } | undefined)?.mode
+  let n = 0
+  const call = (tool: 'EnterPlanMode' | 'ExitPlanMode', agentId?: string) =>
+    $.tool.call({ tool, tool_use_id: `pm${++n}`, agentId, ...(tool === 'ExitPlanMode' ? { plan: 'p' } : {}) } as never)
+  await call('EnterPlanMode', 'sub1')
+  expect(mode() ?? '').toBe('')
+  answer = { deny: 'no' }
+  await call('EnterPlanMode')
+  expect(mode() ?? '').toBe('')
+  answer = { result: {}, text: 'ok' }
+  await call('EnterPlanMode')
+  expect(mode()).toBe('plan')
+  answer = { result: {}, text: 'rejected', isError: true }
+  await call('ExitPlanMode')
+  expect(mode()).toBe('plan')
+  answer = { result: {}, text: 'ok' }
+  await call('ExitPlanMode', 'sub1')
+  expect(mode()).toBe('plan')
+  await call('ExitPlanMode')
+  expect(mode()).toBe('')
+})
+
 test('session identity is hidden across an end and refreshed after the host changes it', async ($, on) => {
   engine(on)
   stateStoreWithoutRedraw(on)
