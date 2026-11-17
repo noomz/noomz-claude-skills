@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.11.0
+
+- Adapt auto layout to the terminal body size. Short docked panes use a summary. Inline summaries take at most eight rows and one quarter of the measured screen height, bounded by the available body rows. Agent rows shrink with that budget while the hygiene row stays visible.
+- Draw an empty, zero-size body below 40 body columns, two body rows, or 16 measured terminal rows. Keep the pane and session state so content returns when a later render has enough room. The host still owns the frame and dock space, and does not guarantee redraws for screen-height-only changes. Remote surfaces keep their existing layout rules.
+
 ## 0.10.0
 
 - Detect external agent launches inside chains, pipelines, redirects, and substitutions. A launch such as `codex exec "$(cat brief.md)" > out.log 2>&1; echo $?` drew no card before, because any redirect, `;`, or `$` made Flightdeck skip the whole command. It now splits the line into simple commands, skips redirects and heredoc bodies, and names the card after the first command that launches an agent.

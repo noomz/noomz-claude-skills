@@ -116,8 +116,12 @@ An approved row has a **retry** button. Retry tells the loop that was refused to
 ## Where it runs
 
 - **Fullscreen terminal:** docked beside the transcript; two columns from 110 columns wide.
-- **Main-screen terminal:** inline above the prompt, as the 8-row summary, with the hygiene cell on its last row.
+- **Main-screen terminal:** inline above the prompt, with a summary capped at eight rows, one quarter of the measured screen height, and the available body rows. The hygiene cell stays on its last row.
 - **Desktop app and other surfaces:** the same panels are drawn in tests, including the SVG time axis. Live behavior on the desktop app, VS Code, and mobile has not been verified. VS Code and mobile cannot animate, so connectors and clocks are static there.
+
+In `auto` layout, a terminal pane with fewer than 24 body rows uses the summary instead of the full panels. The summary reduces its agent rows and counts omitted agents when there is room. Below 40 body columns, two body rows, or 16 measured screen rows, Flightdeck draws an empty, zero-size body. It does not close the pane or change the selected layout, so its content returns on the next render with enough room. Claude Code still owns the frame and dock space. Explicit `compact` and `wide` layouts keep their full panels unless the body must hide. `wide` still needs 110 body columns.
+
+The renderer reads `bodyColumns` and `scroll.bodyRows` on each render. The host reports screen height through `viewport.rows`, but its API does not guarantee a redraw for a screen-height-only change. When screen size is unavailable, inline summaries keep the eight-row cap and still respect the body row limit.
 
 With `openOnStart`, the pane opens by itself when a session starts, in terminals at least 144 columns wide; below that, `/flightdeck` opens it. Colours come from your Claude Code theme, so light, dark and colour-blind themes all read.
 
@@ -235,7 +239,7 @@ In `/config`, or under `pluginConfigs["flightdeck"].options` in `settings.json`:
 | `architectLabel` | `ARCHITECT` | the architect's name in the pane |
 | `gateLabel` | `GATE` | the permission panel's name |
 | `panels` | `main,architect,gate,agents,loops,receipt,log` | which panels show, in order |
-| `layout` | `auto` | `mini`, `compact`, `wide`, or `auto` (mini inline, wide from 110 columns docked) |
+| `layout` | `auto` | `mini`, `compact`, `wide`, or `auto` (size-bounded mini inline or below 24 terminal body rows, wide from 110 body columns docked) |
 | `maxCards` | `3` | cards side by side before swimlanes (1–6); fewer if the pane is too narrow |
 | `motion` | `while-active` | `off` keeps connectors still |
 | `moments` | `true` | show the inferred consult moments |
