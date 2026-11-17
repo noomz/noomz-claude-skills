@@ -6,6 +6,7 @@ import { EMPTY_EXTERNAL, abortExternal, externalId, externalLanes, externalNotic
 import { MANAGED_LIMIT, MANAGED_LINE_CAP, advanceManaged, failManaged, finishManaged, identifyManaged, managedArgv, managedHeader, managedLabel, managedPhase, managedPrompt, requestCancelManaged, startManaged } from './managed'
 import type { ManagedActivity } from './managed'
 import { scrub } from './hygiene'
+import { paneLayout } from './layout'
 import type { Hygiene, SafeText, Scrubbed } from './hygiene'
 import {
   CAP,
@@ -953,10 +954,11 @@ export const register: Register = (on, options) => {
     ])
     const currentSessionId = scrub(await $.session.id().catch(() => ''), CAP.sessionId).text
     const sessionId = currentSessionId && currentSessionId !== endedSessionId ? currentSessionId : 'unavailable'
-    const W = Math.max(40, e.props.bodyColumns)
-    const layout = v.layout ?? cfg.layout
-    const isWide = (layout === 'wide' || layout === 'auto') && W >= 110
-    const colW = isWide ? Math.floor((W - 2) / 2) : W
+    const layout = paneLayout({ layout: v.layout ?? cfg.layout, surface: e.surface, props: e.props, viewport: e.viewport })
+    if (layout.kind === 'hidden') return <Box width={0} height={0} />
+    const W = layout.columns
+    const isWide = layout.kind === 'wide'
+    const colW = layout.kind === 'mini' ? W : layout.columnWidth
     const modelName = prettyModel(m.model)
     const speed = speedOf(m.speed)
     const viewed = e.props.view?.agentId ?? null
@@ -1534,18 +1536,21 @@ export const register: Register = (on, options) => {
           })()
         : null
 
-    // Inline above the prompt (the terminal's main screen), the pane is a summary of at most 8 rows.
-    const isMini = layout === 'mini' || (layout === 'auto' && e.props.placement === 'inline')
-    if (isMini) {
-      const live = [...cards.filter(c => c.status === 'running'), ...cards.filter(c => c.status !== 'running').reverse()].slice(0, 3)
-      const externalSlots = Math.max(0, 3 - live.length)
+    if (layout.kind === 'mini') {
+      const showGate = (control.gateVisible ?? cfg.panels.includes('gate')) && g.recent.length > 0 && layout.rows >= 3
+      const showLoops = lp.length > 0 && layout.rows >= 5
+      const managedAll = managedView()
+      const totalAgents = cards.length + x.cards.length + managedAll.length
+      const fixedRows = 2 + Number(showGate) + Number(showLoops)
+      const availableRows = Math.max(0, layout.rows - fixedRows)
+      const agentSlots = Math.min(3, Math.max(0, availableRows - Number(totalAgents > Math.min(3, availableRows))))
+      const live = [...cards.filter(c => c.status === 'running'), ...cards.filter(c => c.status !== 'running').reverse()].slice(0, agentSlots)
+      const externalSlots = Math.max(0, agentSlots - live.length)
       const liveExternal = externalSlots ? x.cards.slice(-externalSlots) : []
       const managedSlots = Math.max(0, externalSlots - liveExternal.length)
-      const managedAll = managedView()
       const liveManaged = managedAll.slice(0, managedSlots)
       const hidden = cards.length - live.length + x.cards.length - liveExternal.length + managedAll.length - liveManaged.length
       const counts = ` ${s.rule} allowed · ${s.cleared} ${decider}${s.granted > 0 ? ` · ${s.granted} approved` : ''}${s.ask > 0 ? ` · ${s.ask} pending` : ''} · ${s.deny} denied`
-      const showGate = control.gateVisible ?? cfg.panels.includes('gate')
       const strip = showGate ? g.recent.slice(-Math.max(4, W - cfg.gateLabel.length - 1 - counts.length)) : []
       const mg = u.pct !== null ? gauge(u.pct, 6) : null
       const lastDenial = [...g.recent].reverse().find(c => c.verdict === 'deny')
@@ -1590,10 +1595,10 @@ export const register: Register = (on, options) => {
           ))}
           {liveExternal.map(c => <Text color={C.agent} wrap="truncate">{`external ${c.provider} · ${c.status === 'handed-off' ? 'handed off' : c.status}`}</Text>)}
           {liveManaged.map(c => <Text color={C.agent} wrap="truncate">{`managed ${c.provider} · ${managedLabel(c)}${c.phase ? ` · ${c.phase}` : ''}`}</Text>)}
-          {hidden > 0 ? (
+          {hidden > 0 && layout.rows > fixedRows ? (
             <Text color={C.faint} wrap="truncate">{`+${plural(hidden, 'more agent')} · /flightdeck layout compact for all`}</Text>
           ) : null}
-          {lp.length > 0 ? <Text dimColor>{`other loops ${lp.length} · ${lp.filter(l => isLoopActive(l, now)).length} active`}</Text> : null}
+          {showLoops ? <Text dimColor wrap="truncate">{`other loops ${lp.length} · ${lp.filter(l => isLoopActive(l, now)).length} active`}</Text> : null}
           <Box>
             {!m.isRunning && r ? (
               <Text dimColor wrap="truncate">
